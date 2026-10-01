@@ -1,0 +1,37 @@
+name: runup-watch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runup-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check RUNUP market
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node runup-watch/watch.mjs
+
+      - name: Persist state
+        run: |
+          git config user.name "runup-watch"
+          git config user.email "runup-watch@users.noreply.github.com"
+          git add runup-watch/seen.json
+          git diff --cached --quiet || (git commit -m "runup-watch: state" && git push)
