@@ -1,0 +1,46 @@
+name: wld-watch
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: wld-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # state lives in the Actions cache, so this job never commits to the repo
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: wld-watch/state.json
+          key: wld-state-${{ github.run_id }}
+          restore-keys: wld-state-
+
+      - name: Scan World Chain
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node wld-watch/watch.mjs
+
+      - name: Save state
+        if: always() && hashFiles('wld-watch/state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: wld-watch/state.json
+          key: wld-state-${{ github.run_id }}
