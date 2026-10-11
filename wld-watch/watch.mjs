@@ -145,6 +145,20 @@ async function getJSON(url, tries = 4) {
   return null;
 }
 
+// market cap for a World Chain token: DexScreener (deepest pair), then GeckoTerminal; null if unknown
+async function marketCap(token) {
+  const d = await getJSON(`https://api.dexscreener.com/tokens/v1/worldchain/${token}`, 2);
+  if (Array.isArray(d) && d.length) {
+    const p = [...d].sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+    const mc = Number(p.marketCap || p.fdv);
+    if (mc > 0) return mc;
+  }
+  const g = await getJSON(`${GT}/networks/world-chain/tokens/${token}`, 2);
+  const a = g?.data?.attributes;
+  const mc = Number(a?.market_cap_usd || a?.fdv_usd);
+  return mc > 0 ? mc : null;
+}
+
 async function tg(text) {
   if (!TG_TOKEN || !TG_CHAT) { console.log('[telegram]\n' + text + '\n'); return; }
   for (let i = 0; i < 3; i++) {
@@ -577,7 +591,8 @@ async function main() {
       if (isMajor(m)) continue;
       const bs = r.a.vol ? Math.round((r.a.buy / r.a.vol) * 100) : 0;
       const vs = r.prev ? ` (${(r.rate / Math.max(r.prev, 1)).toFixed(1)}× base)` : '';
-      lines.push(`${esc(m.s)} · ${usd(r.rate)}/h · ${bs}% buys${vs}`);
+      const mc = await marketCap(r.t);
+      lines.push(`${esc(m.s)} · MC ${mc ? usd(mc) : 'n/a'} · ${usd(r.rate)}/h · ${bs}% buys${vs}`);
     }
     const wld = tokRows.find((r) => r.t === WLD);
     msgs.push(
