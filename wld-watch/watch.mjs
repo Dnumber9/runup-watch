@@ -38,6 +38,8 @@ const RUN_MIN_BUY_SHARE = 0.55; // share of quote volume that was buying
 const HUB_MIN_USD = 1500;       // money flowing into a non-pool contract
 const HUB_MIN_SENDERS = 15;
 const HUB_MULT = 3;
+const OLD_HUB_MIN_USD = 10000;  // verified contracts older than 30 days need a much bigger jump
+const OLD_HUB_MULT = 5;
 const FACTORY_STEPS = [3, 10, 25, 50, 100, 250, 500];
 const WLD_MIN_USD = 60000;      // WLD itself does ~$20K/h on-chain on a normal day
 const WLD_MULT = 3;
@@ -46,7 +48,7 @@ const WLD_MULT = 3;
 const MAJORS = /^(W?ETH|WBTC|CBBTC|BTC|USDC(\.E)?|USDT\d*|USD₮\d*|DAI|USDS|SUSDS|USDE|FRAX|PYUSD|EURC|EURE|EURS|XAUT|OXAUT|PAXG|USOL|UXRP|UBTC|USUI|UDOGE|W(ARS|BRL|MXN|PEN|CLP|COP|EUR|GBP|JPY|CHF|KRW|IDR|NGN|USD)|IDRX|TRYB|BRZ|MXNB|CADC|XSGD|GYEN)$/i;
 const isMajor = (m) => MAJORS.test(String(m?.s || '').trim());
 // verified contract names that are DeFi plumbing, not launches: lending vaults, bridges, routers, staking
-const DEFI_PLUMBING = /morpho|vault|aave|atoken|lending|comet|euler|bridge|portal|messenger|settler|router|aggregator|permit|multicall|entrypoint|paymaster|staking|stake|farm|gauge|distributor|airdrop|grant|treasury|escrow|spokepool|poolmanager/i;
+const DEFI_PLUMBING = /morpho|vault|adapter|bundler|aave|atoken|lending|comet|euler|bridge|portal|messenger|settler|router|aggregator|permit|multicall|entrypoint|paymaster|staking|stake|farm|gauge|distributor|airdrop|grant|treasury|escrow|spokepool|poolmanager/i;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const WLD = '0x2cfc85d8e48f8eab294be644d9e25c3030863003';
@@ -499,6 +501,9 @@ async function main() {
       const tx = await getJSON(`${BLOCKSCOUT}/transactions/${info.creation_transaction_hash}`);
       if (tx?.timestamp) ageH = (Date.now() - Date.parse(tx.timestamp)) / 3.6e6;
     }
+    // established verified contracts (30+ days old) are usually busy apps: only a big jump counts
+    if (verified && ageH != null && ageH > 30 * 24
+      && (rate < OLD_HUB_MIN_USD || (prev?.e != null && rate < OLD_HUB_MULT * prev.e))) continue;
     const age = ageH == null ? '' : ageH < 48 ? `deployed ${Math.max(1, Math.round(ageH))}h ago` : `deployed ${Math.round(ageH / 24)} days ago`;
     let what;
     if (!info?.is_contract) what = 'A plain wallet, not a contract. Often a presale or OTC collection address.';
