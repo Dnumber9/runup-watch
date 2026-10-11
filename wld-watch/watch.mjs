@@ -45,6 +45,8 @@ const WLD_MULT = 3;
 // stablecoins, wrapped majors and tokenized gold: never "runs", kept out of alerts and digests
 const MAJORS = /^(W?ETH|WBTC|CBBTC|BTC|USDC(\.E)?|USDT\d*|USD₮\d*|DAI|USDS|SUSDS|USDE|FRAX|PYUSD|EURC|EURE|EURS|XAUT|OXAUT|PAXG|USOL|UXRP|UBTC|USUI|UDOGE|W(ARS|BRL|MXN|PEN|CLP|COP|EUR|GBP|JPY|CHF|KRW|IDR|NGN|USD)|IDRX|TRYB|BRZ|MXNB|CADC|XSGD|GYEN)$/i;
 const isMajor = (m) => MAJORS.test(String(m?.s || '').trim());
+// verified contract names that are DeFi plumbing, not launches: lending vaults, bridges, routers, staking
+const DEFI_PLUMBING = /morpho|vault|aave|atoken|lending|comet|euler|bridge|portal|messenger|settler|router|aggregator|permit|multicall|entrypoint|paymaster|staking|stake|farm|gauge|distributor|airdrop|grant|treasury|escrow|spokepool|poolmanager/i;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const WLD = '0x2cfc85d8e48f8eab294be644d9e25c3030863003';
@@ -333,8 +335,9 @@ async function main() {
     const q = QUOTES[token];
     const amt = Number(BigInt(l.data.length > 2 ? l.data.slice(0, 66) : '0x0')) / 10 ** q.dec * (px[token] || 0);
     if (!(amt > 0)) continue;
-    const h = (hubs[to] ||= { usd: 0, n: 0, from: new Set() });
+    const h = (hubs[to] ||= { usd: 0, n: 0, from: new Set(), by: {} });
     h.usd += amt; h.n++; h.from.add(fromA);
+    h.by[q.sym] = (h.by[q.sym] || 0) + amt;
   }
   const hubCands = Object.entries(hubs)
     .filter(([, h]) => h.from.size >= HUB_MIN_SENDERS && h.usd / hours >= HUB_MIN_USD)
@@ -422,18 +425,40 @@ async function main() {
     const rate = h.usd / hours;
     const key = 'h:' + addr;
     const prev = state.hub[addr];
-    state.hub[addr] = { e: ema(prev?.e, rate), s: now() };
-    if (learning) continue;
+    state.hub[addr] = { e: ema(prev?.e, rate), s: now(), ...(prev?.ign ? { ign: 1 } : {}) };
+    if (learning || prev?.ign) continue;
     if (prev?.e != null && rate < HUB_MULT * Math.max(prev.e, 200)) continue;
     if (!due(state, key, rate)) continue;
     const info = await getJSON(`${BLOCKSCOUT}/addresses/${addr}`);
-    const name = info?.name || info?.implementations?.[0]?.name || (info?.is_contract ? 'unverified contract' : 'wallet (EOA)');
+    const verified = info?.name || info?.implementations?.[0]?.name || '';
+    if (DEFI_PLUMBING.test(verified)) { state.hub[addr].ign = 1; continue; } // vaults, bridges, routers: never a launch
+    let ageH = null;
+    if (info?.creation_transaction_hash) {
+      const tx = await getJSON(`${BLOCKSCOUT}/transactions/${info.creation_transaction_hash}`);
+      if (tx?.timestamp) ageH = (Date.now() - Date.parse(tx.timestamp)) / 3.6e6;
+    }
+    const age = ageH == null ? '' : ageH < 48 ? `deployed ${Math.max(1, Math.round(ageH))}h ago` : `deployed ${Math.round(ageH / 24)} days ago`;
+    let what;
+    if (!info?.is_contract) what = 'A plain wallet, not a contract. Often a presale or OTC collection address.';
+    else if (!verified && ageH != null && ageH < 48) what = `A brand-new unverified contract, ${age}. Typical of a launchpad curve or presale.`;
+    else if (!verified) what = `An unverified contract${age ? `, ${age}` : ''}.`;
+    else what = `Verified contract "${esc(verified)}"${age ? `, ${age}` : ''}.`;
+    const mix = Object.entries(h.by).sort((a, b) => b[1] - a[1])
+      .map(([s, v]) => `${Math.round((v / h.usd) * 100)}% ${s}`).join(', ');
+    const pace = prev?.e == null
+      ? 'No history for this address: first time it has pulled money like this.'
+      : `That is ${(rate / prev.e).toFixed(1)}× its usual pace (${usd(prev.e)}/h).`;
+    const creator = info?.creator_address_hash ? lc(info.creator_address_hash) : '';
     state.alerted[key] = { t: now(), r: rate };
     msgs.push(
-      `💰 Money flowing into <b>${esc(name)}</b>\n` +
-      `${usd(rate)}/h from ${h.from.size} wallets (${h.n} transfers) · baseline ${prev?.e == null ? 'new' : usd(prev.e) + '/h'}\n` +
-      `<code>${addr}</code>${info?.creator_address_hash ? `\ncreator <code>${lc(info.creator_address_hash)}</code>` : ''}\n` +
-      `<a href="${EXPLORER}/address/${addr}">explorer</a>`
+      `💰 <b>${h.from.size} wallets just sent ${usd(h.usd)} into one address</b>\n` +
+      `In the last ${Math.round(hours * 60)} min · ${h.n} transfers · avg ${usd(h.usd / h.n)} each\n` +
+      `${pace}\n` +
+      `Paid in: ${mix}\n\n` +
+      `<b>What it is:</b> ${what}\n` +
+      `<code>${addr}</code>\n` +
+      `<a href="${EXPLORER}/address/${addr}">open address</a>` +
+      (creator ? ` · <a href="${EXPLORER}/address/${creator}">open deployer</a>` : '')
     );
   }
 
