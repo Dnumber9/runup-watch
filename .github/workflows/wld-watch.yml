@@ -1,8 +1,13 @@
 name: wld-watch
 
+# GitHub's cron is unreliable (runs were landing 3-7 hours apart), so each run
+# scans every 10 minutes for ~5.5 hours, then starts the next run itself.
+# The schedule below is only a backup that restarts the chain if it ever breaks.
+# To stop everything: disable this workflow in the Actions tab.
+
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +21,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -32,11 +37,20 @@ jobs:
           key: wld-state-${{ github.run_id }}
           restore-keys: wld-state-
 
-      - name: Scan World Chain
+      - name: Scan World Chain every 10 minutes
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: node wld-watch/watch.mjs
+        run: |
+          end=$((SECONDS + 330 * 60))
+          while [ $SECONDS -lt $end ]; do
+            start=$SECONDS
+            echo "::group::scan $(date -u +%H:%M)"
+            node wld-watch/watch.mjs || echo "scan failed, retrying next tick"
+            echo "::endgroup::"
+            left=$((600 - (SECONDS - start)))
+            if [ $left -gt 0 ]; then sleep $left; fi
+          done
 
       - name: Save state
         if: always() && hashFiles('wld-watch/state.json') != ''
@@ -44,3 +58,9 @@ jobs:
         with:
           path: wld-watch/state.json
           key: wld-state-${{ github.run_id }}
+
+      - name: Start the next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run wld-watch.yml --ref ${{ github.ref_name }}
