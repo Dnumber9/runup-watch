@@ -228,6 +228,63 @@ async function resolveV4(state, ids) {
   }
 }
 
+// ── socials ──────────────────────────────────────────────────────────────────
+// 1) links written into the launch transaction (Pons-style launchpads store them on-chain)
+function socialsFromCalldata(raw) {
+  const out = { x: '', tg: '', web: '', meta: '' };
+  if (!raw || raw.length < 10) return out;
+  let ascii = '';
+  for (let i = 2; i < raw.length; i += 2) {
+    const c = parseInt(raw.slice(i, i + 2), 16);
+    ascii += c >= 32 && c < 127 ? String.fromCharCode(c) : ' ';
+  }
+  for (const u of ascii.match(/(https?:\/\/|ipfs:\/\/)[^\s"'<>]{3,120}|(?:x|twitter)\.com\/[A-Za-z0-9_]{2,30}|t\.me\/[A-Za-z0-9_+]{3,40}/g) || []) {
+    if (/(?:x|twitter)\.com\/(?!intent|home|i\/|share)/i.test(u)) out.x ||= u.replace(/^https?:\/\//, '');
+    else if (/t\.me\//i.test(u)) out.tg ||= u.replace(/^https?:\/\//, '');
+    else if (/^ipfs:\/\/|\.json($|\?)/i.test(u)) out.meta ||= u;
+    else if (/^https?:\/\//.test(u) && !/\.(png|jpe?g|gif|webp|svg)($|\?)|\/(image|images|img|logo|logos|media|upload|uploads|ipfs)\//i.test(u)) out.web ||= u.replace(/^https?:\/\//, '');
+  }
+  return out;
+}
+
+// 2) an IPFS/JSON metadata file the launch pointed at, 3) DexScreener profile, 4) GeckoTerminal info
+async function socialsFor(token, fromCalldata) {
+  const s = { x: '', tg: '', web: '', ...(fromCalldata || {}) };
+  const take = (url) => {
+    if (!url) return;
+    const u = String(url).replace(/^https?:\/\//, '');
+    if (/^(x|twitter)\.com\//i.test(u)) s.x ||= u;
+    else if (/^t\.me\//i.test(u)) s.tg ||= u;
+    else if (/^[a-z0-9.-]+\.[a-z]{2,}/i.test(u)) s.web ||= u;
+  };
+  if (s.meta && !(s.x && s.tg && s.web)) {
+    const url = s.meta.replace(/^ipfs:\/\//, 'https://ipfs.io/ipfs/');
+    const j = await getJSON(url, 2);
+    if (j) {
+      take(j.twitter || j.x); take(j.telegram); take(j.website || j.external_url);
+      for (const v of Object.values(j.socials || j.links || {})) take(typeof v === 'string' ? v : v?.url);
+    }
+  }
+  if (!(s.x && s.tg && s.web)) {
+    const d = await getJSON(`https://api.dexscreener.com/tokens/v1/worldchain/${token}`, 2);
+    const info = Array.isArray(d) ? d.find((p) => p.info)?.info : null;
+    for (const so of info?.socials || []) take(so.url);
+    for (const w of info?.websites || []) take(w.url);
+  }
+  if (!(s.x && s.tg && s.web)) {
+    const g = await getJSON(`${GT}/networks/world-chain/tokens/${token}/info`, 2);
+    const at = g?.data?.attributes;
+    if (at?.twitter_handle) take(`x.com/${at.twitter_handle}`);
+    if (at?.telegram_handle) take(`t.me/${at.telegram_handle}`);
+    for (const w of at?.websites || []) take(w);
+  }
+  const parts = [];
+  if (s.x) parts.push(`<a href="https://${esc(s.x)}">X @${esc(s.x.split('/')[1] || '')}</a>`);
+  if (s.tg) parts.push(`<a href="https://${esc(s.tg)}">Telegram</a>`);
+  if (s.web) parts.push(`<a href="https://${esc(s.web)}">${esc(s.web.split('/')[0])}</a>`);
+  return parts.length ? `Socials: ${parts.join(' · ')}` : 'Socials: none found (nothing on-chain, DexScreener or GeckoTerminal)';
+}
+
 async function prices(state) {
   const j = await getJSON(`${GT}/simple/networks/world-chain/token_price/${WLD},${WETH}`);
   const p = j?.data?.attributes?.token_prices || {};
@@ -358,9 +415,12 @@ async function main() {
     const tx = await getJSON(`${BLOCKSCOUT}/transactions/${info.creation_transaction_hash}`);
     const ts = tx?.timestamp ? Date.parse(tx.timestamp) / 1000 : 0;
     if (!ts || now() - ts > 48 * 3600) continue; // an old token minting again: ignore
-    const factory = lc(tx.to?.hash || info.creator_address_hash || '');
+    // group by the contract that actually created the token. tx.to is often the shared
+    // ERC-4337 EntryPoint (World App smart wallets), which says nothing about the launchpad.
+    const factory = lc(info.creator_address_hash || tx.to?.hash || '');
+    const viaWorldApp = /entrypoint/i.test(tx.to?.name || '');
     const meta = await tokenMeta(state, a);
-    newLaunches.push({ a, factory, deployer: lc(tx.from?.hash), ts, meta, fname: tx.to?.name || '' });
+    newLaunches.push({ a, factory, ts, meta, viaWorldApp, soc: socialsFromCalldata(tx.raw_input) });
   }
 
   // ── decide what to send ────────────────────────────────────────────────────
@@ -396,10 +456,12 @@ async function main() {
       const m = await tokenMeta(state, t);
       if (isMajor(m)) continue;
       state.alerted[key] = { t: now(), r: rate };
+      const soc = await socialsFor(t, null);
       msgs.push(
         `🔥 <b>${esc(m.s)}</b> volume run on World Chain\n` +
         `${usd(rate)}/h · ${Math.round(buyShare * 100)}% buys · ${Math.round(a.swaps / hours)} swaps/h · ${a.pools.size} pool${a.pools.size > 1 ? 's' : ''}\n` +
         `baseline ${prev?.e == null ? 'new' : usd(prev.e) + '/h'} · ${m.h.toLocaleString('en-US')} holders\n` +
+        `${soc}\n` +
         `<code>${t}</code>\n` +
         `<a href="https://www.geckoterminal.com/world-chain/tokens/${t}">chart</a> · <a href="https://dexscreener.com/worldchain/${t}">dexscreener</a> · <a href="${EXPLORER}/token/${t}">explorer</a>`
       );
@@ -465,18 +527,36 @@ async function main() {
   // launchpad / factory detector
   for (const l of newLaunches) {
     if (!l.factory) continue;
-    const f = (state.fac[l.factory] ||= { n: 0, step: 0, name: l.fname, last: [] });
-    f.n++; f.name ||= l.fname;
-    f.last = [`${l.meta.s}|${l.a}`, ...f.last].slice(0, 5);
+    const f = (state.fac[l.factory] ||= { n: 0, step: 0, first: l.ts, last: [] });
+    f.n++; f.first ||= l.ts; f.wa ||= l.viaWorldApp;
+    f.last = [{ s: l.meta.s, n: l.meta.n, a: l.a, ts: l.ts, soc: l.soc }, ...f.last.filter((x) => typeof x === 'object')].slice(0, 5);
     f.s = now();
     const next = FACTORY_STEPS.find((x) => x > (f.step || 0));
     if (!learning && next && f.n >= next) {
       f.step = next;
-      const recent = f.last.map((x) => { const [s, a] = x.split('|'); return `• ${esc(s)} <code>${a}</code>`; }).join('\n');
+      const finfo = await getJSON(`${BLOCKSCOUT}/addresses/${l.factory}`);
+      const fname = finfo?.implementations?.[0]?.name || (finfo?.name !== 'ERC1967Proxy' ? finfo?.name : '') || '';
+      let fage = '';
+      if (finfo?.creation_transaction_hash) {
+        const ftx = await getJSON(`${BLOCKSCOUT}/transactions/${finfo.creation_transaction_hash}`);
+        if (ftx?.timestamp) fage = ` · live since ${ftx.timestamp.slice(0, 10)}`;
+      }
+      const lines = [];
+      for (const x of f.last) {
+        const m = await tokenMeta(state, x.a);
+        const soc = await socialsFor(x.a, x.soc);
+        lines.push(
+          `• <b>${esc(x.s)}</b>${x.n && x.n !== x.s ? ` (${esc(x.n)})` : ''} · made ${new Date(x.ts * 1000).toISOString().slice(11, 16)} UTC · ${m.h} holders\n` +
+          `  ${soc}\n  <code>${x.a}</code>`
+        );
+      }
+      const span = Math.max(1, Math.round((now() - f.first) / 3600));
       msgs.push(
-        `🚀 <b>${f.n} new tokens</b> from one creator contract on World Chain\n` +
-        `${esc(f.name || 'unnamed contract')} <code>${l.factory}</code>\n${recent}\n` +
-        `<a href="${EXPLORER}/address/${l.factory}">explorer</a>`
+        `🚀 <b>A token launchpad is active on World Chain</b>\n` +
+        `${f.n} new tokens from the same factory in the last ${span}h${f.wa ? ', launched from World App wallets (likely a mini-app)' : ''}\n` +
+        `Factory: ${fname ? esc(fname) : (finfo?.is_verified ? 'verified contract' : 'unverified contract')}${fage}\n` +
+        `<a href="${EXPLORER}/address/${l.factory}">open factory</a>\n\n` +
+        `Latest:\n${lines.join('\n')}`
       );
     }
   }
