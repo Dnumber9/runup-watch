@@ -1,0 +1,66 @@
+name: elysium-watch
+
+# Scans Elysium mainnet (chain 99901) every minute for ~5.5 hours, then starts the next run itself.
+# The schedule below is only a backup that restarts the chain if it ever breaks.
+# Tracked wallets live in elysium-watch/wallets.json: [{"address":"0x...","label":"name"}].
+# To stop everything: disable this workflow in the Actions tab.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: elysium-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # state lives in the Actions cache, so this job never commits to the repo
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: elysium-watch/state.json
+          key: ely-state-${{ github.run_id }}
+          restore-keys: ely-state-
+
+      - name: Scan Elysium every minute
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          end=$((SECONDS + 330 * 60))
+          while [ $SECONDS -lt $end ]; do
+            start=$SECONDS
+            echo "::group::scan $(date -u +%H:%M)"
+            node elysium-watch/watch.mjs || echo "scan failed, retrying next tick"
+            echo "::endgroup::"
+            left=$((60 - (SECONDS - start)))
+            if [ $left -gt 0 ]; then sleep $left; fi
+          done
+
+      - name: Save state
+        if: always() && hashFiles('elysium-watch/state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: elysium-watch/state.json
+          key: ely-state-${{ github.run_id }}
+
+      - name: Start the next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run elysium-watch.yml --ref ${{ github.ref_name }}
