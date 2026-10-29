@@ -1,0 +1,35 @@
+name: router-dryrun
+
+# Quotes trades through ely-router without sending anything (no key, no funds), to check the contract paths.
+
+on:
+  workflow_dispatch:
+    inputs:
+      address:
+        description: 'Stockium curve or Elysium token'
+        default: '0x5E7Fcc0337de896faCb11c1701672c70c688FdEb'
+      hype:
+        description: 'HYPE to quote'
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  dry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        working-directory: ely-router
+        run: npm install --no-audit --no-fund
+      - name: Dry buy
+        working-directory: ely-router
+        run: node router.mjs --dry buy ${{ inputs.address }} ${{ inputs.hype }}
+      - name: Dry sell (expects "you hold none")
+        working-directory: ely-router
+        run: node router.mjs --dry sell ${{ inputs.address }} 100 || true
