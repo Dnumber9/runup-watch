@@ -9,6 +9,7 @@
 // a brand-new launchpad appearing, the official mainnet RPC opening, and a digest every few hours.
 
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 
 // ── config ───────────────────────────────────────────────────────────────────
 const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
@@ -453,6 +454,43 @@ async function main() {
     );
   }
 
+  // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
+  const blocks = [];
+  for (let b = Math.max(from, head - 900); b <= head; b++) {
+    try { const blk = await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), true]); if (blk) blocks.push(blk); } catch {}
+  }
+
+  // 3c. wallets from the Cielo list showing up on Elysium for the first time: one ping, then full tracking
+  const S = loadCielo();
+  state.arrived ||= {};
+  if (S.size) {
+    const seen = new Map();
+    const note = (a, txt) => { if (a && S.has(a) && !W.has(a) && !state.arrived[a] && !seen.has(a)) seen.set(a, txt); };
+    for (const blk of blocks) {
+      for (const tx of blk.transactions || []) {
+        const f = lc(tx.from), to = lc(tx.to);
+        const val = Number(BigInt(tx.value || '0x0')) / 1e18;
+        const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
+        if (bridged) note(to, `🌉 bridged in ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}`);
+        else if (val > 0) note(to, `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
+        note(f, `made its first move here${txLink(tx.hash)}`);
+      }
+    }
+    for (const l of logs) {
+      if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
+      note(lc(topicAddr(l.topics[2])), `received a token${txLink(l.transactionHash)}`);
+      note(lc(topicAddr(l.topics[1])), `moved a token${txLink(l.transactionHash)}`);
+    }
+    for (const [a, txt] of seen) {
+      const label = `${S.get(a)} (cielo)`;
+      state.arrived[a] = now();
+      state.auto[a] = { label, group: 'cielo', from: 'cielo', t: now() };
+      W.set(a, label);
+      G.set(a, 'cielo');
+      msgs.push(`🛬 <b>${esc(S.get(a))}</b> from your Cielo list is on Elysium\n${walletLink(a)} ${txt}\nNow tracking it.`);
+    }
+  }
+
   // 4. tracked wallets
   if (W.size) {
     const moves = {};
@@ -488,10 +526,8 @@ async function main() {
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
     const funded = []; // tracked wallet → untracked recipient, checked for freshness below
-    for (let b = Math.max(from, head - 900); b <= head; b++) {
-      let blk;
-      try { blk = await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), true]); } catch { continue; }
-      for (const tx of blk?.transactions || []) {
+    for (const blk of blocks) {
+      for (const tx of blk.transactions || []) {
         const f = lc(tx.from);
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
@@ -628,6 +664,20 @@ async function main() {
   fs.writeFileSync(STATE, JSON.stringify(state));
   for (const m of msgs) await tg(m);
   console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts`);
+}
+
+// Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
+function loadCielo() {
+  const m = new Map();
+  const b64 = process.env.CIELO_WALLETS;
+  if (!b64) return m;
+  try {
+    const buf = zlib.gunzipSync(Buffer.from(b64, 'base64'));
+    const n = buf.readUInt16BE(0);
+    const labels = buf.subarray(2 + n * 20).toString('utf8').split('\n');
+    for (let i = 0; i < n; i++) m.set('0x' + buf.subarray(2 + i * 20, 22 + i * 20).toString('hex'), labels[i] || 'cielo wallet');
+  } catch (e) { console.log('cielo list unreadable:', e.message); }
+  return m;
 }
 
 function fmtAmt(n) {
