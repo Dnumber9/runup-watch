@@ -117,6 +117,12 @@ async function main() {
   const names = await calls1(toks.map((t) => ({ to: t, data: '0x06fdde03' })));
   const symOf = Object.fromEntries(toks.map((t, i) => [t, decStr(syms[i])]));
   const nameOf = Object.fromEntries(toks.map((t, i) => [t, decStr(names[i])]));
+  const extra = WANT.filter((w) => /^0x[0-9a-f]{40}$/i.test(w)).map(lc).filter((t) => !(t in symOf));
+  if (extra.length) {
+    const s2 = await calls1(extra.map((t) => ({ to: t, data: '0x95d89b41' })));
+    const n2 = await calls1(extra.map((t) => ({ to: t, data: '0x06fdde03' })));
+    extra.forEach((t, i) => { symOf[t] = decStr(s2[i]); nameOf[t] = decStr(n2[i]); });
+  }
   const targets = [];
   for (const w of WANT) {
     if (/^0x[0-9a-f]{40}$/i.test(w)) targets.push(lc(w));
@@ -202,7 +208,13 @@ async function main() {
 
   for (const T of targets) {
     const tPools = pools.filter((p) => p.token === T);
-    const firstBlock = Math.min(...tPools.map((p) => p.block), head);
+    let firstBlock = Math.min(...tPools.map((p) => p.block), head);
+    if (!tPools.length) { // not a launchpad pool (e.g. a Uniswap v3 token): start from its first transfer
+      for (let s = 0; s <= head; s += LOG_RANGE) {
+        const l = await one('eth_getLogs', [{ address: T, topics: [T_TRANSFER], fromBlock: hex(s), toBlock: hex(Math.min(head, s + LOG_RANGE - 1)) }]);
+        if (l.length) { firstBlock = Math.min(...l.map((x) => parseInt(x.blockNumber, 16))); break; }
+      }
+    }
     console.log('==', symOf[T], T, 'pools', tPools.length, 'from', firstBlock);
     const [decH, supH] = await calls1([{ to: T, data: '0x313ce567' }, { to: T, data: '0x18160ddd' }]);
     const dec = decH && decH !== '0x' ? Number(BigInt(decH)) : 18;
