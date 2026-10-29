@@ -41,6 +41,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CIELO_WALLETS: ${{ secrets.CIELO_WALLETS }}   # packed Cielo list, kept out of the public repo
         run: |
           end=$((SECONDS + 330 * 60))
           while [ $SECONDS -lt $end ]; do
