@@ -16,7 +16,8 @@ const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elyspump.com,https://box
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
-const BOXA = 'https://boxa.pro';
+const BOXA = 'https://boxa.pro';      // BOXA's API (token index)
+const BOXA_SITE = 'https://boxa.club'; // links in alerts
 
 const LOG_RANGE = 2000;          // the node allows 10,000 blocks per eth_getLogs; stay well under
 const FIRST_LOOKBACK = 900;      // first run: about the last hour (14 blocks a minute)
@@ -81,10 +82,10 @@ function int256(hex) {
   const x = BigInt('0x' + hex);
   return x >= 1n << 255n ? x - (1n << 256n) : x;
 }
-const assetLink = (t, label = 'BOXA') => `<a href="${BOXA}/asset?address=${t}">${label}</a>`;
+const assetLink = (t, label = 'BOXA') => `<a href="${BOXA_SITE}/asset?address=${t}">${label}</a>`;
 // wallets open on BOXA's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
 const EXPLORER = 'https://elysium.kinetiq.xyz/explorer';
-const walletLink = (a, label) => `<a href="${BOXA}/portfolio?address=${a}">${label || short(a)}</a>`;
+const walletLink = (a, label) => `<a href="${BOXA_SITE}/portfolio?address=${a}">${label || short(a)}</a>`;
 const txLink = (h) => (h ? ` · <a href="${EXPLORER}/transaction/${h}">tx</a>` : '');
 
 let rpcIdx = 0;
@@ -626,7 +627,7 @@ async function main() {
     for (const [t, r] of rows) {
       const m = await tokenMeta(state, t);
       const mc = r.price && m.supply ? r.price * m.supply : null;
-      lines.push(`${lines.length + 1}. <a href="${BOXA}/asset?address=${t}">${esc(m.s)}</a> · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${LAUNCHPADS[r.lp]?.name || 'Uniswap'}`);
+      lines.push(`${lines.length + 1}. <a href="${BOXA_SITE}/asset?address=${t}">${esc(m.s)}</a> · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${LAUNCHPADS[r.lp]?.name || 'Uniswap'}`);
     }
     const launches = {};
     for (const r of Object.values(state.tok)) if (r.born && r.born >= since) launches[LAUNCHPADS[r.lp]?.name || 'other'] = (launches[LAUNCHPADS[r.lp]?.name || 'other'] || 0) + 1;
