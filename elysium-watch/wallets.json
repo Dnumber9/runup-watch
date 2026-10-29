@@ -86,5 +86,105 @@
  {
   "address": "0x08e5969ccbb8820f90cf0682202cc1a46e6af5cd",
   "label": "sight3alt"
+ },
+ {
+  "address": "0x547a89eb880d586d648b3d280a378868fe9a0fb5",
+  "label": "hewd clstr 547a (ely trader)"
+ },
+ {
+  "address": "0xef79a93c3d604a93005a98d926c5d0baa1afc6fe",
+  "label": "hewd clstr ef79 (ely trader)"
+ },
+ {
+  "address": "0x0f9cc4a50da50445e416190ea118aec04b2d8a96",
+  "label": "hewd clstr 0f9c (ely trader)"
+ },
+ {
+  "address": "0xcc879f32974dd70ba5d8c8edf168c953c8cb205b",
+  "label": "hewd clstr cc87 (ely trader)"
+ },
+ {
+  "address": "0xc0c5620c739adef74aac6a38f70f8df8275a793a",
+  "label": "hewd clstr c0c5 (ely trader)"
+ },
+ {
+  "address": "0x2ea7e73ce863c2d4dacc9ec43f9d36207890f663",
+  "label": "hewd clstr 2ea7 (ely trader)"
+ },
+ {
+  "address": "0xc17658dfaa089eef0fbc79fe6876040caf61aca7",
+  "label": "hewd clstr funder c176"
+ },
+ {
+  "address": "0xf1d188ebcdfb79bbcba6d9caeb9f888b8f88b486",
+  "label": "hewd clstr f1d1 (gassed, dormant)"
+ },
+ {
+  "address": "0x6e07e3eb12ce9c45f876fdf32d8d3b7d72a3f719",
+  "label": "hewd clstr 6e07 (gassed, dormant)"
+ },
+ {
+  "address": "0x0527e4abfece866e65195398173bb5d940c58f59",
+  "label": "marv alt nb (marv)"
+ },
+ {
+  "address": "0x37381344694f66f87d01d7d2f803f82de73faddf",
+  "label": "marv (marv)"
+ },
+ {
+  "address": "0x384781218d5e4045bc773e6fcb8e500330631a03",
+  "label": "Marv KUm (marv)"
+ },
+ {
+  "address": "0x4209c625915000a1c52aeac6f7bf31c4e67ffb56",
+  "label": "marv1 (marv)"
+ },
+ {
+  "address": "0x512cf953608e799aab76b0024ca91a75b2f0a257",
+  "label": "marv2 (marv)"
+ },
+ {
+  "address": "0x632597f0c33f8ec0cdb2864d15f0f87dd32f52db",
+  "label": "Marvneww1 (marv)"
+ },
+ {
+  "address": "0x7f63870014a3eb700c7a8f2085f3a8e688f89090",
+  "label": "marv fomo (marv)"
+ },
+ {
+  "address": "0x8424c4b7b7105b06a6a6b59d6f527f19b70e0320",
+  "label": "marv sde (marv)"
+ },
+ {
+  "address": "0x85a708f8b57835d36fd4d185d4da716646f6e8d0",
+  "label": "einstien MArv (marv)"
+ },
+ {
+  "address": "0x923d5aef81a15aaaa7366979e5b0dc5566627616",
+  "label": "marvside 2 (marv)"
+ },
+ {
+  "address": "0xa84ab525e20048a0a85d45b07b28a0a474432ad1",
+  "label": "eints MArv1 (marv)"
+ },
+ {
+  "address": "0xb02c5adad9625da2de8d0512185af5e508b4f3bc",
+  "label": "marv szn (marv)"
+ },
+ {
+  "address": "0xd3977b845c99bbdfef94418698fd41b234af98be",
+  "label": "MARV NEW (marv)"
+ },
+ {
+  "address": "0xf2e7bb2092a6a5a272bd6c6784a140b2ead937a3",
+  "label": "MARV (marv)"
+ },
+ {
+  "address": "0xf43f96419c68281debcdd6e4ad16be598a1b5bb0",
+  "label": "marvdev (marv)"
+ },
+ {
+  "address": "0xf961ce51648046fcfe75cb68b08917c688a95d46",
+  "label": "marvvm (marv)"
  }
 ]
