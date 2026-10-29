@@ -73,6 +73,10 @@ function int256(hex) {
   return x >= 1n << 255n ? x - (1n << 256n) : x;
 }
 const assetLink = (t, label = 'BOXA') => `<a href="${BOXA}/asset?address=${t}">${label}</a>`;
+// wallets open on BOXA's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
+const EXPLORER = 'https://elysium.kinetiq.xyz/explorer';
+const walletLink = (a, label) => `<a href="${BOXA}/portfolio?address=${a}">${label || short(a)}</a>`;
+const txLink = (h) => (h ? ` · <a href="${EXPLORER}/transaction/${h}">tx</a>` : '');
 
 let rpcIdx = 0;
 async function rpc(method, params, tries = 6) {
@@ -400,7 +404,7 @@ async function main() {
         rec.launchAlert = now();
         state.alerted['c:' + t] = { t: now() };
         const so = await socials(t);
-        const creator = rec.creator ? `\nLaunched by <code>${rec.creator}</code>${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : '';
+        const creator = rec.creator ? `\nLaunched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : '';
         msgs.push(
           `🚀 <b>${esc(meta.s)}</b> (${esc(meta.n)}) is taking off on ${lpName}\n` +
           `${ago(age)} old · ${rec.buyers.length} buyers · ${usd(volUsd)} volume · ${Math.round(share * 100)}% buys\n` +
@@ -450,11 +454,11 @@ async function main() {
       const valTxt = val != null ? ` (~${px ? usd(val * px) : hype(val)})` : '';
       if (W.has(to)) {
         const kind = poolOut.has(f) ? 'bought' : f === ZERO ? 'minted' : 'received';
-        M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${short(f)}` : ''} · ${assetLink(t, 'chart')}`);
+        M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}`);
       }
       if (W.has(f)) {
         const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
-        M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${short(to)}` : ''} · ${assetLink(t, 'chart')}`);
+        M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${walletLink(to)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}`);
       }
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
@@ -465,23 +469,23 @@ async function main() {
         const f = lc(tx.from);
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
-        if (W.has(f) && !tx.to) M(f).push(`deployed a contract · tx <code>${tx.hash.slice(0, 12)}…</code>`);
-        if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${short(to)}`);
+        if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
+        if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${txLink(tx.hash)}`);
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x69'].includes(String(tx.type).toLowerCase());
-        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${short(f)}`);
+        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
-    for (const { coin } of launchTxs) {
+    for (const { coin, tx: lt } of launchTxs) {
       const c = state.tok[coin]?.creator;
       if (c && W.has(c)) {
         const meta = await tokenMeta(state, coin);
-        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')}`);
+        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')}${txLink(lt)}`);
       }
     }
     for (const [w, list] of Object.entries(moves)) {
       if (!list.length) continue;
-      msgs.push(`👛 <b>${esc(W.get(w))}</b> <code>${short(w)}</code>\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : ''));
+      msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : ''));
     }
   }
 
