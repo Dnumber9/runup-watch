@@ -471,8 +471,8 @@ async function main() {
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
         if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${txLink(tx.hash)}`);
-        // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x69 retryable) = HYPE bridged in from HyperEVM
-        const bridged = ['0x64', '0x65', '0x69'].includes(String(tx.type).toLowerCase());
+        // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
+        const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
         if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
