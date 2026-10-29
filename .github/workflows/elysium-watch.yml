@@ -1,6 +1,6 @@
 name: elysium-watch
 
-# Scans Elysium mainnet (chain 99901) every minute for ~5.5 hours, then starts the next run itself.
+# Scans Elysium mainnet (chain 99901) every 10 seconds for ~5.5 hours, then starts the next run itself.
 # The schedule below is only a backup that restarts the chain if it ever breaks.
 # Tracked wallets live in elysium-watch/wallets.json: [{"address":"0x...","label":"name"}].
 # To stop everything: disable this workflow in the Actions tab.
@@ -37,7 +37,7 @@ jobs:
           key: ely-state-${{ github.run_id }}
           restore-keys: ely-state-
 
-      - name: Scan Elysium every minute
+      - name: Scan Elysium every 10 seconds
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -45,10 +45,9 @@ jobs:
           end=$((SECONDS + 330 * 60))
           while [ $SECONDS -lt $end ]; do
             start=$SECONDS
-            echo "::group::scan $(date -u +%H:%M)"
-            node elysium-watch/watch.mjs || echo "scan failed, retrying next tick"
-            echo "::endgroup::"
-            left=$((60 - (SECONDS - start)))
+            node elysium-watch/watch.mjs > /tmp/scan.log 2>&1 || { echo "scan failed, retrying next tick"; tail -5 /tmp/scan.log; }
+            tail -1 /tmp/scan.log
+            left=$((10 - (SECONDS - start)))
             if [ $left -gt 0 ]; then sleep $left; fi
           done
 
