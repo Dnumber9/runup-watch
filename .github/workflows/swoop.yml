@@ -1,0 +1,33 @@
+name: swoop
+
+# One-off insider sweep for Elysium tokens. Run it from the Actions tab and pick the tokens.
+# Results (JSON + one CSV per token) are attached to the run as the "swoop-out" artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tokens:
+        description: 'Token symbols or 0x addresses, comma separated'
+        default: 'BOXA,KLEOS'
+
+permissions:
+  contents: read
+
+jobs:
+  swoop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Sweep
+        env:
+          SWOOP_TOKENS: ${{ inputs.tokens }}
+        run: node elysium-watch/swoop.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swoop-out
+          path: swoop-out/
