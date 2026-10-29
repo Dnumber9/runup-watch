@@ -35,6 +35,14 @@ const RUN_MIN_BUYERS = 8;
 const RUN_MULT = 3;              // times its own baseline pace
 const RUN_MIN_BUY_SHARE = 0.55;
 const WALLET_MIN_HYPE = 0.5;     // ignore dust HYPE moves for tracked wallets
+// group buys: several wallets of one group (wallets.json "group") buying the same coin close together
+const GROUP_WINDOW_MIN = 30;
+const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
+const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
+// auto-tracking: a tracked wallet funding a fresh wallet
+const FUND_MIN_HYPE = 0.2;
+const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
+const AUTO_MAX = 300;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const DEAD = '0x000000000000000000000000000000000000dead';
@@ -241,7 +249,16 @@ async function main() {
   state ||= { v: 1, block: 0, runs: 0, started: now(), pools: {}, v3: {}, tok: {}, meta: {}, alerted: {}, unknownPm: {}, digestAt: now(), official: false, px: null };
   let wallets = [];
   try { wallets = JSON.parse(fs.readFileSync(WALLETS, 'utf8')); } catch {}
-  const W = new Map(wallets.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.address)).map((w) => [lc(w.address), w.label || short(w.address)]));
+  const okW = wallets.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.address));
+  const W = new Map(okW.map((w) => [lc(w.address), w.label || short(w.address)]));
+  const G = new Map(okW.filter((w) => w.group).map((w) => [lc(w.address), String(w.group)]));
+  // wallets the watcher found on its own (fresh wallets funded by tracked ones) live in state
+  state.auto ||= {};
+  state.gbuys ||= {};
+  for (const [a, x] of Object.entries(state.auto)) {
+    if (!W.has(a)) W.set(a, x.label);
+    if (x.group && !G.has(a)) G.set(a, x.group);
+  }
 
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   // pool id → coin map: on first run read every pool ever created on the known launchpads
@@ -315,6 +332,7 @@ async function main() {
   const R = (t) => (roll[t] ||= { vol: 0, buyVol: 0, swaps: 0, buys: 0, buyers: new Set(), sellers: new Set(), price: null, lp: null });
   const poolOut = new Set([...Object.keys(LAUNCHPADS)]); // token leaves a PoolManager/pool → a buyer receives it
   const v3Pools = {};
+  const txBuy = {}; // tx hash → HYPE paid into pools in that tx (buys routed through routers/multicall too)
   for (const l of logs) {
     if (l.topics[0] === T_SWAP_V4) {
       const p = state.pools[lc(l.topics[1])];
@@ -326,7 +344,7 @@ async function main() {
       r.lp = p.lp;
       const h = Math.abs(a0);
       r.vol += h; r.swaps++;
-      if (a0 < 0) { r.buyVol += h; r.buys++; }
+      if (a0 < 0) { r.buyVol += h; r.buys++; txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h; }
       if (sqrt > 0n) {
         const ratio = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18; // coin per HYPE
         if (ratio > 0) r.price = 1 / ratio;                                // HYPE per coin
@@ -354,7 +372,7 @@ async function main() {
       const r = R(coin);
       r.lp ||= 'uniswap';
       r.vol += Math.abs(h); r.swaps++;
-      if (h > 0) { r.buyVol += h; r.buys++; }
+      if (h > 0) { r.buyVol += h; r.buys++; txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h; }
       const sqrt = BigInt('0x' + w[2]);
       if (sqrt > 0n) {
         const p01 = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18; // token1 per token0
@@ -453,8 +471,15 @@ async function main() {
       const val = price ? amt * price : null;
       const valTxt = val != null ? ` (~${px ? usd(val * px) : hype(val)})` : '';
       if (W.has(to)) {
-        const kind = poolOut.has(f) ? 'bought' : f === ZERO ? 'minted' : 'received';
+        const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
         M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}`);
+        if (kind === 'bought') {
+          const paid = txBuy[l.transactionHash] || val || 0;
+          for (const g of [G.get(to), '*'].filter(Boolean)) {
+            const k = g + '|' + t;
+            (state.gbuys[k] ||= []).push({ w: to, t: now(), h: paid });
+          }
+        }
       }
       if (W.has(f)) {
         const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
@@ -462,6 +487,7 @@ async function main() {
       }
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
+    const funded = []; // tracked wallet → untracked recipient, checked for freshness below
     for (let b = Math.max(from, head - 900); b <= head; b++) {
       let blk;
       try { blk = await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), true]); } catch { continue; }
@@ -470,11 +496,32 @@ async function main() {
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
-        if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${txLink(tx.hash)}`);
+        if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
+        if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
         if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
+    }
+    // fresh wallets funded by tracked ones: start tracking them (same group as the funder)
+    for (const x of funded.slice(0, 20)) {
+      if (W.has(x.to) || Object.keys(state.auto).length >= AUTO_MAX) continue;
+      try {
+        const [code, nonce] = await Promise.all([rpc('eth_getCode', [x.to, 'latest']), rpc('eth_getTransactionCount', [x.to, 'latest'])]);
+        if (code && code !== '0x') continue;
+        const n = parseInt(nonce, 16);
+        if (n > FRESH_MAX_NONCE) continue;
+        const group = G.get(x.f) || null;
+        const label = `${group || W.get(x.f).replace(/\s*\(.*\)$/, '')} child ${x.to.slice(2, 6)} (auto)`;
+        state.auto[x.to] = { label, group, from: x.f, t: now(), hype: x.val };
+        W.set(x.to, label);
+        if (group) G.set(x.to, group);
+        msgs.push(
+          `🧬 <b>${esc(W.get(x.f))}</b> funded a fresh wallet\n` +
+          `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
+          `Now tracking it as <b>${esc(label)}</b>.`
+        );
+      } catch {}
     }
     for (const { coin, tx: lt } of launchTxs) {
       const c = state.tok[coin]?.creator;
@@ -487,6 +534,34 @@ async function main() {
       if (!list.length) continue;
       msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : ''));
     }
+  }
+
+  // 4b. group buys: 2+ wallets of one group (or 3+ tracked wallets of any group) into the same coin within the window
+  for (const [k, list] of Object.entries(state.gbuys)) {
+    const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60);
+    if (!recent.length) { delete state.gbuys[k]; continue; }
+    state.gbuys[k] = recent.slice(-50);
+    const [g, t] = k.split('|');
+    const byW = {};
+    for (const x of recent) byW[x.w] = (byW[x.w] || 0) + x.h;
+    const n = Object.keys(byW).length;
+    if (n < (g === '*' ? ANY_MIN_WALLETS : GROUP_MIN_WALLETS)) continue;
+    const key = 'g:' + k;
+    const prevN = state.alerted[key]?.n || 0;
+    if (!due(state, key) && n <= prevN) continue; // re-ping inside the cooldown only when more wallets pile in
+    if (g === '*' && Object.keys(byW).every((w) => G.get(w) && G.get(w) === G.get(Object.keys(byW)[0]))) continue; // same group already pinged
+    state.alerted[key] = { t: now(), n };
+    const meta = await tokenMeta(state, t);
+    const tot = Object.values(byW).reduce((a, b) => a + b, 0);
+    const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
+    const rec = state.tok[t];
+    const mcH = rec?.price && meta.supply ? rec.price * meta.supply : null;
+    msgs.push(
+      `🎯 <b>${g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`}</b> bought <b>${esc(meta.s)}</b> within ${span} min\n` +
+      `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
+      Object.entries(byW).map(([w, h]) => `• ${walletLink(w, esc(W.get(w) || short(w)))}${h > 0 ? ` ${hype(h)}` : ''}`).join('\n') +
+      `\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
+    );
   }
 
   // 5. the official mainnet RPC opening up (one ping, ever)
