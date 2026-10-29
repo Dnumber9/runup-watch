@@ -5,7 +5,8 @@
  },
  {
   "address": "0x3b1dc8b04159a457f4f5e0ab86b01fa5a0b2f55c",
-  "label": "hewd 3 (ely early)"
+  "label": "hewd 3 (ely early)",
+  "group": "hewd"
  },
  {
   "address": "0x1b4f03245543d6e2be4e2779d8c6be993df512e5",
@@ -29,162 +30,202 @@
  },
  {
   "address": "0x08a16898f9b85308d1316984c1804abc663d86c6",
-  "label": "HYpe sig 3 (signal)"
+  "label": "HYpe sig 3 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x13796681a30e658d3dda81edd4807a98122ea370",
-  "label": "sighhtsend 2 (signal)"
+  "label": "sighhtsend 2 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x172eefd0f7ff1f42a33a6caf9138d089f2da39be",
-  "label": "SIGTH4 (signal)"
+  "label": "SIGTH4 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x25ba468940dc817039ada09599a7ff77a46f6cd9",
-  "label": "sig2 (signal)"
+  "label": "sig2 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x293787c6c6d5594612628c8d15293baa79214acf",
-  "label": "SIGTH3 (signal)"
+  "label": "SIGTH3 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x29998ebd5be758fdaa06f0ef48d6c890978b65de",
-  "label": "SIgna TH1 (signal)"
+  "label": "SIgna TH1 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x2f2ac368b7768665ee6b942601f8b02ffaec1832",
-  "label": "sig alf alt (signal)"
+  "label": "sig alf alt (signal)",
+  "group": "signal"
  },
  {
   "address": "0x5164fea61d99c1eaf8c5591fd18928b8f61f0995",
-  "label": "sigdev (signal)"
+  "label": "sigdev (signal)",
+  "group": "signal"
  },
  {
   "address": "0x58b43b785f55cd6c10eaea76e8db0c8dfc3976a0",
-  "label": "sig dev tf (signal)"
+  "label": "sig dev tf (signal)",
+  "group": "signal"
  },
  {
   "address": "0x689561f167edc0f0bf9ef0985e93a7d6f39cff8f",
-  "label": "sig 2 (signal)"
+  "label": "sig 2 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x7b7bbd8e061f8a72d9ff79ea351f9e33de0969b3",
-  "label": "signa alf (signal)"
+  "label": "signa alf (signal)",
+  "group": "signal"
  },
  {
   "address": "0xe56955435033d3a1f51d95333ef81a00954bbf87",
-  "label": "early sign (signal)"
+  "label": "early sign (signal)",
+  "group": "signal"
  },
  {
   "address": "0xed0146d729dfbc6d67fab4f2434d5dae031da04a",
-  "label": "pezxsignal (signal)"
+  "label": "pezxsignal (signal)",
+  "group": "signal"
  },
  {
   "address": "0xf1e74489b9a1e8fdd5f4961a40366fc562936652",
-  "label": "signal2 (signal)"
+  "label": "signal2 (signal)",
+  "group": "signal"
  },
  {
   "address": "0x08e5969ccbb8820f90cf0682202cc1a46e6af5cd",
-  "label": "sight3alt"
+  "label": "sight3alt",
+  "group": "hewd"
  },
  {
   "address": "0x547a89eb880d586d648b3d280a378868fe9a0fb5",
-  "label": "hewd clstr 547a (ely trader)"
+  "label": "hewd clstr 547a (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0xef79a93c3d604a93005a98d926c5d0baa1afc6fe",
-  "label": "hewd clstr ef79 (ely trader)"
+  "label": "hewd clstr ef79 (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0x0f9cc4a50da50445e416190ea118aec04b2d8a96",
-  "label": "hewd clstr 0f9c (ely trader)"
+  "label": "hewd clstr 0f9c (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0xcc879f32974dd70ba5d8c8edf168c953c8cb205b",
-  "label": "hewd clstr cc87 (ely trader)"
+  "label": "hewd clstr cc87 (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0xc0c5620c739adef74aac6a38f70f8df8275a793a",
-  "label": "hewd clstr c0c5 (ely trader)"
+  "label": "hewd clstr c0c5 (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0x2ea7e73ce863c2d4dacc9ec43f9d36207890f663",
-  "label": "hewd clstr 2ea7 (ely trader)"
+  "label": "hewd clstr 2ea7 (ely trader)",
+  "group": "hewd"
  },
  {
   "address": "0xc17658dfaa089eef0fbc79fe6876040caf61aca7",
-  "label": "hewd clstr funder c176"
+  "label": "hewd clstr funder c176",
+  "group": "hewd"
  },
  {
   "address": "0xf1d188ebcdfb79bbcba6d9caeb9f888b8f88b486",
-  "label": "hewd clstr f1d1 (gassed, dormant)"
+  "label": "hewd clstr f1d1 (gassed, dormant)",
+  "group": "hewd"
  },
  {
   "address": "0x6e07e3eb12ce9c45f876fdf32d8d3b7d72a3f719",
-  "label": "hewd clstr 6e07 (gassed, dormant)"
+  "label": "hewd clstr 6e07 (gassed, dormant)",
+  "group": "hewd"
  },
  {
   "address": "0x0527e4abfece866e65195398173bb5d940c58f59",
-  "label": "marv alt nb (marv)"
+  "label": "marv alt nb (marv)",
+  "group": "marv"
  },
  {
   "address": "0x37381344694f66f87d01d7d2f803f82de73faddf",
-  "label": "marv (marv)"
+  "label": "marv (marv)",
+  "group": "marv"
  },
  {
   "address": "0x384781218d5e4045bc773e6fcb8e500330631a03",
-  "label": "Marv KUm (marv)"
+  "label": "Marv KUm (marv)",
+  "group": "marv"
  },
  {
   "address": "0x4209c625915000a1c52aeac6f7bf31c4e67ffb56",
-  "label": "marv1 (marv)"
+  "label": "marv1 (marv)",
+  "group": "marv"
  },
  {
   "address": "0x512cf953608e799aab76b0024ca91a75b2f0a257",
-  "label": "marv2 (marv)"
+  "label": "marv2 (marv)",
+  "group": "marv"
  },
  {
   "address": "0x632597f0c33f8ec0cdb2864d15f0f87dd32f52db",
-  "label": "Marvneww1 (marv)"
+  "label": "Marvneww1 (marv)",
+  "group": "marv"
  },
  {
   "address": "0x7f63870014a3eb700c7a8f2085f3a8e688f89090",
-  "label": "marv fomo (marv)"
+  "label": "marv fomo (marv)",
+  "group": "marv"
  },
  {
   "address": "0x8424c4b7b7105b06a6a6b59d6f527f19b70e0320",
-  "label": "marv sde (marv)"
+  "label": "marv sde (marv)",
+  "group": "marv"
  },
  {
   "address": "0x85a708f8b57835d36fd4d185d4da716646f6e8d0",
-  "label": "einstien MArv (marv)"
+  "label": "einstien MArv (marv)",
+  "group": "marv"
  },
  {
   "address": "0x923d5aef81a15aaaa7366979e5b0dc5566627616",
-  "label": "marvside 2 (marv)"
+  "label": "marvside 2 (marv)",
+  "group": "marv"
  },
  {
   "address": "0xa84ab525e20048a0a85d45b07b28a0a474432ad1",
-  "label": "eints MArv1 (marv)"
+  "label": "eints MArv1 (marv)",
+  "group": "marv"
  },
  {
   "address": "0xb02c5adad9625da2de8d0512185af5e508b4f3bc",
-  "label": "marv szn (marv)"
+  "label": "marv szn (marv)",
+  "group": "marv"
  },
  {
   "address": "0xd3977b845c99bbdfef94418698fd41b234af98be",
-  "label": "MARV NEW (marv)"
+  "label": "MARV NEW (marv)",
+  "group": "marv"
  },
  {
   "address": "0xf2e7bb2092a6a5a272bd6c6784a140b2ead937a3",
-  "label": "MARV (marv)"
+  "label": "MARV (marv)",
+  "group": "marv"
  },
  {
   "address": "0xf43f96419c68281debcdd6e4ad16be598a1b5bb0",
-  "label": "marvdev (marv)"
+  "label": "marvdev (marv)",
+  "group": "marv"
  },
  {
   "address": "0xf961ce51648046fcfe75cb68b08917c688a95d46",
-  "label": "marvvm (marv)"
+  "label": "marvvm (marv)",
+  "group": "marv"
  }
 ]
