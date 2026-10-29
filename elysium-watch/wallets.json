@@ -352,5 +352,55 @@
   "address": "0xde317b1102d5cd16d56ca6a3ae25dc8de018823a",
   "label": "KLEOS #21 early",
   "group": "smart"
+ },
+ {
+  "address": "0x3048cdb54779e6966276dafe8d9f7d97cb7e2929",
+  "label": "Stockium fee wallet (STOCKIUM creator)",
+  "group": "dev"
+ },
+ {
+  "address": "0x40269087501bd81eff75ced85cd2277580728b68",
+  "label": "Stockium admin",
+  "group": "dev"
+ },
+ {
+  "address": "0xbf4ce8b8d754f0677a7e4d21a114bf4f79d39257",
+  "label": "STOCKIUM #1 buyer",
+  "group": "dev"
+ },
+ {
+  "address": "0x3a9732edd0624b39d006c89a0e327020dc06eb99",
+  "label": "STOCKIUM 10 HYPE trader",
+  "group": "smart"
+ },
+ {
+  "address": "0x6c39d7e6d7689b7a0d81aff7cc8a346fe054ff13",
+  "label": "STOCKIUM big buyer",
+  "group": "smart"
+ },
+ {
+  "address": "0x371903abb32f5f69b536b77495e92adedfea25da",
+  "label": "STOCKIUM early flipper",
+  "group": "smart"
+ },
+ {
+  "address": "0x4bacdac7d541c14212edaae89433bc08371f420c",
+  "label": "STOCKIUM 5 HYPE trader",
+  "group": "smart"
+ },
+ {
+  "address": "0xe28601398a5448d1147e6e8b0e0c6d686f0d216d",
+  "label": "STOCKIUM #19 flipper",
+  "group": "smart"
+ },
+ {
+  "address": "0x59c1c027f9aa2c40f46a0c289dae26d0ec1c63f1",
+  "label": "STOCKIUM #20 flipper",
+  "group": "smart"
+ },
+ {
+  "address": "0xd6ba8f72c137590f47e590352646f4c5df0ad79a",
+  "label": "KLEOS C1 insider (bought STOCKIUM)",
+  "group": "smart"
  }
 ]
