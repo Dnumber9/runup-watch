@@ -51,9 +51,12 @@ async function batch(reqs) {
   }
 }
 const one = async (method, params) => {
-  const [x] = await batch([{ jsonrpc: '2.0', id: 1, method, params }]);
-  if (x.error) throw new Error(method + ': ' + JSON.stringify(x.error));
-  return x.result;
+  for (let i = 0; ; i++) {
+    const [x] = await batch([{ jsonrpc: '2.0', id: 1, method, params }]);
+    if (!x?.error) return x.result;
+    if (i >= 7) throw new Error(method + ': ' + JSON.stringify(x.error));
+    await sleep(1500 * (i + 1)); // node hiccups ("live reader is not ready") clear in a few seconds
+  }
 };
 async function pool(items, n, fn) {
   let i = 0;
@@ -119,8 +122,28 @@ async function main() {
     if (/^0x[0-9a-f]{40}$/i.test(w)) targets.push(lc(w));
     else for (const t of toks) if (symOf[t].toUpperCase() === w.toUpperCase()) targets.push(t);
   }
-  console.log('targets', targets.map((t) => symOf[t] + ' ' + t));
+  console.log('candidates', targets.length);
   if (!targets.length) throw new Error('no matching tokens');
+  // copycats share symbols: keep the real ones, ranked by all-time swap volume (top 3 per symbol, >= 2% of the leader)
+  const volOf = {};
+  for (const t of targets) {
+    let v = 0;
+    for (const p of pools.filter((x) => x.token === t)) {
+      for (const l of await logs({ address: p.pm, topics: [T_SWAP_V4, p.id] }, p.block, head)) v += Math.abs(Number(int256(words(l.data)[0])) / 1e18);
+    }
+    volOf[t] = v;
+  }
+  const keep = new Set();
+  const bySym = {};
+  for (const t of targets) (bySym[symOf[t]?.toUpperCase() || t] ||= []).push(t);
+  for (const list of Object.values(bySym)) {
+    list.sort((a, b) => volOf[b] - volOf[a]);
+    const top = volOf[list[0]] || 0;
+    list.slice(0, 3).forEach((t, i) => { if (i === 0 || volOf[t] >= 0.02 * top) keep.add(t); });
+  }
+  const copycats = targets.filter((t) => !keep.has(t)).map((t) => ({ token: t, symbol: symOf[t], volumeHype: r2(volOf[t]) }));
+  targets.splice(0, targets.length, ...[...keep]);
+  console.log('targets', targets.map((t) => `${symOf[t]} ${t} vol ${r2(volOf[t])}`), 'copycats skipped', copycats.length);
 
   // 2. full block scan with transactions: who signed each tx, native HYPE flows, bridge-ins
   const txFrom = new Map();     // hash → signer
@@ -130,10 +153,19 @@ async function main() {
   const ranges = [];
   for (let b = 0; b <= head; b += BLOCK_BATCH) ranges.push(b);
   let done = 0;
+  let missing = 0;
   await pool(ranges, CONC, async (b) => {
     const reqs = [];
     for (let i = b; i < Math.min(head + 1, b + BLOCK_BATCH); i++) reqs.push({ jsonrpc: '2.0', id: i, method: 'eth_getBlockByNumber', params: [hex(i), true] });
-    const res = await batch(reqs);
+    let res = await batch(reqs);
+    for (let k = 0; k < 6 && res.some((x) => !x?.result); k++) { // retry blocks the node failed to serve
+      await sleep(1500 * (k + 1));
+      const miss = reqs.filter((q, i) => !res[i]?.result);
+      const again = await batch(miss);
+      const m = new Map(again.map((x, i) => [miss[i].id, x]));
+      res = res.map((x, i) => (x?.result ? x : m.get(reqs[i].id) || x));
+    }
+    if (res.some((x) => !x?.result)) missing += res.filter((x) => !x?.result).length;
     for (const x of res) {
       const B = x?.result;
       if (!B) continue;
@@ -153,6 +185,7 @@ async function main() {
     if (++done % 100 === 0) console.log('blocks', done * BLOCK_BATCH, '/', head);
   });
   const ts = (b) => blkTs.get(b) || null;
+  console.log('block scan done, txs', txFrom.size, 'blocks missing', missing);
 
   // contract check helper (cached)
   const codeCache = new Map();
@@ -165,7 +198,7 @@ async function main() {
     }
   }
 
-  const report = { head, headTime: parseInt(headBlk.timestamp, 16), hypeUsd: px, tokens: [] };
+  const report = { head, headTime: parseInt(headBlk.timestamp, 16), hypeUsd: px, copycats, blocksMissing: missing, tokens: [] };
 
   for (const T of targets) {
     const tPools = pools.filter((p) => p.token === T);
