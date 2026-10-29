@@ -154,13 +154,19 @@ async function getJSON(url, tries = 2) {
   return null;
 }
 
-async function tg(text) {
-  if (!TG_TOKEN || !TG_CHAT) { console.log('[telegram]\n' + text + '\n'); return; }
+// buy buttons on an alert; the router on your VPS answers them (b:<h|e>:<address>:<HYPE>)
+const BUY_SIZES = (process.env.BUY_SIZES || '1,3,5').split(',').map((s) => s.trim()).filter(Boolean);
+const buyButtons = (chain, addr) => BUY_SIZES.map((h) => ({ text: `Buy ${h} HYPE`, callback_data: `b:${chain}:${addr.slice(2)}:${h}` }));
+
+async function tg(msg) {
+  const text = typeof msg === 'string' ? msg : msg.text;
+  const buttons = typeof msg === 'string' ? null : msg.buttons;
+  if (!TG_TOKEN || !TG_CHAT) { console.log('[telegram]\n' + text + (buttons ? '\n[' + buttons.map((b) => b.text).join('] [') + ']' : '') + '\n'); return; }
   for (let i = 0; i < 3; i++) {
     const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(buttons ? { reply_markup: { inline_keyboard: [buttons] } } : {}) }),
     });
     if (r.ok) return;
     if (r.status === 429) { await sleep(3000 * (i + 1)); continue; }
@@ -182,18 +188,45 @@ function decodeString(hex) {
 }
 
 async function tokenMeta(state, t) {
-  if (state.meta[t]) return state.meta[t];
+  if (state.meta[t]?.v === 2) return state.meta[t];
   const call = (data) => rpc('eth_call', [{ to: t, data }, 'latest']).catch(() => '0x');
   const [n, s, d, ts] = await Promise.all([call('0x06fdde03'), call('0x95d89b41'), call('0x313ce567'), call('0x18160ddd')]);
   const dec = d && d !== '0x' ? Number(BigInt(d)) : 18;
   const m = {
+    v: 2,
     n: decodeString(n).slice(0, 40) || 'unknown',
     s: decodeString(s).slice(0, 16) || '???',
     d: dec,
     supply: ts && ts !== '0x' ? Number(BigInt(ts)) / 10 ** dec : 0,
   };
+  // tokens bridged from HyperEVM (gateway tokens) only carry part of their supply here: use the HyperEVM total for market cap
+  const l1 = await call('0xc2eeeebd');
+  if (l1 && l1.length >= 66 && !/^0x0*$/.test(l1)) {
+    const l1a = '0x' + l1.slice(26);
+    const s1 = await hrpc('eth_call', [{ to: l1a, data: '0x18160ddd' }, 'latest']).catch(() => null);
+    if (s1 && s1 !== '0x') { m.l1 = l1a; m.supply = Number(BigInt(s1)) / 10 ** dec; }
+  }
   state.meta[t] = m;
   return m;
+}
+
+// HyperEVM (Stockium curves live there); public RPCs allow 1,000 blocks per log query and rate-limit, so rotate
+const HYPER_RPCS = (process.env.HYPER_RPCS || 'https://rpc.hyperliquid.xyz/evm,https://rpc.hypurrscan.io,https://hyperliquid-json-rpc.stakely.io')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+let hIdx = 0;
+async function hrpc(method, params) {
+  let last;
+  for (let i = 0; i < HYPER_RPCS.length * 2; i++) {
+    const url = HYPER_RPCS[(hIdx + i) % HYPER_RPCS.length];
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(15000) });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message);
+      hIdx = (hIdx + i) % HYPER_RPCS.length;
+      return j.result;
+    } catch (e) { last = e; await sleep(300); }
+  }
+  throw new Error(`hyperevm ${method}: ${last?.message}`);
 }
 
 // socials from BOXA's indexer (description + metadata JSON); best effort, never blocks an alert
@@ -432,6 +465,7 @@ async function main() {
           `${so.line}${creator}\n` +
           `<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
         );
+        msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
         continue;
       }
     }
@@ -453,6 +487,7 @@ async function main() {
       `${mcLine}${so.holders != null ? ` · ${so.holders} holders` : ''}${age != null ? ` · ${ago(age)} old` : ''}\n` +
       `${so.line}\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
     );
+    msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
   }
 
   // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
@@ -573,6 +608,9 @@ async function main() {
     }
   }
 
+  // 4c. Stockium curves on HyperEVM: tracked wallets trading them, tracked devs launching, early traction
+  try { await stockium(state, W, G, msgs, px); } catch (e) { console.log('stockium scan failed:', e.message); }
+
   // 4b. group buys: 2+ wallets of one group (or 3+ tracked wallets of any group) into the same coin within the window
   for (const [k, list] of Object.entries(state.gbuys)) {
     const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60);
@@ -588,17 +626,20 @@ async function main() {
     if (!due(state, key) && n <= prevN) continue; // re-ping inside the cooldown only when more wallets pile in
     if (g === '*' && Object.keys(byW).every((w) => G.get(w) && G.get(w) === G.get(Object.keys(byW)[0]))) continue; // same group already pinged
     state.alerted[key] = { t: now(), n };
-    const meta = await tokenMeta(state, t);
     const tot = Object.values(byW).reduce((a, b) => a + b, 0);
     const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
-    const rec = state.tok[t];
-    const mcH = rec?.price && meta.supply ? rec.price * meta.supply : null;
+    const onCurve = t.startsWith('h:');
+    const cv = onCurve ? state.hyper?.curves?.[t.slice(2)] : null;
+    const meta = onCurve ? { s: cv?.s || '???' } : await tokenMeta(state, t);
+    const rec = onCurve ? null : state.tok[t];
+    const mcH = onCurve ? cv?.mc : rec?.price && meta.supply ? rec.price * meta.supply : null;
     msgs.push(
-      `🎯 <b>${g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`}</b> bought <b>${esc(meta.s)}</b> within ${span} min\n` +
+      `🎯 <b>${g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
       `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
       Object.entries(byW).map(([w, h]) => `• ${walletLink(w, esc(W.get(w) || short(w)))}${h > 0 ? ` ${hype(h)}` : ''}`).join('\n') +
-      `\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
+      (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`)
     );
+    msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
   }
 
   // 5. the official mainnet RPC opening up (one ping, ever)
@@ -665,6 +706,127 @@ async function main() {
   fs.writeFileSync(STATE, JSON.stringify(state));
   for (const m of msgs) await tg(m);
   console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts`);
+}
+
+// ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────
+const STOCKIUM_LAUNCHPADS = ['0x898f3c534565ef4d41fba4dd054b86f00249ecaa', '0x64fc90c7a07e637af21b1c8fbc41bf508b60efe8', '0x431ef5cb3719de47e567db66594569d208a6cd00', '0xe5212d898ebc950255e4f39e3e5a34cd4826b04a'];
+const T_TOKEN_CREATED = '0x1ad1211f7a691e74bd9e10657aedbcf93c3ee2b524e226d7fe04a7ec6f74ed40'; // TokenCreated(token, curve, pairAsset, creator, threshold)
+const T_BOUGHT = '0xedba86fd2b22962d534e70ad9b0ff8730de46f636146f2bab6a72cbb1ebbcc53';        // Bought(buyer, hypeIn, tokensOut, fee)
+const T_SOLD = '0xe029f26dbcf8c42dd2f352c10214a7fc26773dc62482c6241334a0402ac09a80';          // Sold(seller, tokensIn, hypeOut, fee)
+const CURVE_MIN_BUYERS = 8;      // traction: unique buyers seen on a curve
+const CURVE_MIN_HYPE = 10;       // and HYPE traded on it
+const CURVE_WINDOW_H = 3;        // only for curves younger than this (when we saw the launch)
+const STOCKIUM_ALL_LAUNCHES = process.env.STOCKIUM_ALL_LAUNCHES === '1'; // default: launches by tracked wallets only
+const hyperLink = (a) => `<a href="https://hyperevmscan.io/address/${a}">${short(a)}</a>`;
+const stockiumLink = (curve, label = 'open on Stockium') => `<a href="https://stockium.fun/token/${curve}">${label}</a>`;
+
+async function hLogs(filter, from, to) {
+  const out = [];
+  for (let s = from; s <= to; s += 1000) {
+    out.push(...await hrpc('eth_getLogs', [{ ...filter, fromBlock: '0x' + s.toString(16), toBlock: '0x' + Math.min(to, s + 999).toString(16) }]));
+  }
+  return out;
+}
+
+async function curveInfo(H, curve) {
+  const rec = (H.curves[curve] ||= { buyers: [], vol: 0, buys: 0 });
+  if (rec.s) return rec;
+  try {
+    if (!rec.token) {
+      const t = await hrpc('eth_call', [{ to: curve, data: '0xfc0c546a' }, 'latest']); // token()
+      if (t && t.length >= 66) rec.token = '0x' + t.slice(26);
+    }
+    if (rec.token) {
+      const [n, s] = await Promise.all([
+        hrpc('eth_call', [{ to: rec.token, data: '0x06fdde03' }, 'latest']),
+        hrpc('eth_call', [{ to: rec.token, data: '0x95d89b41' }, 'latest']),
+      ]);
+      rec.n = decodeString(n).slice(0, 40) || 'unknown';
+      rec.s = decodeString(s).slice(0, 16) || '???';
+    }
+  } catch {}
+  return rec;
+}
+
+async function stockium(state, W, G, msgs, px) {
+  const H = (state.hyper ||= { block: 0, curves: {} });
+  const head = parseInt(await hrpc('eth_blockNumber', []), 16);
+  let from = H.block ? H.block + 1 : head - 300;
+  if (head - from > 5000) from = head - 5000;
+  if (from > head) return;
+  const created = await hLogs({ address: STOCKIUM_LAUNCHPADS, topics: [T_TOKEN_CREATED] }, from, head);
+  const trades = await hLogs({ topics: [[T_BOUGHT, T_SOLD]] }, from, head);
+  const firstScan = !H.started;
+  H.started ||= now();
+  H.block = head;
+  const usdOrHype = (h) => (px ? usd(h * px) : hype(h));
+
+  for (const l of created) {
+    const token = lc(topicAddr(l.topics[1]));
+    const curve = lc(topicAddr(l.topics[2]));
+    const creator = lc('0x' + l.data.slice(26, 66));
+    const rec = (H.curves[curve] ||= { buyers: [], vol: 0, buys: 0 });
+    Object.assign(rec, { token, creator, born: now(), valid: true });
+    await curveInfo(H, curve);
+    if (firstScan || !(STOCKIUM_ALL_LAUNCHES || W.has(creator))) continue;
+    msgs.push({
+      text: `🧪 <b>New Stockium launch: ${esc(rec.s)}</b> (${esc(rec.n)}) on HyperEVM\n` +
+        `Creator ${hyperLink(creator)}${W.has(creator) ? ` · 👛 <b>${esc(W.get(creator))}</b>` : ''}\n<code>${token}</code>\n${stockiumLink(curve)}`,
+      buttons: buyButtons('h', curve),
+    });
+  }
+
+  const touched = new Set();
+  const moves = {};
+  for (const l of trades) {
+    const curve = lc(l.address);
+    const who = lc(topicAddr(l.topics[1]));
+    const w = words(l.data);
+    const buy = l.topics[0] === T_BOUGHT;
+    const amt = Number(BigInt('0x' + (buy ? w[0] : w[1]))) / 1e18;
+    const rec = (H.curves[curve] ||= { buyers: [], vol: 0, buys: 0 });
+    rec.vol += amt;
+    touched.add(curve);
+    if (buy) { rec.buys++; if (rec.buyers.length < 300 && !rec.buyers.includes(who)) rec.buyers.push(who); }
+    if (W.has(who)) {
+      const info = await curveInfo(H, curve);
+      (moves[who] ||= []).push(`${buy ? 'bought' : 'sold'} <b>${esc(info.s || '???')}</b> for ${hype(amt)}${px ? ` (${usd(amt * px)})` : ''} on its Stockium curve · ${stockiumLink(curve, 'chart')} · <a href="https://hyperevmscan.io/tx/${l.transactionHash}">tx</a>`);
+      if (buy) for (const g of [G.get(who), '*'].filter(Boolean)) (state.gbuys[g + '|h:' + curve] ||= []).push({ w: who, t: now(), h: amt });
+    }
+  }
+  // curve state(): spot price (HYPE per token, 1e18) and graduation; 1B supply on every Stockium token
+  for (const c of [...touched].slice(0, 15)) {
+    const rec = H.curves[c];
+    try {
+      const st = words(await hrpc('eth_call', [{ to: c, data: '0xc19d93fb' }, 'latest']));
+      if (st.length >= 10) {
+        rec.valid = true;
+        rec.mc = (Number(BigInt('0x' + st[5])) / 1e18) * 1e9;
+        rec.graduated = BigInt('0x' + st[6]) === 1n;
+      }
+    } catch {}
+  }
+  for (const [w, list] of Object.entries(moves)) {
+    msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${hyperLink(w)} (HyperEVM)\n` + list.slice(0, 8).map((x) => '• ' + x).join('\n'));
+  }
+  for (const c of touched) {
+    const rec = H.curves[c];
+    if (!rec.valid || rec.tractionAlert || rec.graduated || firstScan) continue;
+    if (rec.born && now() - rec.born > CURVE_WINDOW_H * 3600) continue;
+    if (rec.buyers.length < CURVE_MIN_BUYERS || rec.vol < CURVE_MIN_HYPE) continue;
+    rec.tractionAlert = now();
+    await curveInfo(H, c);
+    const age = rec.born ? ` · ${ago(now() - rec.born)} old` : '';
+    msgs.push({
+      text: `🚀 <b>${esc(rec.s || '???')}</b> (${esc(rec.n || '')}) is moving on its Stockium curve (HyperEVM)\n` +
+        `${rec.buyers.length} buyers · ${usdOrHype(rec.vol)} traded${age}${rec.mc ? ` · MC ${usdOrHype(rec.mc)}` : ''}\n` +
+        `${rec.creator ? `Creator ${hyperLink(rec.creator)}${W.has(rec.creator) ? ` · 👛 <b>${esc(W.get(rec.creator))}</b>` : ''}\n` : ''}` +
+        `<code>${rec.token || c}</code>\n${stockiumLink(c)}`,
+      buttons: buyButtons('h', c),
+    });
+  }
+  // keep state small: forget quiet curves after 3 days
+  for (const [c, rec] of Object.entries(H.curves)) if ((rec.born || H.started) < now() - 3 * 86400 && !touched.has(c)) delete H.curves[c];
 }
 
 // Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
