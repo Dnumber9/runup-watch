@@ -486,7 +486,8 @@ async function main() {
   }
 
   // 5. the official mainnet RPC opening up (one ping, ever)
-  if (!state.official) {
+  if (!state.official && now() - (state.officialCheckedAt || 0) > 600) {
+    state.officialCheckedAt = now();
     try {
       const r = await fetch(OFFICIAL_RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }), signal: AbortSignal.timeout(10000) });
       const j = r.ok ? await r.json() : null;
