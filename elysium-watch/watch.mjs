@@ -467,7 +467,9 @@ async function main() {
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract · tx <code>${tx.hash.slice(0, 12)}…</code>`);
         if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${short(to)}`);
-        if (W.has(to) && val >= WALLET_MIN_HYPE) M(to).push(`received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${short(f)}`);
+        // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x69 retryable) = HYPE bridged in from HyperEVM
+        const bridged = ['0x64', '0x65', '0x69'].includes(String(tx.type).toLowerCase());
+        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${short(f)}`);
       }
     }
     for (const { coin } of launchTxs) {
