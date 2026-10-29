@@ -11,7 +11,7 @@ on:
         default: 'BOXA,KLEOS'
 
 permissions:
-  contents: read
+  contents: write   # results are also pushed to the swoop-results branch
 
 jobs:
   swoop:
@@ -31,3 +31,13 @@ jobs:
         with:
           name: swoop-out
           path: swoop-out/
+      - name: Save results to the swoop-results branch
+        if: success()
+        run: |
+          cd swoop-out
+          git init -q -b swoop-results
+          git config user.name swoop-bot
+          git config user.email swoop-bot@users.noreply.github.com
+          git add -A
+          git commit -qm "swoop run ${{ github.run_id }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" swoop-results
