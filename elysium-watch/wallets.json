@@ -227,5 +227,130 @@
   "address": "0xf961ce51648046fcfe75cb68b08917c688a95d46",
   "label": "marvvm (marv)",
   "group": "marv"
+ },
+ {
+  "address": "0xf8cad1a190cecb9fe44a60a606dfa82a0efac664",
+  "label": "BOXA dev deployer",
+  "group": "dev"
+ },
+ {
+  "address": "0x35fe4febd880a2f3abc9f2eaa2d0a0357af0b1c4",
+  "label": "BOXA dev gas wallet",
+  "group": "dev"
+ },
+ {
+  "address": "0x4116ccc1cc2b34953f73413c4747c954f49c179b",
+  "label": "KLEOS dev #1 (funded vault)",
+  "group": "dev"
+ },
+ {
+  "address": "0x5f00c1883d412daa57dea580333db4a5d7f7b463",
+  "label": "KLEOS dev #2",
+  "group": "dev"
+ },
+ {
+  "address": "0xa63dd2c9e0ac116f4f7c21bf989d730b8c1a38d2",
+  "label": "KLEOS dev #3",
+  "group": "dev"
+ },
+ {
+  "address": "0x9ba3095a28634684ef4bb3e833577d49229e997c",
+  "label": "BOXA #2 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x5d7be83b6826fc857c0df33b08d4d5c8abffa4ac",
+  "label": "BOXA #3 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x25c7f9e8bc4c72258c00c0f2a9069fe252eb436a",
+  "label": "BOXA #4 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x55ba70051fd74edcb97166ee5461165239fc147e",
+  "label": "BOXA #6 early",
+  "group": "smart"
+ },
+ {
+  "address": "0xb5a84bfd780645d7341b77302f608ecb7b49f99f",
+  "label": "BOXA #7 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x0314453c820f0a43b45e10d07d58254194be9745",
+  "label": "BOXA #9 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x161464f923282e1dccd85a9a37b0f7c9d36fa5e8",
+  "label": "BOXA #11 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x63d8ea590496c43108f29c74097de77f03b1e02f",
+  "label": "BOXA #15 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x93f5af632ce523286e033f0510e9b3c9710f4489",
+  "label": "BOXA smart 6yr",
+  "group": "smart"
+ },
+ {
+  "address": "0x99038bb60d8d812f8ac47d3bc3ae6ff0dfd3e68b",
+  "label": "BOXA smart 4yr",
+  "group": "smart"
+ },
+ {
+  "address": "0xe17b2c7a32feee41a71663d428475f7b5be6a01e",
+  "label": "BOXA smart 4yr b",
+  "group": "smart"
+ },
+ {
+  "address": "0x23299a0d13787bfe9b40b3ca67a3c28b83048852",
+  "label": "KLEOS #6 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x454849884706eeafa18b20a0de7f4e8b413d0e45",
+  "label": "KLEOS #7 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x8e7b4b9f0f148a65beaf975f292a4a4760e6e275",
+  "label": "KLEOS #7 pair",
+  "group": "smart"
+ },
+ {
+  "address": "0x1be59315e15318f86a5368d8cb89bacbb7ee7f4d",
+  "label": "KLEOS #8 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x9d4373d68f4497f4baab636112067354682b40d8",
+  "label": "KLEOS #10 early",
+  "group": "smart"
+ },
+ {
+  "address": "0xcb28f981dd8ec87545f65d871eff714f267a7702",
+  "label": "KLEOS #11 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x9dda220d390c5a1bb861476b1a9d40405d7c9538",
+  "label": "KLEOS #14 early",
+  "group": "smart"
+ },
+ {
+  "address": "0x608e555f136ba3599c4841843d36b4870e81cc4f",
+  "label": "KLEOS #15 early",
+  "group": "smart"
+ },
+ {
+  "address": "0xde317b1102d5cd16d56ca6a3ae25dc8de018823a",
+  "label": "KLEOS #21 early",
+  "group": "smart"
  }
 ]
