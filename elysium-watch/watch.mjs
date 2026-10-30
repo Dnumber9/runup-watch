@@ -586,6 +586,12 @@ async function main() {
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
         if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
+        // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): follow each recipient
+        if (W.has(f) && val > 0 && (tx.input || '0x') !== '0x') {
+          for (const x of batchSends(tx.input)) {
+            if (x.val >= FUND_MIN_HYPE && !W.has(x.to) && !INFRA.has(x.to)) funded.push({ f, to: x.to, val: x.val, hash: tx.hash, via: 'batch' });
+          }
+        }
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
         if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
@@ -606,7 +612,7 @@ async function main() {
         if (group) G.set(x.to, group);
         msgs.push(
           `🧬 <b>${esc(W.get(x.f))}</b> funded a fresh wallet\n` +
-          `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
+          `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''}${x.via ? ' (split in one batch tx)' : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
           `Now tracking it as <b>${esc(label)}</b>.`
         );
       } catch {}
@@ -962,6 +968,33 @@ function loadCielo() {
     for (let i = 0; i < n; i++) m.set('0x' + buf.subarray(2 + i * 20, 22 + i * 20).toString('hex'), labels[i] || 'cielo wallet');
   } catch (e) { console.log('cielo list unreadable:', e.message); }
   return m;
+}
+
+// decode native-HYPE batch sends: Multicall3 aggregate3Value((address,bool,uint256,bytes)[]) and disperseEther(address[],uint256[])
+function batchSends(input) {
+  const out = [];
+  try {
+    const sel = input.slice(0, 10).toLowerCase();
+    const d = input.slice(10);
+    const w = (i) => d.slice(i * 64, i * 64 + 64);
+    const num = (i) => Number(BigInt('0x' + w(i)));
+    if (sel === '0x174dea71') {
+      const base = num(0) / 32;
+      const n = num(base);
+      for (let k = 0; k < Math.min(n, 50); k++) {
+        const at = base + 1 + num(base + 1 + k) / 32;
+        const v = Number(BigInt('0x' + w(at + 2))) / 1e18;
+        if (v > 0) out.push({ to: '0x' + w(at).slice(24), val: v });
+      }
+    } else if (sel === '0xe63d38ed') {
+      const a = num(0) / 32, b = num(1) / 32, n = num(a);
+      for (let k = 0; k < Math.min(n, 50); k++) {
+        const v = Number(BigInt('0x' + w(b + 1 + k))) / 1e18;
+        if (v > 0) out.push({ to: '0x' + w(a + 1 + k).slice(24), val: v });
+      }
+    }
+  } catch {}
+  return out;
 }
 
 // placeholder in a move line, filled with the wallet's remaining balance of that coin once per scan
