@@ -33,7 +33,7 @@ const KEY = need('PRIVATE_KEY') || '0x' + '11'.repeat(32);
 const MAX_BUY = Number(process.env.MAX_BUY_HYPE || 5);          // hard cap per trade
 const SLIP_BPS = BigInt(process.env.SLIPPAGE_BPS || 1500);       // 15% default; launches move fast
 const HYPER_RPC = process.env.HYPER_RPC || 'https://rpc.hyperliquid.xyz/evm';
-const ELY_RPC = process.env.ELY_RPC || 'https://rpc.thekleos.xyz';
+const ELY_RPC = process.env.ELY_RPC || 'https://rpc-live.elysp.com';
 
 // ── chains and contracts ─────────────────────────────────────────────────────────────────────────
 const native = { name: 'HYPE', symbol: 'HYPE', decimals: 18 };
