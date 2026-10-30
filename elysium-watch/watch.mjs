@@ -158,20 +158,25 @@ async function getJSON(url, tries = 2) {
 const BUY_SIZES = (process.env.BUY_SIZES || '1,3,5').split(',').map((s) => s.trim()).filter(Boolean);
 const buyButtons = (chain, addr) => BUY_SIZES.map((h) => ({ text: `Buy ${h} HYPE`, callback_data: `b:${chain}:${addr.slice(2)}:${h}` }));
 
+// alerts go through the command bot when it is set up (ALERT is set in main); the old bot is the fallback
+let ALERT = null;
 async function tg(msg) {
   const text = typeof msg === 'string' ? msg : msg.text;
   const buttons = typeof msg === 'string' ? null : msg.buttons;
-  if (!TG_TOKEN || !TG_CHAT) { console.log('[telegram]\n' + text + (buttons ? '\n[' + buttons.map((b) => b.text).join('] [') + ']' : '') + '\n'); return; }
-  for (let i = 0; i < 3; i++) {
-    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(buttons ? { reply_markup: { inline_keyboard: [buttons] } } : {}) }),
-    });
-    if (r.ok) return;
-    if (r.status === 429) { await sleep(3000 * (i + 1)); continue; }
-    console.error('telegram', r.status, await r.text());
-    return;
+  const routes = [ALERT, TG_TOKEN && TG_CHAT ? { token: TG_TOKEN, chat: TG_CHAT } : null].filter(Boolean);
+  if (!routes.length) { console.log('[telegram]\n' + text + (buttons ? '\n[' + buttons.map((b) => b.text).join('] [') + ']' : '') + '\n'); return; }
+  for (const { token, chat } of routes) {
+    for (let i = 0; i < 3; i++) {
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(buttons ? { reply_markup: { inline_keyboard: [buttons] } } : {}) }),
+      });
+      if (r.ok) return;
+      if (r.status === 429) { await sleep(3000 * (i + 1)); continue; }
+      console.error('telegram', r.status, await r.text());
+      break; // try the next route
+    }
   }
 }
 
@@ -298,6 +303,8 @@ async function main() {
   state.manual ||= {};
   state.muted ||= {};
   try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
+  const alertChat = state.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
+  if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
   for (const [a, x] of Object.entries(state.manual)) {
     W.set(a, x.label);
     if (x.group) G.set(a, x.group); else G.delete(a);
@@ -860,6 +867,7 @@ async function commands(state, W) {
     const from = String(m.from?.id), chat = String(m.chat.id);
     if (!state.cmdOwner && String(TG_CHAT || '').startsWith('-') && m.chat.type === 'private') state.cmdOwner = from;
     if (from !== String(TG_CHAT) && chat !== String(TG_CHAT) && from !== state.cmdOwner) continue;
+    state.cmdChat = m.chat.id; // alerts follow you to the command bot
     const reply = async (text) => {
       for (let i = 0; i < text.length; i += 3900) {
         await cmdApi('sendMessage', { chat_id: m.chat.id, text: text.slice(i, i + 3900), parse_mode: 'HTML', disable_web_page_preview: true });
