@@ -606,7 +606,7 @@ async function main() {
         const n = parseInt(nonce, 16);
         if (n > FRESH_MAX_NONCE) continue;
         const group = G.get(x.f) || null;
-        const label = `${group || W.get(x.f).replace(/\s*\(.*\)$/, '')} child ${x.to.slice(2, 6)} (auto)`;
+        const label = `${W.get(x.f).replace(/\s*\(.*\)$/, '')} alt ${x.to.slice(2, 6)}`;
         state.auto[x.to] = { label, group, from: x.f, t: now(), hype: x.val };
         W.set(x.to, label);
         if (group) G.set(x.to, group);
