@@ -42,6 +42,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CIELO_WALLETS: ${{ secrets.CIELO_WALLETS }}   # packed Cielo list, kept out of the public repo
+          WATCH_BOT_TOKEN: ${{ secrets.WATCH_BOT_TOKEN }}   # command bot for /add, /remove, /list
         run: |
           end=$((SECONDS + 330 * 60))
           while [ $SECONDS -lt $end ]; do
