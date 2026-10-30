@@ -562,7 +562,7 @@ async function main() {
       const valTxt = val != null ? ` (~${px ? usd(val * px) : hype(val)})` : '';
       if (W.has(to)) {
         const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
-        M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}`);
+        M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
           const paid = txBuy[l.transactionHash] || val || 0;
           for (const g of [G.get(to), '*'].filter(Boolean)) {
@@ -573,7 +573,7 @@ async function main() {
       }
       if (W.has(f)) {
         const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
-        M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${walletLink(to)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}`);
+        M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${walletLink(to)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
       }
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
@@ -618,8 +618,23 @@ async function main() {
         M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')}${txLink(lt)}`);
       }
     }
+    // what each wallet still holds of the coins it moved (last placeholder per wallet+coin gets the line)
+    const held = {};
+    for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 25)) {
+      const [, w, t] = k.slice(1, -1).split(':');
+      try {
+        const meta = await tokenMeta(state, t);
+        const bal = Number(BigInt(await rpc('eth_call', [{ to: t, data: '0x70a08231' + w.slice(2).padStart(64, '0') }, 'latest']))) / 10 ** meta.d;
+        const price = state.tok[t]?.price;
+        held[k] = holdLine(bal, meta, price ? bal * price : null, px);
+      } catch { held[k] = ''; }
+    }
     for (const [w, list] of Object.entries(moves)) {
       if (!list.length) continue;
+      const seen = new Set();
+      for (let i = list.length - 1; i >= 0; i--) {
+        list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
+      }
       msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : ''));
     }
   }
@@ -806,7 +821,7 @@ async function stockium(state, W, G, msgs, px) {
     if (buy) { rec.buys++; if (rec.buyers.length < 300 && !rec.buyers.includes(who)) rec.buyers.push(who); }
     if (W.has(who)) {
       const info = await curveInfo(H, curve);
-      (moves[who] ||= []).push(`${buy ? 'bought' : 'sold'} <b>${esc(info.s || '???')}</b> for ${hype(amt)}${px ? ` (${usd(amt * px)})` : ''} on its Stockium curve · ${stockiumLink(curve, 'chart')} · <a href="https://hyperevmscan.io/tx/${l.transactionHash}">tx</a>`);
+      (moves[who] ||= []).push(`${buy ? 'bought' : 'sold'} <b>${esc(info.s || '???')}</b> for ${hype(amt)}${px ? ` (${usd(amt * px)})` : ''} on its Stockium curve · ${stockiumLink(curve, 'chart')} · <a href="https://hyperevmscan.io/tx/${l.transactionHash}">tx</a>${HOLD(who, curve)}`);
       if (buy) for (const g of [G.get(who), '*'].filter(Boolean)) (state.gbuys[g + '|h:' + curve] ||= []).push({ w: who, t: now(), h: amt });
     }
   }
@@ -822,7 +837,20 @@ async function stockium(state, W, G, msgs, px) {
       }
     } catch {}
   }
+  // remaining balance on the curve token (1B supply; curve spot price for value)
+  const held = {};
+  for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 15)) {
+    const [, w, c] = k.slice(1, -1).split(':');
+    const rec = H.curves[c];
+    try {
+      if (!rec?.token) throw 0;
+      const bal = Number(BigInt(await hrpc('eth_call', [{ to: rec.token, data: '0x70a08231' + w.slice(2).padStart(64, '0') }, 'latest']))) / 1e18;
+      held[k] = holdLine(bal, { supply: 1e9 }, rec.mc ? bal / 1e9 * rec.mc : null, px);
+    } catch { held[k] = ''; }
+  }
   for (const [w, list] of Object.entries(moves)) {
+    const seen = new Set();
+    for (let i = list.length - 1; i >= 0; i--) list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
     msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${hyperLink(w)} (HyperEVM)\n` + list.slice(0, 8).map((x) => '• ' + x).join('\n'));
   }
   for (const c of touched) {
@@ -934,6 +962,15 @@ function loadCielo() {
     for (let i = 0; i < n; i++) m.set('0x' + buf.subarray(2 + i * 20, 22 + i * 20).toString('hex'), labels[i] || 'cielo wallet');
   } catch (e) { console.log('cielo list unreadable:', e.message); }
   return m;
+}
+
+// placeholder in a move line, filled with the wallet's remaining balance of that coin once per scan
+const HOLD = (w, t) => `\u0000H:${w}:${t}\u0000`;
+function holdLine(bal, meta, valHype, px) {
+  if (!(bal > 0) || (meta.supply && bal / meta.supply < 1e-7)) return '\n   ↳ holds none now';
+  const pct = meta.supply ? bal / meta.supply * 100 : null;
+  const val = valHype != null ? ` ≈ ${px ? usd(valHype * px) : hype(valHype)}` : '';
+  return `\n   ↳ holds ${fmtAmt(bal)}${val}${pct != null ? ` · <b>${pct >= 0.01 ? pct.toFixed(2) : pct.toPrecision(1)}% of supply</b>` : ''}`;
 }
 
 function fmtAmt(n) {
