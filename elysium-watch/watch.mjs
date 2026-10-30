@@ -294,6 +294,15 @@ async function main() {
     if (!W.has(a)) W.set(a, x.label);
     if (x.group && !G.has(a)) G.set(a, x.group);
   }
+  // wallets added or removed from Telegram (/add, /remove) through the command bot
+  state.manual ||= {};
+  state.muted ||= {};
+  try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
+  for (const [a, x] of Object.entries(state.manual)) {
+    W.set(a, x.label);
+    if (x.group) G.set(a, x.group); else G.delete(a);
+  }
+  for (const a of Object.keys(state.muted)) { W.delete(a); G.delete(a); }
 
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   // pool id → coin map: on first run read every pool ever created on the known launchpads
@@ -827,6 +836,82 @@ async function stockium(state, W, G, msgs, px) {
   }
   // keep state small: forget quiet curves after 3 days
   for (const [c, rec] of Object.entries(H.curves)) if ((rec.born || H.started) < now() - 3 * 86400 && !touched.has(c)) delete H.curves[c];
+}
+
+// ── Telegram commands on the separate command bot (WATCH_BOT_TOKEN), checked once per scan ─────────
+// /add <address> [label] [group]   /remove <address>   /list   /export   /help
+// Only your own chat is obeyed (TELEGRAM_CHAT_ID). If that id is a group, the first person to message
+// the command bot becomes its owner.
+const CMD_TOKEN = process.env.WATCH_BOT_TOKEN;
+async function cmdApi(method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${CMD_TOKEN}/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+  });
+  return r.json();
+}
+async function commands(state, W) {
+  if (!CMD_TOKEN) return;
+  const up = await cmdApi('getUpdates', { offset: state.cmdOffset || 0, timeout: 0, allowed_updates: ['message'] });
+  if (!up.ok) { console.log('command bot:', up.description); return; }
+  for (const u of up.result || []) {
+    state.cmdOffset = u.update_id + 1;
+    const m = u.message;
+    if (!m?.text) continue;
+    const from = String(m.from?.id), chat = String(m.chat.id);
+    if (!state.cmdOwner && String(TG_CHAT || '').startsWith('-') && m.chat.type === 'private') state.cmdOwner = from;
+    if (from !== String(TG_CHAT) && chat !== String(TG_CHAT) && from !== state.cmdOwner) continue;
+    const reply = async (text) => {
+      for (let i = 0; i < text.length; i += 3900) {
+        await cmdApi('sendMessage', { chat_id: m.chat.id, text: text.slice(i, i + 3900), parse_mode: 'HTML', disable_web_page_preview: true });
+      }
+    };
+    try { await reply(runCommand(state, W, m.text.trim())); } catch (e) { console.log('command reply failed:', e.message); }
+  }
+}
+function runCommand(state, W, text) {
+  const [cmd0, ...rest] = text.split(/\s+/);
+  const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
+  const groups = new Set([
+    'hewd', 'marv', 'signal', 'dev', 'smart', 'cielo',
+    ...Object.values(state.manual).map((x) => x.group).filter(Boolean),
+    ...Object.values(state.auto).map((x) => x.group).filter(Boolean),
+  ]);
+  if (cmd === '/add') {
+    const a = lc(rest.shift() || '');
+    if (!/^0x[0-9a-f]{40}$/.test(a)) return 'Usage: /add 0x… label group\nGroup is optional: hewd, marv, smart, dev, signal, or #anynewname';
+    let group = null;
+    const last = rest[rest.length - 1];
+    if (last?.startsWith('#')) group = rest.pop().slice(1).toLowerCase();
+    else if (rest.length > 1 && groups.has(last.toLowerCase())) group = rest.pop().toLowerCase();
+    const label = rest.join(' ').slice(0, 60) || short(a);
+    const was = W.has(a) && !state.manual[a];
+    state.manual[a] = { label, group, t: now() };
+    delete state.muted[a];
+    W.set(a, label);
+    return `✅ Tracking <b>${esc(label)}</b>${group ? ` in <b>${esc(group)}</b>` : ''}\n<code>${a}</code>${was ? '\n(it was already tracked, label and group updated)' : ''}`;
+  }
+  if (cmd === '/remove' || cmd === '/rm') {
+    const a = lc(rest[0] || '');
+    if (!/^0x[0-9a-f]{40}$/.test(a)) return 'Usage: /remove 0x…';
+    const label = state.manual[a]?.label || W.get(a);
+    if (!label) return `Not tracked: <code>${a}</code>`;
+    delete state.manual[a];
+    state.muted[a] = now(); // also silences wallets from wallets.json or auto-tracking
+    W.delete(a);
+    return `🗑 Stopped tracking <b>${esc(label)}</b>\n<code>${a}</code>`;
+  }
+  if (cmd === '/list') {
+    const by = {};
+    for (const [a, x] of Object.entries(state.manual)) (by[x.group || 'no group'] ||= []).push(`• ${esc(x.label)} <code>${a}</code>`);
+    const body = Object.entries(by).map(([g, l]) => `<b>${esc(g)}</b> (${l.length})\n${l.join('\n')}`).join('\n\n');
+    const muted = Object.keys(state.muted).length;
+    return `${body || 'Nothing added from Telegram yet.'}\n\nTracking ${W.size} wallets in total (repo list, auto-found and added here)${muted ? `, ${muted} removed` : ''}.`;
+  }
+  if (cmd === '/export') {
+    const rows = Object.entries(state.manual).map(([a, x]) => JSON.stringify({ address: a, label: x.label, ...(x.group ? { group: x.group } : {}) }));
+    return rows.length ? `<code>${esc(rows.join(',\n'))}</code>` : 'Nothing added from Telegram yet.';
+  }
+  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/export  (backup in wallets.json format)';
 }
 
 // Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
