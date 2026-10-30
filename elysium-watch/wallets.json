@@ -427,5 +427,15 @@
   "address": "0x5f06b7b4da73be27f03b0150f53e802b4db30c67",
   "label": "APOGEE accumulator 3.2%",
   "group": "smart"
+ },
+ {
+  "address": "0x7b176e56f2c047c17ee5079ef086822993715eab",
+  "label": "Ink1 alt 7b17",
+  "group": "cielo"
+ },
+ {
+  "address": "0x0d4d9f724709dc3617ad25693274003e77ea013f",
+  "label": "Ink1 alt 0d4d",
+  "group": "cielo"
  }
 ]
