@@ -402,5 +402,10 @@
   "address": "0xd6ba8f72c137590f47e590352646f4c5df0ad79a",
   "label": "KLEOS C1 insider (bought STOCKIUM)",
   "group": "smart"
+ },
+ {
+  "address": "0x00efbb3a9a5e55b11d7defb08b29b494e02e358a",
+  "label": "hewd clst alt",
+  "group": "hewd"
  }
 ]
