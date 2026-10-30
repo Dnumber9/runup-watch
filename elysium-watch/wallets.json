@@ -407,5 +407,25 @@
   "address": "0x00efbb3a9a5e55b11d7defb08b29b494e02e358a",
   "label": "hewd clst alt",
   "group": "hewd"
+ },
+ {
+  "address": "0x31682b07d097beeafb4171d5f31705972e9997ed",
+  "label": "APOGEE early holder, BOXA +5",
+  "group": "smart"
+ },
+ {
+  "address": "0xc086f6bc30ebd9962ac0d86deab70e2485f7e0ab",
+  "label": "KLEOS top trader +54, APOGEE holder",
+  "group": "smart"
+ },
+ {
+  "address": "0xac621d77317c1e2eec65f1fb11f67fdf4f1870cf",
+  "label": "BOXA +21, APOGEE accumulator",
+  "group": "smart"
+ },
+ {
+  "address": "0x5f06b7b4da73be27f03b0150f53e802b4db30c67",
+  "label": "APOGEE accumulator 3.2%",
+  "group": "smart"
  }
 ]
