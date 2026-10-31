@@ -946,14 +946,20 @@ function runCommand(state, W, text) {
     return `✅ Tracking <b>${esc(label)}</b>${group ? ` in <b>${esc(group)}</b>` : ''}\n<code>${a}</code>${was ? '\n(it was already tracked, label and group updated)' : ''}`;
   }
   if (cmd === '/remove' || cmd === '/rm') {
-    const a = lc(rest[0] || '');
-    if (!/^0x[0-9a-f]{40}$/.test(a)) return 'Usage: /remove 0x…';
-    const label = state.manual[a]?.label || W.get(a);
-    if (!label) return `Not tracked: <code>${a}</code>`;
-    delete state.manual[a];
-    state.muted[a] = now(); // also silences wallets from wallets.json or auto-tracking
-    W.delete(a);
-    return `🗑 Stopped tracking <b>${esc(label)}</b>\n<code>${a}</code>`;
+    // one or many addresses: /remove 0xa 0xb 0xc (spaces or new lines)
+    const list = [...new Set(rest.map(lc).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))];
+    if (!list.length) return 'Usage: /remove 0x… (several addresses in one message is fine)';
+    const gone = [], missing = [];
+    for (const a of list) {
+      const label = state.manual[a]?.label || W.get(a);
+      if (!label) { missing.push(a); continue; }
+      delete state.manual[a];
+      state.muted[a] = now(); // also silences wallets from wallets.json or auto-tracking
+      W.delete(a);
+      gone.push(`${esc(label)} <code>${short(a)}</code>`);
+    }
+    return (gone.length ? `🗑 Stopped tracking ${gone.length}:\n${gone.slice(0, 60).join('\n')}${gone.length > 60 ? `\n…and ${gone.length - 60} more` : ''}` : '') +
+      (missing.length ? `${gone.length ? '\n\n' : ''}Not tracked: ${missing.length}` : '');
   }
   if (cmd === '/list') {
     const by = {};
