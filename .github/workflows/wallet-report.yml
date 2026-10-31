@@ -1,0 +1,37 @@
+name: wallet-report
+
+# Grades every tracked wallet on its recent Elysium trades and sends the result to Telegram.
+# Reads the watcher's saved state (auto-found, Cielo and /add wallets) from the Actions cache.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Look back this many hours'
+        default: '48'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore the watcher's state
+        uses: actions/cache/restore@v4
+        with:
+          path: elysium-watch/state.json
+          key: ely-state-report-${{ github.run_id }}
+          restore-keys: ely-state-
+      - name: Grade wallets and send to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCH_BOT_TOKEN: ${{ secrets.WATCH_BOT_TOKEN }}
+          REPORT_HOURS: ${{ inputs.hours }}
+        run: node elysium-watch/report.mjs
