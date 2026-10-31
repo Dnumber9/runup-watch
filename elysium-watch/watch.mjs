@@ -12,16 +12,18 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 
 // ── config ───────────────────────────────────────────────────────────────────
-const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
+const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
 const BOXA = 'https://boxa.pro';      // BOXA's API (token index)
 const BOXA_SITE = 'https://boxa.club'; // links in alerts
 
-const LOG_RANGE = 2000;          // the node allows 10,000 blocks per eth_getLogs; stay well under
+const LOG_RANGE = 500;           // the chain got busy: small log windows, split further if a node times out
 const FIRST_LOOKBACK = 900;      // first run: about the last hour (14 blocks a minute)
 const MAX_BLOCKS = 6000;         // catch up at most ~7 hours in one scan
+const SCAN_MAX = 300;            // blocks handled per tick (~5 min of chain); the next tick continues
+const SKIP_LAG = 1500;           // further behind than this: jump to near the head, alerts are only useful live
 const WARMUP_RUNS = 3;           // scans that only learn baselines
 const COOLDOWN_H = 2;            // hours before the same coin can ping again
 const DIGEST_EVERY_H = 4;
@@ -133,11 +135,18 @@ async function pickRpcs() {
   RPCS.splice(0, RPCS.length, ...ok);
 }
 
-async function getLogs(filter, from, to) {
+async function getLogs(filter, from, to, span = LOG_RANGE) {
   const out = [];
-  for (let s = from; s <= to; s += LOG_RANGE) {
-    const e = Math.min(to, s + LOG_RANGE - 1);
-    out.push(...await rpc('eth_getLogs', [{ ...filter, fromBlock: '0x' + s.toString(16), toBlock: '0x' + e.toString(16) }]));
+  for (let s = from; s <= to; s += span) {
+    const e = Math.min(to, s + span - 1);
+    try {
+      out.push(...await rpc('eth_getLogs', [{ ...filter, fromBlock: '0x' + s.toString(16), toBlock: '0x' + e.toString(16) }], 2));
+    } catch (err) {
+      // a node that times out on a busy range usually answers half of it: split down to ~25 blocks before giving up
+      if (e - s < 25) throw err;
+      const mid = Math.floor((s + e) / 2);
+      out.push(...await getLogs(filter, s, mid, mid - s + 1), ...await getLogs(filter, mid + 1, e, e - mid));
+    }
   }
   return out;
 }
@@ -311,7 +320,7 @@ async function main() {
   }
   for (const a of Object.keys(state.muted)) { W.delete(a); G.delete(a); }
 
-  const head = parseInt(await rpc('eth_blockNumber', []), 16);
+  let head = parseInt(await rpc('eth_blockNumber', []), 16);
   // pool id → coin map: on first run read every pool ever created on the known launchpads
   if (!Object.keys(state.pools).length) {
     for (const pm of Object.keys(LAUNCHPADS)) {
@@ -325,8 +334,12 @@ async function main() {
     console.log('pools indexed', Object.keys(state.pools).length);
   }
 
-  const from = firstRun ? Math.max(1, head - FIRST_LOOKBACK) : Math.max(state.block + 1, head - MAX_BLOCKS);
+  let from = firstRun ? Math.max(1, head - FIRST_LOOKBACK) : Math.max(state.block + 1, head - MAX_BLOCKS);
   if (from > head) { console.log('no new blocks'); return; }
+  // stay live: skip a stale backlog, and handle at most SCAN_MAX blocks per tick (state.block moves to the window end)
+  const chainHead = head;
+  if (chainHead - from > SKIP_LAG) { console.log(`behind by ${chainHead - from} blocks, skipping to the head`); from = chainHead - SCAN_MAX + 1; }
+  head = Math.min(chainHead, from + SCAN_MAX - 1);
   const [bFrom, bTo] = await Promise.all([
     rpc('eth_getBlockByNumber', ['0x' + from.toString(16), false]),
     rpc('eth_getBlockByNumber', ['0x' + head.toString(16), false]),
