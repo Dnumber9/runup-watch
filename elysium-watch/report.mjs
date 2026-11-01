@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 
 const HOURS = Number(process.env.REPORT_HOURS || 48);
-const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elysp.com,https://rpc-live.elyspump.com').split(',').map((s) => s.trim()).filter(Boolean);
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.elysp.com,https://rpc-live.elyspump.com').split(',').map((s) => s.trim()).filter(Boolean);
 const TOKEN = process.env.WATCH_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const WHYPE = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81']);
