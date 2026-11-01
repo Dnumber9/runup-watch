@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 
 // ── config ───────────────────────────────────────────────────────────────────
-const RPCS = (process.env.ELY_RPCS || 'https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
