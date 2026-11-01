@@ -422,5 +422,9 @@
   "address": "0x0d4d9f724709dc3617ad25693274003e77ea013f",
   "label": "Ink1 alt 0d4d",
   "group": "cielo"
+ },
+ {
+  "address": "0xa86ff917f855285566f089282923636ea75730cd",
+  "label": "ELEOS dev (eleos.fun)"
  }
 ]
