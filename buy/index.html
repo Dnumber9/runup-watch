@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ELY Quick Buy</title>
+<meta name="robots" content="noindex">
+<style>
+:root{--bg:#0a0b0d;--panel:#121419;--line:#22262e;--text:#e9eaed;--mut:#8b909b;--acc:#7cf2a9;--accd:#173826;--red:#ff6b6b;--warn:#f3c56b;--blue:#8ab4ff;--r:10px}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:16px}
+.mono,input,.num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+h1{font-size:16px;margin:0;letter-spacing:.04em}
+h1 b{color:var(--acc)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px;margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+input[type=text]{width:100%;background:#0d0f13;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px;font-size:13px;outline:none}
+input[type=text]:focus{border-color:#3a4150}
+button{background:#1b1f27;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 12px;font:inherit;cursor:pointer;white-space:nowrap}
+button:hover{border-color:#3a4150}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.on{border-color:var(--acc);color:var(--acc)}
+.buy{width:100%;background:var(--acc);color:#04130a;border:0;font-weight:700;font-size:16px;padding:14px;margin-top:10px}
+.buy.confirm{background:var(--warn)}
+.sell button{flex:1}
+.chips button{padding:7px 10px}
+.mut{color:var(--mut)}.ok{color:var(--acc)}.err{color:var(--red)}.warn{color:var(--warn)}
+.small{font-size:12px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px}
+.kv span:nth-child(odd){color:var(--mut)}
+.big{font-size:18px;font-weight:600}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;background:var(--mut)}
+.dot.ok{background:var(--acc)}.dot.err{background:var(--red)}.dot.warn{background:var(--warn)}
+#nodes{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px}
+#log{display:flex;flex-direction:column;gap:6px;font-size:13px}
+#log div{border-left:2px solid var(--line);padding-left:8px;word-break:break-word}
+a{color:var(--blue)}
+select{background:#0d0f13;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px}
+label{display:flex;align-items:center;gap:6px;cursor:pointer}
+details summary{cursor:pointer;color:var(--mut);font-size:12px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ELY <b>QUICK BUY</b></h1>
+    <button id="connect">Connect wallet</button>
+  </header>
+
+  <div class="card">
+    <div id="nodes" class="mono"><span class="mut">checking nodes…</span></div>
+    <div id="acct" class="small mut" style="margin-top:6px"></div>
+    <div id="stuck" class="small warn hide" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="grow"><input id="tok" type="text" placeholder="token address, or a link containing one" autocomplete="off" spellcheck="false"></div>
+      <button id="paste" title="paste from clipboard">Paste</button>
+      <button id="load">Load</button>
+    </div>
+    <div id="recent" class="row chips small" style="margin-top:8px"></div>
+  </div>
+
+  <div id="tokcard" class="card hide">
+    <div class="row" style="justify-content:space-between">
+      <div><span id="sym" class="big"></span> <span id="route" class="small mut"></span></div>
+      <a id="chart" class="small" target="_blank" rel="noopener">BOXA</a>
+    </div>
+    <div class="kv" style="margin-top:8px">
+      <span>Price</span><span id="px" class="num">…</span>
+      <span>Your bag</span><span id="bag" class="num">…</span>
+    </div>
+  </div>
+
+  <div id="buycard" class="card hide">
+    <div class="row chips" id="amts"></div>
+    <div class="row" style="margin-top:8px">
+      <div class="grow"><input id="amt" type="text" inputmode="decimal" placeholder="HYPE" class="num"></div>
+      <select id="slip" title="slippage">
+        <option value="500">5%</option><option value="1000">10%</option><option value="1500" selected>15%</option><option value="2500">25%</option><option value="4000">40%</option>
+      </select>
+    </div>
+    <div id="quote" class="num small" style="margin-top:8px;min-height:20px"></div>
+    <button id="buy" class="buy" disabled>BUY</button>
+    <div class="row sell" style="margin-top:10px">
+      <button data-sell="25">Sell 25%</button><button data-sell="50">Sell 50%</button><button data-sell="100">Sell 100%</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label class="small"><input type="checkbox" id="replace"> Replace stuck transactions (reuse the last confirmed nonce, 4× gas)</label>
+    <details style="margin-top:8px">
+      <summary>Extra RPC</summary>
+      <div class="small mut" style="margin:6px 0">Add your own Elysium RPC (for example a Conduit key URL). It is only stored in this browser.</div>
+      <div class="row"><div class="grow"><input id="xrpc" type="text" placeholder="https://…" spellcheck="false"></div><button id="xsave">Save</button></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div id="log"><div class="mut">Paste a token and hit Load. Buys go straight to the pool through the router, so a gated front end does not matter.</div></div>
+  </div>
+</main>
+
+<script>
+'use strict';
+// ── config ───────────────────────────────────────────────────────────────────
+const CHAIN_ID = 99901, CHAIN_HEX = '0x1863d';
+const DEFAULT_RPCS = ['https://rpc-live.elysp.com', 'https://rpc-live.elyspump.com'];
+// Uniswap v4 swap router (deployed by eleos.fun, stateless, no owner). It takes the PoolManager and pool key
+// as arguments, so it also trades BOXA and Kleos pools.
+const ROUTER = '0x04c6b3b5f11ff5f7ef3635f23e9697e4be8443ad';
+const V4 = [
+  { name: 'eleos', pm: '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da', hook: '0x8680965555dcea2a4c0ed3a29e59a8aa424e6acc', fee: 0, ts: 200 },
+  { name: 'BOXA', pm: '0x06c63714fbf1f5753017123e2fcfdede4540b2c4', hook: '0xbcc1f22d137c1d98dfa5548e4d4261d7aee06acc', fee: 0, ts: 200 },
+  { name: 'Kleos', pm: '0xb308b5df891c300a5f5a5b8fdbc30108ba842490', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc', fee: 0, ts: 200 },
+  // Ascend (or any new launchpad): add { name, pm, hook, fee, ts } here once its PoolManager is live.
+  // Unknown PoolManagers are still found by the Initialize-log scan below.
+];
+const V3 = { name: 'StockiumSwap', factory: '0x4f66184a9ffabb7f7071d590c2c48dedf41676f4', router: '0xf7d8d5f9b9125b3d29c5778df5e54c1bbe77f224', quoter: '0x1947918b6bf36112f7ba8aa983e8d94ce574163a', whype: '0xba876237b0f021a6c6d852d6c26e107997cc5e81', fees: [10000, 3000, 500, 100] };
+const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
+const EXPLORER = 'https://elysium.kinetiq.xyz/explorer/transaction/';
+const ZERO = '0x0000000000000000000000000000000000000000';
+const SIM = '0x00000000000000000000000000000000000b0a7a';   // throwaway "from" for quotes (balance given by state override)
+const AMOUNTS = ['0.5', '1', '2', '5'];
+const CONFIRM_ABOVE = 10;                                    // HYPE; bigger buys need a second tap
+const SCAN_BACK = 60000, SCAN_STEP = 2000;                   // blocks searched for an unknown pool
+
+// ── tiny helpers ─────────────────────────────────────────────────────────────
+const $ = (s) => document.querySelector(s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const lc = (a) => String(a || '').toLowerCase();
+const strip = (h) => lc(h).replace(/^0x/, '');
+const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
+const hex = (n) => '0x' + BigInt(n).toString(16);
+const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const word = (v) => {
+  if (typeof v === 'number') v = BigInt(v);
+  if (typeof v === 'bigint') return (v < 0n ? (1n << 256n) + v : v).toString(16).padStart(64, '0');
+  return strip(v).padStart(64, '0');
+};
+const enc = (sel, ...args) => '0x' + sel + args.map(word).join('');
+function encBytesArray(sel, items) {               // f(bytes[]) for multicall
+  items = items.map(strip);
+  let off = BigInt(items.length * 32);
+  const offs = [], tails = [];
+  for (const it of items) {
+    const n = it.length / 2, padded = it.padEnd(Math.ceil(n / 32) * 64, '0');
+    offs.push(word(off)); tails.push(word(BigInt(n)) + padded);
+    off += BigInt(32 + Math.ceil(n / 32) * 32);
+  }
+  return '0x' + sel + word(32n) + word(BigInt(items.length)) + offs.join('') + tails.join('');
+}
+const u256 = (r, i = 0) => BigInt('0x' + (strip(r).slice(i * 64, i * 64 + 64) || '0'));
+function decStr(r) {
+  const h = strip(r);
+  const utf = (x) => new TextDecoder().decode(Uint8Array.from(x.match(/../g) || [], (b) => parseInt(b, 16))).replace(/\0/g, '');
+  if (h.length >= 128) { const off = Number(BigInt('0x' + h.slice(0, 64))) * 2, n = Number(BigInt('0x' + h.slice(off, off + 64))); return utf(h.slice(off + 64, off + 64 + n * 2)); }
+  return utf(h.slice(0, 64));
+}
+function toWei(s, dec = 18) {
+  s = String(s).trim();
+  if (!/^\d*\.?\d*$/.test(s) || s === '' || s === '.') return null;
+  const [i, f = ''] = s.split('.');
+  return BigInt(i || '0') * 10n ** BigInt(dec) + BigInt((f + '0'.repeat(dec)).slice(0, dec) || '0');
+}
+const num = (b, dec = 18) => Number(b) / 10 ** dec;
+function fmt(n) {
+  if (!isFinite(n)) return '?';
+  const a = Math.abs(n);
+  return a >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : a >= 1 ? n.toFixed(3) : a === 0 ? '0' : n.toPrecision(3);
+}
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('qb:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('qb:' + k, JSON.stringify(v)); } catch {} },
+};
+
+// ── log ──────────────────────────────────────────────────────────────────────
+function log(html, cls = '') {
+  const d = document.createElement('div');
+  d.className = cls; d.innerHTML = html;
+  const box = $('#log');
+  if (box.firstElementChild && box.firstElementChild.classList.contains('mut') && !box.dataset.used) box.innerHTML = '';
+  box.dataset.used = 1;
+  box.prepend(d);
+  return { set(h, c = cls) { d.innerHTML = h; d.className = c; }, el: d };
+}
+const txA = (h) => `<a href="${EXPLORER}${h}" target="_blank" rel="noopener" class="mono">${short(h)}</a>`;
+
+// ── RPC with rotation and retries ────────────────────────────────────────────
+let rpcs = [...DEFAULT_RPCS, ...store.get('xrpc', [])];
+const health = {};    // url -> { ok, ms, head, err, t }
+function mark(url, ok, extra = {}) { health[url] = { ...(health[url] || {}), ok, t: Date.now(), ...extra }; }
+const transient = (e) => e.name === 'AbortError' || e.code === -32005 || /rate limit|busy|timed? ?out|unavailable|failed to fetch|network|load failed|502|503|504|gateway/i.test(e.message || '');
+async function call1(url, method, params, ms = 7000) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: c.signal });
+    const j = await r.json();
+    if (j.error) { const e = new Error(j.error.message || 'rpc error'); e.code = j.error.code; e.data = j.error.data; throw e; }
+    return j.result;
+  } finally { clearTimeout(t); }
+}
+function ranked() {
+  const s = (u) => { const h = health[u]; if (!h) return 1; return (h.ok ? 2 : 0) - (h.ms || 0) / 10000; };
+  return [...rpcs].sort((a, b) => s(b) - s(a));
+}
+const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_blockNumber', 'eth_getTransactionCount', 'eth_getTransactionReceipt', 'eth_estimateGas', 'eth_gasPrice']);
+async function rpc(method, params, tries = 8) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    const order = ranked(), url = order[i % order.length];
+    try { const r = await call1(url, method, params); mark(url, true); return r; }
+    catch (e) { if (!transient(e)) throw e; mark(url, false, { err: e.message }); last = e; await sleep(200 * (i + 1)); }
+  }
+  // last resort: the wallet's own RPC (same nodes usually, but it may be configured differently)
+  if (window.ethereum && walletOnChain && WALLET_READS.has(method) && params.length < 3) {
+    try { return await window.ethereum.request({ method, params }); } catch (e) { last = e; }
+  }
+  throw last || new Error('all RPCs failed');
+}
+const ethCall = (to, data, extra = {}, override) => rpc('eth_call', override ? [{ to, data, ...extra }, 'latest', override] : [{ to, data, ...extra }, 'latest']);
+const reverted = (e) => e && (e.code === 3 || /revert/i.test(e.message || ''));
+
+async function checkNodes() {
+  await Promise.all(rpcs.map(async (u) => {
+    const t0 = performance.now();
+    try { const h = await call1(u, 'eth_blockNumber', [], 5000); mark(u, true, { ms: Math.round(performance.now() - t0), head: parseInt(h, 16), err: '' }); }
+    catch (e) { mark(u, false, { ms: 0, err: e.name === 'AbortError' ? 'timeout' : e.message }); }
+  }));
+  const top = Math.max(0, ...rpcs.map((u) => health[u]?.head || 0));
+  $('#nodes').innerHTML = rpcs.map((u) => {
+    const h = health[u] || {}, name = new URL(u).hostname.replace(/^rpc-live\./, '').replace(/^rpc\./, '');
+    const lag = h.ok && top - h.head > 30;
+    const cls = !h.ok ? 'err' : lag ? 'warn' : 'ok';
+    const txt = !h.ok ? esc((h.err || 'down').slice(0, 28)) : `${h.head.toLocaleString()} · ${h.ms}ms${lag ? ` · ${top - h.head} behind` : ''}`;
+    return `<span title="${u}"><i class="dot ${cls}"></i>${name} <span class="mut">${txt}</span></span>`;
+  }).join('');
+}
+
+// ── wallet ───────────────────────────────────────────────────────────────────
+let account = null, walletOnChain = false;
+const eth = () => window.ethereum;
+async function ensureChain() {
+  const id = await eth().request({ method: 'eth_chainId' });
+  if (parseInt(id, 16) === CHAIN_ID) return (walletOnChain = true);
+  try { await eth().request({ method: 'wallet_switchEthereumChain', params: [{ chainId: CHAIN_HEX }] }); }
+  catch (e) {
+    await eth().request({ method: 'wallet_addEthereumChain', params: [{ chainId: CHAIN_HEX, chainName: 'Elysium', nativeCurrency: { name: 'HYPE', symbol: 'HYPE', decimals: 18 }, rpcUrls: [DEFAULT_RPCS[0]] }] });
+  }
+  walletOnChain = parseInt(await eth().request({ method: 'eth_chainId' }), 16) === CHAIN_ID;
+  return walletOnChain;
+}
+async function connect(silent) {
+  if (!eth()) { if (!silent) log('No wallet in this browser. Open the page in Chrome with Rabby enabled.', 'err'); return; }
+  try {
+    const accs = await eth().request({ method: silent ? 'eth_accounts' : 'eth_requestAccounts' });
+    if (!accs || !accs[0]) return;
+    account = lc(accs[0]);
+    if (!silent) await ensureChain();
+    else walletOnChain = parseInt(await eth().request({ method: 'eth_chainId' }), 16) === CHAIN_ID;
+    $('#connect').textContent = short(account);
+    refreshAccount();
+    refreshBag();
+  } catch (e) { if (!silent) log(`Wallet: ${esc(e.message)}`, 'err'); }
+}
+async function refreshAccount() {
+  if (!account) { $('#acct').textContent = 'Wallet not connected'; return; }
+  try {
+    const [b, nl, np] = await Promise.all([rpc('eth_getBalance', [account, 'latest'], 3), rpc('eth_getTransactionCount', [account, 'latest'], 3), rpc('eth_getTransactionCount', [account, 'pending'], 3).catch(() => null)]);
+    $('#acct').innerHTML = `<span class="mono">${short(account)}</span> · <b class="num">${fmt(num(BigInt(b)))}</b> HYPE · nonce ${parseInt(nl, 16)}${walletOnChain ? '' : ' · <span class="warn">wallet is not on Elysium</span>'}`;
+    const stuck = np != null ? parseInt(np, 16) - parseInt(nl, 16) : 0;
+    $('#stuck').classList.toggle('hide', !(stuck > 0));
+    if (stuck > 0) $('#stuck').textContent = `${stuck} transaction${stuck > 1 ? 's' : ''} from this wallet still pending (nonce ${parseInt(nl, 16)}${stuck > 1 ? '–' + (parseInt(np, 16) - 1) : ''}). If a buy hangs, tick "Replace stuck" so the next one overwrites them.`;
+  } catch {}
+}
+
+// ── routes ───────────────────────────────────────────────────────────────────
+// route = { kind: 'v4', name, pm, hook, fee, ts, to: ROUTER } | { kind: 'v3', name, fee, to: V3.router }
+const deadline = () => Math.floor(Date.now() / 1000) + 600;
+const v4Buy = (r, t, minOut, to, dl) => enc('c727282f', r.pm, ZERO, t, r.fee, r.ts, r.hook, minOut, to, dl);
+const v4Sell = (r, t, amt, minOut, to, dl) => enc('a7fee01b', r.pm, ZERO, t, r.fee, r.ts, r.hook, amt, minOut, to, dl);
+const v3Buy = (r, t, amt, minOut, to, dl) => enc('414bf389', V3.whype, t, r.fee, to, dl, amt, minOut, 0);
+const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, V3.whype, r.fee, V3.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
+const overrideFor = (wei) => ({ [SIM]: { balance: hex(wei + 10n ** 20n) } });
+
+async function quoteBuy(r, t, wei) {   // tokens out for `wei` HYPE
+  if (r.kind === 'v3') return u256(await ethCall(V3.quoter, enc('c6a5026a', V3.whype, t, wei, r.fee, 0)));
+  const data = v4Buy(r, t, 0, SIM, 2 ** 31 - 1);
+  try { return u256(await ethCall(ROUTER, data, { from: SIM, value: hex(wei) }, overrideFor(wei))); }
+  catch (e) {
+    if (reverted(e) || !account) throw e;   // node without state overrides: quote from the wallet itself
+    return u256(await ethCall(ROUTER, v4Buy(r, t, 0, account, 2 ** 31 - 1), { from: account, value: hex(wei) }));
+  }
+}
+async function quoteSell(r, t, amt) {  // HYPE out; v4 needs the router approved first
+  if (r.kind === 'v3') return u256(await ethCall(V3.quoter, enc('c6a5026a', t, V3.whype, amt, r.fee, 0)));
+  return u256(await ethCall(ROUTER, v4Sell(r, t, amt, 0, account, 2 ** 31 - 1), { from: account }));
+}
+async function findRoute(t) {
+  const cached = store.get('route:' + t);
+  const probe = 10n ** 16n;
+  const tryRoute = async (r) => { try { return (await quoteBuy(r, t, probe)) > 0n ? r : null; } catch { return null; } };
+  if (cached) { const ok = await tryRoute(cached); if (ok) return ok; }
+  const v4 = V4.map((lp) => tryRoute({ kind: 'v4', name: lp.name, pm: lp.pm, hook: lp.hook, fee: lp.fee, ts: lp.ts, to: ROUTER }));
+  const v3 = (async () => {
+    let best = null;
+    for (const fee of V3.fees) {
+      try {
+        const pool = '0x' + strip(await ethCall(V3.factory, enc('1698ee82', t, V3.whype, fee))).slice(24);
+        if (/^0x0+$/.test(pool)) continue;
+        const liq = u256(await ethCall(pool, '0x1a686502'));
+        if (liq > 0n && (!best || liq > best.liq)) best = { kind: 'v3', name: V3.name, fee, to: V3.router, liq };
+      } catch {}
+    }
+    if (best) delete best.liq;   // BigInt; the route gets cached as JSON
+    return best ? tryRoute(best) : null;
+  })();
+  const found = (await Promise.all([...v4, v3])).filter(Boolean);
+  if (found.length) return found[0];
+  return scanForPool(t, tryRoute);
+}
+// unknown launchpad: find the token's v4 pool by its Initialize event on any PoolManager
+async function scanForPool(t, tryRoute) {
+  const note = log(`Not on a known launchpad. Scanning the last ${SCAN_BACK.toLocaleString()} blocks for its pool…`, 'mut');
+  const head = parseInt(await rpc('eth_blockNumber', []), 16);
+  for (let end = head; end > Math.max(0, head - SCAN_BACK); end -= SCAN_STEP * 4) {
+    const jobs = [];
+    for (let k = 0; k < 4; k++) {
+      const to = end - k * SCAN_STEP, from = Math.max(0, to - SCAN_STEP + 1);
+      if (to < 0) break;
+      jobs.push(rpc('eth_getLogs', [{ fromBlock: hex(from), toBlock: hex(to), topics: [T_INIT, null, '0x' + word(ZERO), '0x' + word(t)] }]).catch(() => []));
+    }
+    const logs = (await Promise.all(jobs)).flat();
+    for (const l of logs) {
+      const d = strip(l.data);
+      const ts = Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128))));
+      const known = V4.find((x) => x.pm === lc(l.address));
+      const r = { kind: 'v4', name: known ? known.name : 'new launchpad ' + short(lc(l.address)), pm: lc(l.address), hook: '0x' + d.slice(152, 192), fee: Number(BigInt('0x' + d.slice(0, 64))), ts, to: ROUTER };
+      const ok = await tryRoute(r);
+      if (ok) { note.set(`Found its pool on ${r.name} (block ${parseInt(l.blockNumber, 16).toLocaleString()}).`, 'mut'); return ok; }
+    }
+  }
+  note.set('No tradable HYPE pool found for this token (it may be on elyspump, which this page does not support).', 'err');
+  return null;
+}
+
+// ── token state ──────────────────────────────────────────────────────────────
+let T = null;   // { addr, sym, dec, supply, route }
+async function loadToken(input) {
+  const m = String(input || '').match(/0x[0-9a-fA-F]{40}/);
+  if (!m) { log('That does not contain a token address.', 'err'); return; }
+  const addr = lc(m[0]);
+  $('#tok').value = addr;
+  T = null; $('#buy').disabled = true; $('#quote').textContent = '';
+  $('#tokcard').classList.add('hide'); $('#buycard').classList.add('hide');
+  const note = log(`Loading <span class="mono">${short(addr)}</span>…`, 'mut');
+  try {
+    const [s, d, sup] = await Promise.all([
+      ethCall(addr, '0x95d89b41').then(decStr).catch(() => '?'),
+      ethCall(addr, '0x313ce567').then((r) => Number(u256(r))).catch(() => 18),
+      ethCall(addr, '0x18160ddd').then(u256).catch(() => 0n),
+    ]);
+    const route = await findRoute(addr);
+    if (!route) { note.set(`${esc(s || '?')}: no route.`, 'err'); return; }
+    store.set('route:' + addr, route);
+    T = { addr, sym: (s || '?').replace(/[^\w$.+\- ]/g, '').slice(0, 24) || '?', dec: d, supply: sup, route };
+    note.set(`Loaded <b>${T.sym}</b> · ${route.kind === 'v4' ? `${route.name} pool via v4 router` : `StockiumSwap ${route.fee / 10000}% pool`}`, 'mut');
+    const rec = store.get('recent', []).filter((x) => x.a !== addr);
+    rec.unshift({ a: addr, s: T.sym }); store.set('recent', rec.slice(0, 6)); renderRecent();
+    $('#sym').textContent = T.sym;
+    $('#route').textContent = route.kind === 'v4' ? `${route.name} · v4` : `StockiumSwap · v3`;
+    $('#chart').href = `https://boxa.club/asset?address=${addr}`;
+    $('#tokcard').classList.remove('hide'); $('#buycard').classList.remove('hide');
+    $('#buy').disabled = false;
+    history.replaceState(null, '', `?t=${addr}${$('#amt').value ? `&a=${$('#amt').value}` : ''}`);
+    tick(true); refreshBag();
+  } catch (e) { note.set(`Could not load: ${esc(e.message)}`, 'err'); }
+}
+let spot = null;   // HYPE per token, from a tiny probe
+let ticking = false;
+async function tick(force) {
+  if (!T || ticking || (!force && document.hidden)) return;
+  ticking = true;
+  try {
+    const probe = 10n ** 16n;
+    const wei = toWei($('#amt').value);
+    const [p, q] = await Promise.all([quoteBuy(T.route, T.addr, probe), wei && wei > 0n ? quoteBuy(T.route, T.addr, wei) : null]);
+    spot = num(probe) / num(p, T.dec);
+    const mc = T.supply ? spot * num(T.supply, T.dec) : null;
+    $('#px').innerHTML = `${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmt(mc)} HYPE</b>` : ''}`;
+    if (q != null) {
+      const out = num(q, T.dec), impact = 1 - (out / num(wei)) / (1 / spot);
+      const min = out * (1 - Number($('#slip').value) / 10000);
+      $('#quote').innerHTML = `${$('#amt').value} HYPE → <b>${fmt(out)} ${T.sym}</b> · min ${fmt(min)} · impact <span class="${impact > 0.15 ? 'warn' : 'mut'}">${(impact * 100).toFixed(1)}%</span>`;
+    } else $('#quote').textContent = '';
+  } catch (e) { $('#quote').innerHTML = `<span class="warn">quote failed: ${esc((e.message || '').slice(0, 80))}</span>`; }
+  ticking = false;
+}
+async function tokenBal(t, who) { return u256(await ethCall(t, enc('70a08231', who))); }
+async function refreshBag() {
+  if (!T || !account) { $('#bag').textContent = account ? '…' : 'connect wallet'; return; }
+  try {
+    const b = await tokenBal(T.addr, account);
+    $('#bag').innerHTML = b > 0n ? `${fmt(num(b, T.dec))} ${T.sym}${spot ? ` <span class="mut">≈ ${fmt(num(b, T.dec) * spot)} HYPE</span>` : ''}${T.supply ? ` <span class="mut">· ${(num(b, T.dec) / num(T.supply, T.dec) * 100).toFixed(2)}% of supply</span>` : ''}` : 'none';
+  } catch {}
+}
+
+// ── sending ──────────────────────────────────────────────────────────────────
+async function sendTx(tx, label, gasFallback) {
+  if (!account) { await connect(false); if (!account) return null; }
+  if (!(await ensureChain())) { log('Switch your wallet to Elysium first.', 'err'); return null; }
+  tx.from = account;
+  const [gp, nl, est] = await Promise.all([
+    rpc('eth_gasPrice', [], 4).catch(() => '0x5f5e100'),
+    rpc('eth_getTransactionCount', [account, 'latest'], 4),
+    rpc('eth_estimateGas', [tx], 3).then((g) => BigInt(g)).catch(() => null),
+  ]);
+  let gasPrice = BigInt(gp) * 2n; if (gasPrice < 2n * 10n ** 8n) gasPrice = 2n * 10n ** 8n;
+  if ($('#replace').checked) { tx.nonce = hex(BigInt(nl)); gasPrice *= 4n; }
+  tx.gasPrice = hex(gasPrice);
+  tx.gas = hex(est ? (est * 15n) / 10n : BigInt(gasFallback));
+  const before = { nonce: BigInt(nl), bal: T ? await tokenBal(T.addr, account).catch(() => null) : null, t: Date.now() };
+  const row = log(`⏳ ${label}: confirm in your wallet…`, 'warn');
+  let hash = null;
+  try {
+    hash = await eth().request({ method: 'eth_sendTransaction', params: [tx] });
+    row.set(`⏳ ${label}: sent ${txA(hash)}`, 'warn');
+  } catch (e) {
+    if (e.code === 4001 || /reject|denied|cancel/i.test(e.message || '')) { row.set(`✖ ${label}: cancelled in wallet`, 'mut'); return null; }
+    row.set(`⚠ ${label}: wallet said "${esc((e.message || '').slice(0, 90))}". Watching the chain in case it went through anyway…`, 'warn');
+  }
+  if ($('#replace').checked) $('#replace').checked = false;
+  return watch(row, hash, before, label);
+}
+async function watch(row, hash, before, label) {
+  const until = Date.now() + 180000;
+  while (Date.now() < until) {
+    await sleep(1500);
+    const secs = Math.round((Date.now() - before.t) / 1000);
+    try {
+      if (hash) {
+        const rc = await rpc('eth_getTransactionReceipt', [hash], 2);
+        if (rc) return finish(row, label, rc.status === '0x1', hash, before, secs);
+      }
+      const nl = BigInt(await rpc('eth_getTransactionCount', [account, 'latest'], 2));
+      if (nl > before.nonce) return finish(row, label, null, hash, before, secs);
+    } catch {}
+    row.set(`⏳ ${label}: waiting ${secs}s${hash ? ' ' + txA(hash) : ''}`, 'warn');
+  }
+  row.set(`⌛ ${label}: not confirmed after 3 min${hash ? ' ' + txA(hash) : ''}. Nodes may be down; check the dots at the top, then retry with "Replace stuck".`, 'err');
+  refreshAccount();
+  return { ok: false };
+}
+async function finish(row, label, ok, hash, before, secs) {
+  let delta = null;
+  if (T && before.bal != null) { try { delta = (await tokenBal(T.addr, account)) - before.bal; } catch {} }
+  if (ok === null) ok = delta == null ? true : delta !== 0n || /approve/i.test(label);
+  const d = delta != null && delta !== 0n ? ` · ${delta > 0n ? '+' : ''}${fmt(num(delta, T.dec))} ${T.sym}` : '';
+  row.set(`${ok ? '✅' : '❌'} ${label}: ${ok ? 'confirmed' : 'reverted'} in ${secs}s${d}${hash ? ' ' + txA(hash) : ''}`, ok ? 'ok' : 'err');
+  refreshAccount(); refreshBag();
+  return { ok };
+}
+
+// ── actions ──────────────────────────────────────────────────────────────────
+let armed = 0;
+async function buy() {
+  if (!T) return;
+  const amtS = $('#amt').value.trim(), wei = toWei(amtS);
+  if (!wei || wei <= 0n) { log('Enter a HYPE amount.', 'err'); return; }
+  if (Number(amtS) > CONFIRM_ABOVE && Date.now() - armed > 4000) { armed = Date.now(); $('#buy').textContent = `TAP AGAIN TO BUY ${amtS} HYPE`; $('#buy').classList.add('confirm'); setTimeout(resetBuyBtn, 4000); return; }
+  resetBuyBtn();
+  if (!account) { await connect(false); if (!account) return; }
+  $('#buy').disabled = true;
+  try {
+    const [balHex, q] = await Promise.all([rpc('eth_getBalance', [account, 'latest']), quoteBuy(T.route, T.addr, wei)]);
+    const bal = BigInt(balHex);
+    if (bal < wei + 10n ** 15n) { log(`Not enough HYPE: you have ${fmt(num(bal))}.`, 'err'); return; }
+    const minOut = (q * (10000n - BigInt($('#slip').value))) / 10000n;
+    const r = T.route, dl = deadline();
+    const tx = r.kind === 'v4'
+      ? { to: ROUTER, value: hex(wei), data: v4Buy(r, T.addr, minOut, account, dl) }
+      : { to: V3.router, value: hex(wei), data: v3Buy(r, T.addr, wei, minOut, account, dl) };
+    try { await rpc('eth_call', [{ ...tx, from: account }, 'latest'], 4); }
+    catch (e) { if (reverted(e)) { log(`Buy would fail right now: ${esc((e.message || '').slice(0, 100))}`, 'err'); return; } }
+    store.set('amt', amtS); store.set('slip', $('#slip').value);
+    await sendTx(tx, `Buy ${amtS} HYPE of ${T.sym} (min ${fmt(num(minOut, T.dec))})`, 450000);
+  } catch (e) { log(`Buy failed: ${esc((e.message || '').slice(0, 120))}`, 'err'); }
+  finally { $('#buy').disabled = false; }
+}
+function resetBuyBtn() { $('#buy').textContent = 'BUY'; $('#buy').classList.remove('confirm'); }
+async function sell(pct) {
+  if (!T) return;
+  if (!account) { await connect(false); if (!account) return; }
+  const btns = document.querySelectorAll('[data-sell]'); btns.forEach((b) => (b.disabled = true));
+  try {
+    const bal = await tokenBal(T.addr, account);
+    const amt = (bal * BigInt(pct)) / 100n;
+    if (amt === 0n) { log(`You hold no ${T.sym}.`, 'err'); return; }
+    const spender = T.route.kind === 'v4' ? ROUTER : V3.router;
+    const allow = u256(await ethCall(T.addr, enc('dd62ed3e', account, spender)));
+    if (allow < amt) {   // exact-amount approval, never unlimited
+      const a = await sendTx({ to: T.addr, value: '0x0', data: enc('095ea7b3', spender, amt) }, `Approve ${fmt(num(amt, T.dec))} ${T.sym} for selling`, 80000);
+      if (!a || !a.ok) return;
+    }
+    const out = await quoteSell(T.route, T.addr, amt);
+    const minOut = (out * (10000n - BigInt($('#slip').value))) / 10000n;
+    const dl = deadline();
+    const tx = T.route.kind === 'v4'
+      ? { to: ROUTER, value: '0x0', data: v4Sell(T.route, T.addr, amt, minOut, account, dl) }
+      : { to: V3.router, value: '0x0', data: v3Sell(T.route, T.addr, amt, minOut, account, dl) };
+    await sendTx(tx, `Sell ${pct}% ${T.sym} for ~${fmt(num(out))} HYPE (min ${fmt(num(minOut))})`, 350000);
+  } catch (e) { log(`Sell failed: ${esc((e.message || '').slice(0, 120))}`, 'err'); }
+  finally { btns.forEach((b) => (b.disabled = false)); }
+}
+
+// ── UI wiring ────────────────────────────────────────────────────────────────
+function renderRecent() {
+  const rec = store.get('recent', []);
+  $('#recent').innerHTML = rec.map((x) => `<button data-a="${x.a}">${x.s.replace(/[<>&"]/g, '')}</button>`).join('');
+}
+function renderAmounts() {
+  $('#amts').innerHTML = AMOUNTS.map((a) => `<button data-amt="${a}">${a} HYPE</button>`).join('');
+  syncAmt();
+}
+function syncAmt() { document.querySelectorAll('[data-amt]').forEach((b) => b.classList.toggle('on', b.dataset.amt === $('#amt').value.trim())); }
+
+$('#connect').onclick = () => connect(false);
+$('#load').onclick = () => loadToken($('#tok').value);
+$('#tok').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadToken($('#tok').value); });
+$('#tok').addEventListener('paste', (e) => { const v = (e.clipboardData || window.clipboardData).getData('text'); if (/0x[0-9a-fA-F]{40}/.test(v)) setTimeout(() => loadToken(v), 0); });
+$('#paste').onclick = async () => { try { const v = await navigator.clipboard.readText(); $('#tok').value = v; loadToken(v); } catch { log('Clipboard blocked; paste into the box instead.', 'err'); } };
+$('#recent').onclick = (e) => { const a = e.target.dataset.a; if (a) loadToken(a); };
+$('#amts').onclick = (e) => { const a = e.target.dataset.amt; if (a) { $('#amt').value = a; syncAmt(); tick(true); } };
+$('#amt').addEventListener('input', () => { syncAmt(); clearTimeout(window.__qt); window.__qt = setTimeout(() => tick(true), 350); });
+$('#slip').onchange = () => tick(true);
+$('#buy').onclick = buy;
+document.querySelectorAll('[data-sell]').forEach((b) => (b.onclick = () => sell(Number(b.dataset.sell))));
+$('#xsave').onclick = () => {
+  const u = $('#xrpc').value.trim();
+  if (u && !/^https:\/\//.test(u)) { log('RPC must start with https://', 'err'); return; }
+  store.set('xrpc', u ? [u] : []); rpcs = [...DEFAULT_RPCS, ...(u ? [u] : [])]; checkNodes(); log(u ? 'Extra RPC saved.' : 'Extra RPC removed.', 'mut');
+};
+if (window.ethereum?.on) {
+  window.ethereum.on('accountsChanged', (a) => { account = a && a[0] ? lc(a[0]) : null; $('#connect').textContent = account ? short(account) : 'Connect wallet'; refreshAccount(); refreshBag(); });
+  window.ethereum.on('chainChanged', (c) => { walletOnChain = parseInt(c, 16) === CHAIN_ID; refreshAccount(); });
+}
+
+// boot
+(async () => {
+  $('#xrpc').value = store.get('xrpc', [])[0] || '';
+  $('#slip').value = store.get('slip', '1500');
+  const qs = new URLSearchParams(location.search);
+  $('#amt').value = qs.get('a') || store.get('amt', '1');
+  renderAmounts(); renderRecent();
+  checkNodes(); setInterval(checkNodes, 10000);
+  await connect(true);
+  if (!account) refreshAccount();
+  setInterval(() => { refreshAccount(); refreshBag(); }, 12000);
+  setInterval(() => tick(false), 5000);
+  if (qs.get('t')) loadToken(qs.get('t'));
+})();
+</script>
+</body>
+</html>
