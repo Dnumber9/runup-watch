@@ -42,6 +42,8 @@ select{background:#0d0f13;border:1px solid var(--line);color:var(--text);border-
 label{display:flex;align-items:center;gap:6px;cursor:pointer}
 details summary{cursor:pointer;color:var(--mut);font-size:12px}
 .hide{display:none}
+textarea{width:100%;background:#0d0f13;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none;resize:vertical}
+.danger{background:var(--warn);color:#1a1200;border:0;font-weight:700}
 </style>
 </head>
 <body>
@@ -90,6 +92,16 @@ details summary{cursor:pointer;color:var(--mut);font-size:12px}
     <div class="row sell" style="margin-top:10px">
       <button data-sell="25">Sell 25%</button><button data-sell="50">Sell 50%</button><button data-sell="100">Sell 100%</button>
     </div>
+    <details id="sendbox" style="margin-top:12px">
+      <summary>Send or split to other wallets</summary>
+      <div style="margin-top:8px"><textarea id="rcpts" rows="3" placeholder="recipient addresses, one per line (up to 10). The amount is split evenly." spellcheck="false"></textarea></div>
+      <div class="row chips" style="margin-top:8px">
+        <button data-spct="25">25%</button><button data-spct="50">50%</button><button data-spct="100">100%</button>
+        <div class="grow"><input id="samt" type="text" inputmode="decimal" placeholder="total tokens" class="num"></div>
+      </div>
+      <div id="ssum" class="small mut" style="margin-top:6px;min-height:18px"></div>
+      <button id="sendbtn" style="width:100%;margin-top:8px">Send</button>
+    </details>
   </div>
 
   <div class="card">
@@ -227,6 +239,7 @@ const ethCall = (to, data, extra = {}, override) => rpc('eth_call', override ? [
 const reverted = (e) => e && (e.code === 3 || /revert/i.test(e.message || ''));
 
 async function checkNodes() {
+  if (busy || document.hidden) return;
   await Promise.all(rpcs.map(async (u) => {
     const t0 = performance.now();
     try { const h = await call1(u, 'eth_blockNumber', [], 5000); mark(u, true, { ms: Math.round(performance.now() - t0), head: parseInt(h, 16), err: '' }); }
@@ -270,6 +283,7 @@ async function connect(silent) {
 }
 async function refreshAccount() {
   if (!account) { $('#acct').textContent = 'Wallet not connected'; return; }
+  if (busy) return;
   try {
     const [b, nl, np] = await Promise.all([rpc('eth_getBalance', [account, 'latest'], 3), rpc('eth_getTransactionCount', [account, 'latest'], 3), rpc('eth_getTransactionCount', [account, 'pending'], 3).catch(() => null)]);
     $('#acct').innerHTML = `<span class="mono">${short(account)}</span> · <b class="num">${fmt(num(BigInt(b)))}</b> HYPE · nonce ${parseInt(nl, 16)}${walletOnChain ? '' : ' · <span class="warn">wallet is not on Elysium</span>'}`;
@@ -351,6 +365,7 @@ async function scanForPool(t, tryRoute) {
 
 // ── token state ──────────────────────────────────────────────────────────────
 let T = null;   // { addr, sym, dec, supply, route }
+let busy = 0;   // >0 while a wallet popup is open: background polling pauses so the wallet's own RPC calls are not rate limited
 async function loadToken(input) {
   const m = String(input || '').match(/0x[0-9a-fA-F]{40}/);
   if (!m) { log('That does not contain a token address.', 'err'); return; }
@@ -384,7 +399,7 @@ async function loadToken(input) {
 let spot = null;   // HYPE per token, from a tiny probe
 let ticking = false;
 async function tick(force) {
-  if (!T || ticking || (!force && document.hidden)) return;
+  if (!T || ticking || (!force && (document.hidden || busy))) return;
   ticking = true;
   try {
     const probe = 10n ** 16n;
@@ -404,6 +419,7 @@ async function tick(force) {
 async function tokenBal(t, who) { return u256(await ethCall(t, enc('70a08231', who))); }
 async function refreshBag() {
   if (!T || !account) { $('#bag').textContent = account ? '…' : 'connect wallet'; return; }
+  if (busy) return;
   try {
     const b = await tokenBal(T.addr, account);
     $('#bag').innerHTML = b > 0n ? `${fmt(num(b, T.dec))} ${T.sym}${spot ? ` <span class="mut">≈ ${fmt(num(b, T.dec) * spot)} HYPE</span>` : ''}${T.supply ? ` <span class="mut">· ${(num(b, T.dec) / num(T.supply, T.dec) * 100).toFixed(2)}% of supply</span>` : ''}` : 'none';
@@ -411,34 +427,42 @@ async function refreshBag() {
 }
 
 // ── sending ──────────────────────────────────────────────────────────────────
-async function sendTx(tx, label, gasFallback) {
+async function sendTx(tx, label, gas) {
   if (!account) { await connect(false); if (!account) return null; }
   if (!(await ensureChain())) { log('Switch your wallet to Elysium first.', 'err'); return null; }
   tx.from = account;
-  const [gp, nl, est] = await Promise.all([
+  const [gp, nl] = await Promise.all([
     rpc('eth_gasPrice', [], 4).catch(() => '0x5f5e100'),
     rpc('eth_getTransactionCount', [account, 'latest'], 4),
-    rpc('eth_estimateGas', [tx], 3).then((g) => BigInt(g)).catch(() => null),
   ]);
   let gasPrice = BigInt(gp) * 2n; if (gasPrice < 2n * 10n ** 8n) gasPrice = 2n * 10n ** 8n;
   if ($('#replace').checked) { tx.nonce = hex(BigInt(nl)); gasPrice *= 4n; }
   tx.gasPrice = hex(gasPrice);
-  tx.gas = hex(est ? (est * 15n) / 10n : BigInt(gasFallback));
+  tx.gas = hex(BigInt(gas));      // fixed, generous limit: the wallet does not need to estimate it
   const before = { nonce: BigInt(nl), bal: T ? await tokenBal(T.addr, account).catch(() => null) : null, t: Date.now() };
   const row = log(`⏳ ${label}: confirm in your wallet…`, 'warn');
   let hash = null;
+  busy++;
   try {
     hash = await eth().request({ method: 'eth_sendTransaction', params: [tx] });
     row.set(`⏳ ${label}: sent ${txA(hash)}`, 'warn');
   } catch (e) {
-    if (e.code === 4001 || /reject|denied|cancel/i.test(e.message || '')) { row.set(`✖ ${label}: cancelled in wallet`, 'mut'); return null; }
-    row.set(`⚠ ${label}: wallet said "${esc((e.message || '').slice(0, 90))}". Watching the chain in case it went through anyway…`, 'warn');
+    const msg = esc((e.message || String(e)).slice(0, 120));
+    busy--;
+    if ($('#replace').checked) $('#replace').checked = false;
+    if (/after current .*resolve|already pending/i.test(e.message || '')) { row.set(`✖ ${label}: your wallet still has an earlier request open. Open Rabby, reject it, then try again.`, 'err'); return null; }
+    if (e.code === 4001 && /user (rejected|denied|cancel)/i.test(e.message || '')) { row.set(`✖ ${label}: you rejected it in the wallet`, 'mut'); return null; }
+    row.set(`⚠ ${label}: wallet said "${msg}". Checking the chain for 20s in case it went out anyway…`, 'warn');
+    const r = await watch(row, null, before, label, 20000);
+    if (!r.ok && !r.landed) row.set(`✖ ${label}: not sent. Wallet said "${msg}". Usually its RPC timed out; wait for the dots to go green and retry.`, 'err');
+    return r;
   }
+  busy--;
   if ($('#replace').checked) $('#replace').checked = false;
   return watch(row, hash, before, label);
 }
-async function watch(row, hash, before, label) {
-  const until = Date.now() + 180000;
+async function watch(row, hash, before, label, ms = 180000) {
+  const until = Date.now() + ms;
   while (Date.now() < until) {
     await sleep(1500);
     const secs = Math.round((Date.now() - before.t) / 1000);
@@ -452,6 +476,7 @@ async function watch(row, hash, before, label) {
     } catch {}
     row.set(`⏳ ${label}: waiting ${secs}s${hash ? ' ' + txA(hash) : ''}`, 'warn');
   }
+  if (ms < 180000) return { ok: false, landed: false };
   row.set(`⌛ ${label}: not confirmed after 3 min${hash ? ' ' + txA(hash) : ''}. Nodes may be down; check the dots at the top, then retry with "Replace stuck".`, 'err');
   refreshAccount();
   return { ok: false };
@@ -463,7 +488,7 @@ async function finish(row, label, ok, hash, before, secs) {
   const d = delta != null && delta !== 0n ? ` · ${delta > 0n ? '+' : ''}${fmt(num(delta, T.dec))} ${T.sym}` : '';
   row.set(`${ok ? '✅' : '❌'} ${label}: ${ok ? 'confirmed' : 'reverted'} in ${secs}s${d}${hash ? ' ' + txA(hash) : ''}`, ok ? 'ok' : 'err');
   refreshAccount(); refreshBag();
-  return { ok };
+  return { ok, landed: true };
 }
 
 // ── actions ──────────────────────────────────────────────────────────────────
@@ -488,7 +513,7 @@ async function buy() {
     try { await rpc('eth_call', [{ ...tx, from: account }, 'latest'], 4); }
     catch (e) { if (reverted(e)) { log(`Buy would fail right now: ${esc((e.message || '').slice(0, 100))}`, 'err'); return; } }
     store.set('amt', amtS); store.set('slip', $('#slip').value);
-    await sendTx(tx, `Buy ${amtS} HYPE of ${T.sym} (min ${fmt(num(minOut, T.dec))})`, 450000);
+    await sendTx(tx, `Buy ${amtS} HYPE of ${T.sym} (min ${fmt(num(minOut, T.dec))})`, 400000);
   } catch (e) { log(`Buy failed: ${esc((e.message || '').slice(0, 120))}`, 'err'); }
   finally { $('#buy').disabled = false; }
 }
@@ -504,7 +529,7 @@ async function sell(pct) {
     const spender = T.route.kind === 'v4' ? ROUTER : V3.router;
     const allow = u256(await ethCall(T.addr, enc('dd62ed3e', account, spender)));
     if (allow < amt) {   // exact-amount approval, never unlimited
-      const a = await sendTx({ to: T.addr, value: '0x0', data: enc('095ea7b3', spender, amt) }, `Approve ${fmt(num(amt, T.dec))} ${T.sym} for selling`, 80000);
+      const a = await sendTx({ to: T.addr, value: '0x0', data: enc('095ea7b3', spender, amt) }, `Approve ${fmt(num(amt, T.dec))} ${T.sym} for selling`, 100000);
       if (!a || !a.ok) return;
     }
     const out = await quoteSell(T.route, T.addr, amt);
@@ -517,6 +542,46 @@ async function sell(pct) {
   } catch (e) { log(`Sell failed: ${esc((e.message || '').slice(0, 120))}`, 'err'); }
   finally { btns.forEach((b) => (b.disabled = false)); }
 }
+
+// ── send / split ─────────────────────────────────────────────────────────────
+let sendArmed = 0;
+function parseRcpts() {
+  const all = [...new Set((($('#rcpts').value || '').match(/0x[0-9a-fA-F]{40}/g) || []).map(lc))];
+  return all.filter((a) => a !== account && a !== T?.addr && a !== ZERO).slice(0, 10);
+}
+async function sendSummary() {
+  if (!T) return null;
+  const rc = parseRcpts(), total = $('#samt').dataset.exact ? BigInt($('#samt').dataset.exact) : toWei($('#samt').value, T.dec);
+  if (!rc.length || !total || total <= 0n) { $('#ssum').textContent = rc.length ? 'Enter a total amount or tap a %.' : 'Add at least one address.'; return null; }
+  const per = total / BigInt(rc.length);
+  $('#ssum').innerHTML = `${rc.length} wallet${rc.length > 1 ? 's' : ''} × <b>${fmt(num(per, T.dec))} ${T.sym}</b> = ${fmt(num(total, T.dec))} total`;
+  return { rc, total, per };
+}
+async function doSend() {
+  if (!T) return;
+  if (!account) { await connect(false); if (!account) return; }
+  const s = await sendSummary(); if (!s) return;
+  const bal = await tokenBal(T.addr, account);
+  if (s.total > bal) { log(`You only hold ${fmt(num(bal, T.dec))} ${T.sym}.`, 'err'); return; }
+  if (Date.now() - sendArmed > 6000) {
+    const codes = await Promise.all(s.rc.map((a) => rpc('eth_getCode', [a, 'latest']).catch(() => '0x')));
+    const bad = s.rc.filter((a, i) => codes[i] && codes[i] !== '0x');
+    if (bad.length) { log(`${bad.map(short).join(', ')} ${bad.length > 1 ? 'are contracts' : 'is a contract'}, not a wallet. Tokens sent there may be stuck forever, so remove ${bad.length > 1 ? 'them' : 'it'}.`, 'err'); return; }
+    sendArmed = Date.now(); $('#sendbtn').textContent = `TAP AGAIN TO SEND ${fmt(num(s.total, T.dec))} ${T.sym} TO ${s.rc.length} WALLET${s.rc.length > 1 ? 'S' : ''}`; $('#sendbtn').classList.add('danger');
+    setTimeout(resetSendBtn, 6000); return;
+  }
+  resetSendBtn();
+  $('#sendbtn').disabled = true;
+  try {
+    for (let i = 0; i < s.rc.length; i++) {
+      const amt = i === s.rc.length - 1 ? s.total - s.per * BigInt(s.rc.length - 1) : s.per;
+      const r = await sendTx({ to: T.addr, value: '0x0', data: enc('a9059cbb', s.rc[i], amt) }, `Send ${fmt(num(amt, T.dec))} ${T.sym} to ${short(s.rc[i])} (${i + 1}/${s.rc.length})`, 120000);
+      if (!r || !r.ok) { if (i < s.rc.length - 1) log(`Stopped after ${i} of ${s.rc.length} sends.`, 'err'); break; }
+    }
+  } catch (e) { log(`Send failed: ${esc((e.message || '').slice(0, 120))}`, 'err'); }
+  finally { $('#sendbtn').disabled = false; }
+}
+function resetSendBtn() { $('#sendbtn').textContent = 'Send'; $('#sendbtn').classList.remove('danger'); }
 
 // ── UI wiring ────────────────────────────────────────────────────────────────
 function renderRecent() {
@@ -539,6 +604,17 @@ $('#amts').onclick = (e) => { const a = e.target.dataset.amt; if (a) { $('#amt')
 $('#amt').addEventListener('input', () => { syncAmt(); clearTimeout(window.__qt); window.__qt = setTimeout(() => tick(true), 350); });
 $('#slip').onchange = () => tick(true);
 $('#buy').onclick = buy;
+$('#sendbtn').onclick = doSend;
+$('#rcpts').addEventListener('input', () => { resetSendBtn(); sendArmed = 0; sendSummary(); });
+$('#samt').addEventListener('input', () => { delete $('#samt').dataset.exact; resetSendBtn(); sendArmed = 0; sendSummary(); });
+document.querySelectorAll('[data-spct]').forEach((b) => (b.onclick = async () => {
+  if (!T || !account) return;
+  const bal = await tokenBal(T.addr, account).catch(() => 0n);
+  const amt = (bal * BigInt(b.dataset.spct)) / 100n;
+  $('#samt').value = (Number(amt) / 10 ** T.dec).toFixed(6).replace(/\.?0+$/, '');
+  $('#samt').dataset.exact = amt.toString();   // exact on-chain amount, no rounding
+  resetSendBtn(); sendArmed = 0; sendSummary();
+}));
 document.querySelectorAll('[data-sell]').forEach((b) => (b.onclick = () => sell(Number(b.dataset.sell))));
 $('#xsave').onclick = () => {
   const u = $('#xrpc').value.trim();
@@ -557,11 +633,11 @@ if (window.ethereum?.on) {
   const qs = new URLSearchParams(location.search);
   $('#amt').value = qs.get('a') || store.get('amt', '1');
   renderAmounts(); renderRecent();
-  checkNodes(); setInterval(checkNodes, 10000);
+  checkNodes(); setInterval(checkNodes, 15000);
   await connect(true);
   if (!account) refreshAccount();
-  setInterval(() => { refreshAccount(); refreshBag(); }, 12000);
-  setInterval(() => tick(false), 5000);
+  setInterval(() => { refreshAccount(); refreshBag(); }, 20000);
+  setInterval(() => tick(false), 8000);
   if (qs.get('t')) loadToken(qs.get('t'));
 })();
 </script>
