@@ -46,6 +46,7 @@ const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
+const BRIDGE_MIN_HYPE = Number(process.env.BRIDGE_MIN_HYPE || 25); // fresh wallet bridging in at least this much from HyperEVM: ping + track
 const AUTO_MAX = 300;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -565,6 +566,38 @@ async function main() {
     }
   }
 
+  // 3d. a fresh wallet bridging in a lot of HYPE from HyperEVM: usually a launch or a snipe is coming.
+  // One ping per wallet, then it is tracked like the others (its launch or buys show up in section 4).
+  state.bridged ||= {};
+  for (const [a, t] of Object.entries(state.bridged)) if (now() - t > 14 * 86400) delete state.bridged[a];
+  const bigIns = [];
+  for (const blk of blocks) {
+    for (const tx of blk.transactions || []) {
+      if (String(tx.type).toLowerCase() !== '0x64') continue; // Arbitrum deposit tx = HYPE arriving over the bridge
+      const to = lc(tx.to);
+      const val = Number(BigInt(tx.value || '0x0')) / 1e18;
+      if (to && val >= BRIDGE_MIN_HYPE && !W.has(to) && !INFRA.has(to) && !state.bridged[to] && !state.muted[to]) bigIns.push({ to, val, hash: tx.hash });
+    }
+  }
+  for (const x of bigIns.slice(0, 8)) {
+    if (Object.keys(state.auto).length >= AUTO_MAX) break;
+    try {
+      const [code, nonce] = await Promise.all([rpc('eth_getCode', [x.to, 'latest']), rpc('eth_getTransactionCount', [x.to, 'latest'])]);
+      state.bridged[x.to] = now();
+      if (code && code !== '0x') continue;
+      const n = parseInt(nonce, 16);
+      if (n > FRESH_MAX_NONCE) continue;
+      const label = `bridger ${Math.round(x.val)} ${x.to.slice(2, 6)}`;
+      state.auto[x.to] = { label, group: null, from: 'bridge', t: now(), hype: x.val };
+      W.set(x.to, label);
+      msgs.push(
+        `🌉 <b>Fresh wallet bridged in ${hype(x.val)}</b>${px ? ` (${usd(x.val * px)})` : ''} from HyperEVM\n` +
+        `${walletLink(x.to)} · ${n} txs so far${txLink(x.hash)}\n` +
+        `Now tracking it as <b>${esc(label)}</b>, so a launch or buy from it pings you.`
+      );
+    } catch {}
+  }
+
   // 4. tracked wallets
   if (W.size) {
     const moves = {};
@@ -643,7 +676,7 @@ async function main() {
       const c = state.tok[coin]?.creator;
       if (c && W.has(c)) {
         const meta = await tokenMeta(state, coin);
-        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')}${txLink(lt)}`);
+        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')} · <a href="${BUY_PAGE}?t=${coin}">⚡ buy</a>${txLink(lt)}`);
       }
     }
     // what each wallet still holds of the coins it moved (last placeholder per wallet+coin gets the line)
