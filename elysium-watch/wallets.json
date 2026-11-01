@@ -254,11 +254,6 @@
   "group": "dev"
  },
  {
-  "address": "0x9ba3095a28634684ef4bb3e833577d49229e997c",
-  "label": "BOXA #2 early",
-  "group": "smart"
- },
- {
   "address": "0x5d7be83b6826fc857c0df33b08d4d5c8abffa4ac",
   "label": "BOXA #3 early",
   "group": "smart"
@@ -281,11 +276,6 @@
  {
   "address": "0x0314453c820f0a43b45e10d07d58254194be9745",
   "label": "BOXA #9 early",
-  "group": "smart"
- },
- {
-  "address": "0x161464f923282e1dccd85a9a37b0f7c9d36fa5e8",
-  "label": "BOXA #11 early",
   "group": "smart"
  },
  {
@@ -346,11 +336,6 @@
  {
   "address": "0x608e555f136ba3599c4841843d36b4870e81cc4f",
   "label": "KLEOS #15 early",
-  "group": "smart"
- },
- {
-  "address": "0xde317b1102d5cd16d56ca6a3ae25dc8de018823a",
-  "label": "KLEOS #21 early",
   "group": "smart"
  },
  {
