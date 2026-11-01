@@ -55,7 +55,10 @@ const LAUNCHPADS = {
   '0x06c63714fbf1f5753017123e2fcfdede4540b2c4': { name: 'BOXA', hook: '0xbcc1f22d137c1d98dfa5548e4d4261d7aee06acc' },
   '0x5fb015a49f5b35073f9ce01c2adb287a75f89600': { name: 'elyspump', hook: '0xe11cafa5901b0aab51eb78251488400f9e4320cc' },
   '0xb308b5df891c300a5f5a5b8fdbc30108ba842490': { name: 'Kleos', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc' },
+  '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da': { name: 'eleos', hook: '0x8680965555dcea2a4c0ed3a29e59a8aa424e6acc' }, // eleos.fun (partner-gated site)
 };
+const BOXA_PM = '0x06c63714fbf1f5753017123e2fcfdede4540b2c4';
+const LP_NAMES = Object.values(LAUNCHPADS).map((x) => x.name).join(', ');
 const WHYPE = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81']);
 const INFRA = new Set([ZERO, DEAD, ...WHYPE, ...Object.keys(LAUNCHPADS), '0x000000000022d473030f116ddee9f6b43ac78ba3']);
 
@@ -163,9 +166,15 @@ async function getJSON(url, tries = 2) {
   return null;
 }
 
-// buy buttons on an alert; the router on your VPS answers them (b:<h|e>:<address>:<HYPE>)
+// buy buttons on an alert. Elysium coins open the quick-buy page prefilled (you sign in Rabby);
+// HyperEVM curves still use the VPS router callbacks (b:h:<address>:<HYPE>)
 const BUY_SIZES = (process.env.BUY_SIZES || '1,3,5').split(',').map((s) => s.trim()).filter(Boolean);
-const buyButtons = (chain, addr) => BUY_SIZES.map((h) => ({ text: `Buy ${h} HYPE`, callback_data: `b:${chain}:${addr.slice(2)}:${h}` }));
+const BUY_PAGE = process.env.BUY_PAGE || 'https://dnumber9.github.io/runup-watch/buy/';
+const buyButtons = (chain, addr) => BUY_SIZES.map((h) => (chain === 'e'
+  ? { text: `⚡ Buy ${h} HYPE`, url: `${BUY_PAGE}?t=${addr}&a=${h}` }
+  : { text: `Buy ${h} HYPE`, callback_data: `b:${chain}:${addr.slice(2)}:${h}` }));
+// BOXA's asset page only trades BOXA coins; everything else opens in the quick-buy page
+const coinLink = (state, t) => (state.tok[t]?.lp === BOXA_PM ? assetLink(t, 'open on BOXA') : `<a href="${BUY_PAGE}?t=${t}">open in quick buy</a>`);
 
 // alerts go through the command bot when it is set up (ALERT is set in main); the old bot is the fallback
 let ALERT = null;
@@ -385,7 +394,7 @@ async function main() {
       u.alerted = now();
       msgs.push(
         `🆕 <b>New launchpad pool contract on Elysium</b>\n` +
-        `${u.n} new pools from a Uniswap v4 PoolManager that is not BOXA, elyspump or Kleos.\n` +
+        `${u.n} new pools from a Uniswap v4 PoolManager that is not ${LP_NAMES}.\n` +
         `<code>${pm}</code>`
       );
     }
@@ -492,7 +501,7 @@ async function main() {
           `${ago(age)} old · ${rec.buyers.length} buyers · ${usd(volUsd)} volume · ${Math.round(share * 100)}% buys\n` +
           `${mcLine}${so.holders != null ? ` · ${so.holders} holders` : ''}${so.top10 != null ? ` · top 10 hold ${so.top10.toFixed(0)}%` : ''}\n` +
           `${so.line}${creator}\n` +
-          `<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
+          `<code>${t}</code>\n${coinLink(state, t)}`
         );
         msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
         continue;
@@ -514,7 +523,7 @@ async function main() {
       `${usd(paceUsd)}/h pace · ${r.swaps} swaps · ${r.buyers.size} buyers · ${Math.round(share * 100)}% buys (last ${Math.round(hours * 60)} min)\n` +
       `${prev == null ? 'No baseline yet.' : `${(pace / Math.max(prev, 1e-9)).toFixed(1)}× its usual pace.`}\n` +
       `${mcLine}${so.holders != null ? ` · ${so.holders} holders` : ''}${age != null ? ` · ${ago(age)} old` : ''}\n` +
-      `${so.line}\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`
+      `${so.line}\n<code>${t}</code>\n${coinLink(state, t)}`
     );
     msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
   }
@@ -687,7 +696,7 @@ async function main() {
       `🎯 <b>${g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
       `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
       Object.entries(byW).map(([w, h]) => `• ${walletLink(w, esc(W.get(w) || short(w)))}${h > 0 ? ` ${hype(h)}` : ''}`).join('\n') +
-      (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${assetLink(t, 'open on BOXA')}`)
+      (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${coinLink(state, t)}`)
     );
     msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
   }
@@ -738,7 +747,7 @@ async function main() {
     for (const [t, r] of top) { const m = await tokenMeta(state, t); lines.push(`${esc(m.s)} · ${px ? usd(r.vol * px) : hype(r.vol)}`); }
     msgs.push(
       `✅ <b>elysium-watch is live</b> on chain ${CHAIN_ID} (block ${head})\n` +
-      `Watching ${Object.keys(state.pools).length} pools across BOXA, elyspump and Kleos, plus Uniswap v3 HYPE pairs.\n` +
+      `Watching ${Object.keys(state.pools).length} pools across ${LP_NAMES}, plus Uniswap v3 HYPE pairs.\n` +
       `Tracked wallets: ${W.size}.\n` +
       (lines.length ? `Busiest in the last ${Math.round(hours * 60)} min:\n${lines.join('\n')}` : '')
     );
