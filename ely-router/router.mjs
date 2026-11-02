@@ -19,21 +19,18 @@
 //   Stale taps: a ⚡ tap on an alert older than a few minutes shows the coin's current card first, and a
 //   second tap on the same button within a few seconds is ignored.
 //
-// While you hold a coin (checked every 2 seconds):
-//   Orders: take profit, stop loss and trailing stop per coin, and an optional preset added to every buy.
-//   Dev guard: the coin's creator (sender of the transaction that opened its first pool) is watched; when
-//   they have sold or moved away a set share of their bag, the bot sells everything.
-//   Rug guard: a coin that passed the sell check at entry is re-checked; if sells get blocked or the round
-//   trip cost jumps, the bot sells everything.
-// Hunting:
-//   Snipes: buy a token the moment its pool opens, the next coin a given wallet launches, or the first coins
-//   on a pool manager nobody has used before (a new launchpad going live). The pool index tails the chain
-//   every 0.4 s while a snipe is armed.
-//   Copy trading: mirror the first buy of each coin by wallets you choose (and their sells), with a size
-//   per wallet and a daily cap. The wallet list lives only in state.json on the VPS.
-//   Limit buys: buy when a coin's market cap falls to (or rises past) a level.
-// Speed: the buy goes out before the Telegram message, the sell check doubles as the quote, coins are
-//   approved right after a buy so every sell is one transaction, receipts are polled every 0.3 s.
+// Speed:
+//   Reads a trade waits on (the sell check that doubles as the quote, balances, approval) go to every node at
+//   once and the first answer wins; with the coin's route known, a buy needs one round trip before it is sent.
+//   The signed transaction goes to every node and the first acceptance counts. The Telegram message is sent
+//   alongside, never before. Coins are approved right after a buy, and the bag size is remembered, so a sell is
+//   one round trip and one transaction. Receipts are polled every 0.3 s; a transaction no node knows after 20 s
+//   counts as dropped and the nonce is resynced so nothing queues behind it.
+// Limit orders (checked every 2 s, by market cap in $): buy when MC falls to or rises past a level; sell part
+//   or all when MC reaches a level, falls to one, or hits a multiple of your entry. Set with /limit or by
+//   replying to a card's 🎯 Limit question.
+// Extras, off unless set: take profit, stop loss and trailing stop (/tp /sl /trail), an auto-sell preset on
+//   every buy (/auto), dev and rug guards (/set devsell, /set rug), snipes (/snipe) and copy trading (/copy).
 //
 // Chat (only from OWNER_ID): /help lists every command.
 //
@@ -119,8 +116,8 @@ const cfg = () => ({
   check: (state.set.check ?? process.env.SELL_CHECK ?? 'on') !== 'off',
   stale: Number(state.set.stale ?? process.env.STALE_MIN ?? 5),   // ⚡ taps on alerts older than this many minutes show the card first
   report: state.set.report ?? process.env.DAILY_REPORT ?? 'quiet', // nightly report: quiet (only when there is news), on, off
-  devsell: Number(state.set.devsell ?? process.env.DEV_SELL_PCT ?? 50), // sell all once the creator has dumped this % of their peak bag (0 = off)
-  rug: (state.set.rug ?? process.env.RUG_GUARD ?? 'on') !== 'off',      // sell all when a held coin turns unsellable or its tax jumps
+  devsell: Number(state.set.devsell ?? process.env.DEV_SELL_PCT ?? 0),  // sell all once the creator has dumped this % of their peak bag (0 = off)
+  rug: (state.set.rug ?? process.env.RUG_GUARD ?? 'off') !== 'off',     // sell all when a held coin turns unsellable or its tax jumps
   preapprove: (state.set.preapprove ?? process.env.PRE_APPROVE ?? 'on') !== 'off', // approve right after a buy so sells are one tx
   auto: state.set.auto ?? process.env.AUTO_SELL ?? 'off',               // orders added to every buy, e.g. "tp 2x 50 trail 40"
   copymax: Number(state.set.copymax ?? process.env.COPY_MAX_DAY ?? 10), // copy buys per day, all wallets together
@@ -128,7 +125,9 @@ const cfg = () => ({
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
-const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFileSync(STATE, JSON.stringify(state, (k, v) => (typeof v === 'bigint' ? v.toString() : v))), 300); };
+// written to a temp file and renamed, so a crash mid-save never leaves a half-written state.json
+const STATE_TMP = new URL('./state.json.tmp', import.meta.url);
+const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => { fs.writeFileSync(STATE_TMP, JSON.stringify(state, (k, v) => (typeof v === 'bigint' ? v.toString() : v))); fs.renameSync(STATE_TMP, STATE); }, 300); };
 
 // ── small helpers ──────────────────────────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -184,24 +183,36 @@ async function rpc(method, params, tries = 8) {
   }
   throw last;
 }
-async function ethCall(to, data, extra = {}, override) {
-  if (!override) return rpc('eth_call', [{ to, data, ...extra }, 'latest']);
-  // state overrides are not supported everywhere: walk the nodes until one answers or the call really reverts
-  let last;
-  for (let i = 0; i < RPCS.length * 2; i++) {
-    try { return await call1(RPCS[i % RPCS.length], 'eth_call', [{ to, data, ...extra }, 'latest', override]); }
-    catch (e) { if (reverted(e)) throw e; last = e; }
-  }
-  throw last;
+// Reads a trade waits on go to every node at once and the first answer wins (the fastest node, and a slow or
+// lagging one never holds a trade up). A revert counts once half the nodes agree. Nodes without state
+// override support just drop out of the race.
+function race(method, params, ms = 5000) {
+  return new Promise((resolve, reject) => {
+    let left = RPCS.length, reverts = 0;
+    for (const u of RPCS) call1(u, method, params, ms).then(resolve, (e) => {
+      left--;
+      if (reverted(e) && ++reverts >= Math.ceil(RPCS.length / 2)) return reject(e);
+      if (!left) reject(e);
+    });
+  });
 }
+// override calls (quotes, sell checks) always race; plain reads race when `fast`, else rotate
+async function ethCall(to, data, extra = {}, override, fast = false) {
+  const params = override ? [{ to, data, ...extra }, 'latest', override] : [{ to, data, ...extra }, 'latest'];
+  if (override || fast) return race('eth_call', params);
+  return rpc('eth_call', params);
+}
+// sent to every node at once; the first node to accept it is enough, the rest keep going in the background
 async function broadcast(raw) {
-  const res = await Promise.allSettled(RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [raw], 12000)));
-  if (res.some((r) => r.status === 'fulfilled')) return;
-  const why = res.map((r) => r.reason?.message || '').join(' | ');
-  if (/already known|known transaction|already imported/i.test(why)) return;
-  const e = new Error(why.slice(0, 220));
-  e.nonceLow = /nonce too low/i.test(why);
-  throw e;
+  try { await Promise.any(RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [raw], 12000))); }
+  catch (agg) {
+    const why = (agg.errors || [agg]).map((e) => e?.message || '').join(' | ');
+    if (/already known|known transaction|already imported/i.test(why)) return;
+    const e = new Error(why.slice(0, 220));
+    e.nonceLow = /nonce too low/i.test(why);
+    e.nonceHigh = /nonce too high|nonce gap/i.test(why);
+    throw e;
+  }
 }
 
 // one send at a time, nonces handed out locally so an approve and its sell can go back to back
@@ -212,27 +223,36 @@ async function resyncNonce() {
   nextNonce = Math.max(Number(BigInt(l)), Number(BigInt(p)));
   return nextNonce;
 }
-async function gasPrice() {
-  if (Date.now() - gpCache.t < 30000) return gpCache.v;
+async function fetchGas() {
   let g = BigInt(await rpc('eth_gasPrice', []).catch(() => '0x5f5e100')) * 2n;
   if (g < 2n * 10n ** 8n) g = 2n * 10n ** 8n;
   gpCache = { v: g, t: Date.now() };
   return g;
 }
+// refreshed in the background every 25 s, so a send never waits on it
+async function gasPrice() { return gpCache.v && Date.now() - gpCache.t < 120000 ? gpCache.v : fetchGas(); }
 async function sendRaw(tx) {
   if (nextNonce == null) await resyncNonce();
   const nonce = nextNonce;
   const raw = await account.signTransaction({ chainId: CHAIN_ID, type: 'legacy', nonce, to: tx.to, value: BigInt(tx.value || 0), data: tx.data, gas: BigInt(tx.gas), gasPrice: await gasPrice() });
   try { await broadcast(raw); }
-  catch (e) { if (e.nonceLow) await resyncNonce(); throw e; }
+  catch (e) { if (e.nonceLow || e.nonceHigh) await resyncNonce(); throw e; }
   nextNonce = nonce + 1;
   return keccak256(raw);
 }
+// receipts: every node is asked for the first 15 s (whichever sees it first), then one at a time. A transaction
+// no node knows after 20 s was dropped: the nonce is resynced so later trades do not queue behind it.
 async function receipt(hash, maxMs = 2 * 3600 * 1000) {
   const t0 = Date.now();
+  let checked = 0;
   while (Date.now() - t0 < maxMs) {
-    try { const r = await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
     const el = Date.now() - t0;
+    try { const r = el < 15000 ? await race('eth_getTransactionReceipt', [hash], 3000) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
+    if ((el > 20000 && checked === 0) || (el > 60000 && checked === 1)) {
+      checked++;
+      const seen = await Promise.all(RPCS.map((u) => call1(u, 'eth_getTransactionByHash', [hash], 5000).catch(() => undefined)));
+      if (seen.every((x) => x === null)) { await serial(resyncNonce); return { status: 'dropped' }; }
+    }
     await sleep(el < 15000 ? 300 : el < 120000 ? 1500 : 15000);
   }
   return null;
@@ -243,14 +263,15 @@ const meta = {};
 async function tokenMeta(t) {
   if (meta[t]) return meta[t];
   const [s, d, sup] = await Promise.all([
-    ethCall(t, '0x95d89b41').then(decStr).catch(() => '?'),
-    ethCall(t, '0x313ce567').then((r) => Number(u256(r))).catch(() => 18),
-    ethCall(t, '0x18160ddd').then(u256).catch(() => 0n),
+    ethCall(t, '0x95d89b41', {}, undefined, true).then(decStr).catch(() => '?'),
+    ethCall(t, '0x313ce567', {}, undefined, true).then((r) => Number(u256(r))).catch(() => 18),
+    ethCall(t, '0x18160ddd', {}, undefined, true).then(u256).catch(() => 0n),
   ]);
   return (meta[t] = { sym: (s || '?').replace(/[^\w$.+\- ]/g, '').slice(0, 20) || '?', d, sup });
 }
-const balOf = async (t, w = me) => u256(await ethCall(t, enc('70a08231', w)));
-const hypeBal = async () => BigInt(await rpc('eth_getBalance', [me, 'latest']));
+const balOf = async (t, w = me, fast = false) => u256(await ethCall(t, enc('70a08231', w), {}, undefined, fast));
+const hypeBal = async (fast = false) => BigInt(await (fast ? race : rpc)('eth_getBalance', [me, 'latest']));
+const allowanceOf = async (t, spender = ROUTER) => u256(await ethCall(t, enc('dd62ed3e', me, spender), {}, undefined, true));
 let usdPx = { v: null, t: 0 };
 async function hypeUsd() {
   if (Date.now() - usdPx.t < 300000) return usdPx.v;
@@ -280,20 +301,16 @@ async function allowanceSlot(t, spender) {
   const key = t + ':' + spender;
   if (key in state.slots) return state.slots[key];
   const max = '0x' + 'f'.repeat(64);
-  for (let base = 0; base <= 12; base++) {
-    const slot = keccak256(concat([vpad(spender), keccak256(concat([vpad(me), vpad(toHex(base))]))]));
-    try {
-      const r = await ethCall(t, enc('dd62ed3e', me, spender), {}, { [t]: { stateDiff: { [slot]: max } } });
-      if (u256(r) === MAX256) { state.slots[key] = slot; save(); return slot; }
-    } catch {}
-  }
-  state.slots[key] = null; save();
-  return null;
+  // every candidate at once: one round trip instead of up to thirteen
+  const slots = Array.from({ length: 13 }, (_, base) => keccak256(concat([vpad(spender), keccak256(concat([vpad(me), vpad(toHex(base))]))])));
+  const hits = await Promise.all(slots.map((slot) => ethCall(t, enc('dd62ed3e', me, spender), {}, { [t]: { stateDiff: { [slot]: max } } }).then((r) => u256(r) === MAX256).catch(() => false)));
+  state.slots[key] = slots[hits.indexOf(true)] ?? null; save();
+  return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
   const data = v4Sell(r, t, amt, 0, me, 2 ** 31 - 1);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
-  return u256(await ethCall(ROUTER, data, { from: me }, ov));
+  return u256(await ethCall(ROUTER, data, { from: me }, ov, true));
 }
 async function kyber(path, body) {
   const r = await fetch(KYBER + path, { method: body ? 'POST' : 'GET', headers: { 'x-client-id': KYBER_ID, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) }).then((x) => x.json());
@@ -459,35 +476,45 @@ const cardButtons = (t) => {
   return [
     cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })),
     [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${h}:${p}` })).concat([{ text: '🔄', callback_data: `r:${h}` }]),
-    [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🤖 Auto-sell', callback_data: `a:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }],
+    [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🎯 Limit', callback_data: `m:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }],
   ];
 };
+
+// the current round of a position: since the last time the bag was empty (a re-buy after a full exit starts a
+// new one, so its entry price, initials and PnL are not mixed with the old trade). Older positions fall back to
+// their lifetime totals.
+const cyc = (p) => (p ? (p.cTok != null ? { in: p.cIn, out: p.cOut, tok: p.cTok } : { in: p.hypeIn, out: p.hypeOut, tok: p.tokIn }) : null);
+const entryOf = (p) => { const c = cyc(p); return c && c.tok > 0 && c.in > 0 ? c.in / c.tok : null; }; // HYPE per token
+const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toString(); p.balAt = Date.now(); } };
 
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
   if (!r) return { text: `No route for <code>${t}</code>.\nNo native-HYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
-  const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w) } : null)).catch(() => null);
-  const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t), sellCheck(r, t, 10n ** 17n), devInfo]);
+  const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
+  const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t, me, true), sellCheck(r, t, 10n ** 17n), devInfo]);
+  cacheBal(t, bal);
   const spot = num(probe) / num(p, m.d);               // HYPE per token
-  const mc = m.sup ? spot * num(m.sup, m.d) : null;
+  const sup = m.sup ? num(m.sup, m.d) : 0;
+  const mc = sup ? spot * sup : null;
   const impact = one ? 1 - num(one, m.d) * spot : null;
-  const pos = state.pos[t];
+  const pos = state.pos[t], c = cyc(pos), entry = entryOf(pos);
   const bagH = num(bal, m.d) * spot;
   let pnl = '';
-  if (pos && pos.hypeIn > 0) {
-    const pl = (bagH + pos.hypeOut - pos.hypeIn) / pos.hypeIn * 100;
+  if (bal > 0n && c && c.in > 0) {
+    const pl = (bagH + c.out - c.in) / c.in * 100;
     pnl = ` · PnL <b>${pl >= 0 ? '+' : ''}${pl.toFixed(0)}%</b>`;
   }
+  const os = state.orders[t] || [];
   const text =
     `<b>${esc(m.sym)}</b> · ${r.kind === 'v4' ? `${esc(r.name)} v4` : 'via KyberSwap'}\n` +
     `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
     (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
-    (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}\n` : '') +
+    (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}${entry && sup && px ? ` · entry MC $${fmt(entry * sup * px)}` : ''}\n` : '') +
     (sc.blocked ? `🚫 <b>Cannot be sold back</b> in a simulation: likely a honeypot\n` : sc.ok === false ? `⚠️ Buy and sell back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (tax or fees)\n` : sc.loss != null ? `✓ Sell check: buy and sell back loses ${(sc.loss * 100).toFixed(1)}%\n` : '') +
-    (dv ? `Dev ${short(dv.w)} holds ${m.sup ? ((num(dv.bal, m.d) / num(m.sup, m.d)) * 100).toFixed(1) + '%' : fmt(num(dv.bal, m.d))}${state.dev[t]?.peak > 0 && num(dv.bal, m.d) < state.dev[t].peak * 0.99 ? ` (sold ${pct(1 - num(dv.bal, m.d) / state.dev[t].peak).replace('+', '')} since you bought)` : ''}\n` : '') +
-    ((state.orders[t] || []).length ? `🤖 ${state.orders[t].map(orderText).join(' · ')}\n` : '') +
+    (dv ? `Dev ${short(dv.w)} holds ${sup ? ((num(dv.bal, m.d) / sup) * 100).toFixed(1) + '%' : fmt(num(dv.bal, m.d))}\n` : '') +
+    (os.length ? `🎯 ${os.map(orderText).join(' · ')}\n` : '') +
     `<code>${t}</code>`;
   return { text, rows: cardButtons(t) };
 }
@@ -499,24 +526,33 @@ async function showCard(t, m) {
 // ── trades ─────────────────────────────────────────────────────────────────────────────────────────
 const P = (t, sym) => (state.pos[t] ||= { sym, hypeIn: 0, hypeOut: 0, tokIn: 0, tokOut: 0, t: Date.now() });
 const isOpen = (p) => !!p && p.hypeIn > 0 && (p.open ?? (p.now ?? 1) > 0.0005);
+const approving = new Set(); // coins whose approval transaction is already on its way
+// tokens that arrived in this receipt (no extra balance read after a buy)
+const gotFromLogs = (rc, t) => (rc.logs || []).filter((l) => lc(l.address) === t && lc(l.topics?.[0]) === T_TRANSFER && lc(l.topics?.[2]) === '0x' + word(me)).reduce((a, l) => a + BigInt(l.data || '0x0'), 0n);
 
 // Resolves once the transaction has a receipt: { ok: true, got } or { ok: false, ... }.
-// opts.route: a pool already known (snipes skip the route search) · opts.label: first line of the message
-// (snipe, copy, limit) · opts.copy: the wallet being copied
+// opts.route: a pool already known (snipes) · opts.label: first line of the message · opts.copy: copied wallet
+//
+// Speed: with the coin's route known (it is once its card was shown or an alert named it), everything the buy
+// needs, the sell check that doubles as the quote, the wallet and bag balances, is asked of every node at once
+// in one round trip; then the signed transaction goes to every node and the first acceptance counts. The
+// Telegram message is sent alongside, never before.
 async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {}) {
   const { slip, max } = cfg();
   if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
   const wei = toWei(String(hypeAmt));
-  let [m, r, bal, before] = await Promise.all([tokenMeta(t), opts.route || findRoute(t), hypeBal(), balOf(t).catch(() => 0n)]);
+  const known = opts.route || state.routes[t];
+  const scP = known?.kind === 'v4' ? sellCheck(known, t, wei) : null; // started right away when the route is known
+  let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const head = opts.label ? `${opts.label}\n` : '';
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
-  // or lose too much on the round trip, and its buy leg is the quote for this exact size (one call, not two).
+  // or lose too much on the round trip, and its buy leg is the quote for this exact size.
   let sc = { note: '' }, expect = null;
   if (r.kind === 'v4') {
-    sc = await sellCheck(r, t, wei);
+    sc = await (scP && r === known ? scP : sellCheck(r, t, wei));
     if (cfg().check && !force && sc.ok === false) {
       J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
       const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).` : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).`;
@@ -542,32 +578,38 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     expect = BigInt(b.amountOut);
     tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
   }
-  // the transaction goes out first; the Telegram message follows instead of delaying it
   const msgP = say(`${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…${sc.note ? ` (${sc.note})` : ''}`, null, replyTo);
   let hash;
   try { hash = await serial(() => sendRaw(tx)); }
   catch (e) { await edit(await msgP, `${head}❌ Buy of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`); return { ok: false, error: e.message }; }
+  const sentAt = Date.now();
   const rcP = receipt(hash);
   const msg = await msgP;
   await edit(msg, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
   const rc = await rcP;
-  if (!rc) { await edit(msg, `${head}⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Elysium may be holding its batch; check ${txLink(hash)} and /nonce if it never lands.`); return { ok: false }; }
+  if (!rc) { await edit(msg, `${head}⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Check ${txLink(hash)}; /nonce if it never lands.`); return { ok: false }; }
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> was dropped by the network; nothing spent. Tap again.`, cardButtons(t)); return { ok: false }; }
   if (rc.status !== '0x1') {
     J({ side: 'revert', coin: t, sym: m.sym, hype: hypeAmt, src, slip: Number(slip), route: r.name, hash });
-    await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`);
+    await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`, cardButtons(t));
     return { ok: false, reverted: true };
   }
-  const got = (await balOf(t).catch(() => before)) - before;
+  let got = gotFromLogs(rc, t);
+  if (got === 0n) got = (await balOf(t, me, true).catch(() => before)) - before;
   const px = await hypeUsd();
   const mc = m.sup && got > 0n ? (hypeAmt / num(got, m.d)) * num(m.sup, m.d) : null;
-  const p = P(t, m.sym); p.hypeIn += hypeAmt; p.tokIn += num(got, m.d);
+  const p = P(t, m.sym);
+  if (before === 0n || !isOpen(p)) { p.cIn = 0; p.cOut = 0; p.cTok = 0; } // a fresh round
+  p.hypeIn += hypeAmt; p.tokIn += num(got, m.d);
+  p.cIn = (p.cIn ?? 0) + hypeAmt; p.cTok = (p.cTok ?? 0) + num(got, m.d); p.cOut ??= 0;
   p.first ||= Date.now(); p.src ||= src; if (p.mc0Usd == null && mc && px) p.mc0Usd = mc * px;
   p.open = true; p.devFired = false;
+  cacheBal(t, before + got);
   if (sc.ok != null) { p.scOk = sc.ok; p.sc0 = sc.loss ?? null; }
   if (opts.copy) p.copy ||= opts.copy;
   J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
-  // after the buy: approve so every sell is a single transaction, note the creator's bag for the dev guard,
-  // and add the auto-sell preset
+  // after the buy: approve so every sell is one transaction, note the creator's bag for the dev guard (when on),
+  // and add the auto-sell preset (when set)
   if (cfg().preapprove && r.kind === 'v4') preApprove(t).catch((e) => console.error('preapprove', e.message));
   if (cfg().devsell > 0) devOf(t).then(async (d) => { if (d?.w) { d.peak = num(await balOf(t, d.w), m.d); save(); } }).catch(() => {});
   let autoLine = '';
@@ -576,48 +618,63 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     if (specs.length) autoLine = `\n🤖 ${(await setOrders(t, specs, true)).map(orderText).join(' · ')}`;
   } catch (e) { autoLine = `\n⚠️ Auto-sell not set: ${esc(e.message)}`; }
   save();
-  await edit(msg, `${head}✅ Bought <b>${fmt(num(got, m.d))} ${esc(m.sym)}</b> for ${hypeAmt} HYPE${mc ? ` · entry MC ${fmtH(mc)}${usd(mc, px)}` : ''} · ${txLink(hash)}${autoLine}`, cardButtons(t));
+  await edit(msg, `${head}✅ Bought <b>${fmt(num(got, m.d))} ${esc(m.sym)}</b> for ${hypeAmt} HYPE${mc ? ` · entry MC ${fmtH(mc)}${usd(mc, px)}` : ''} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}${autoLine}`, cardButtons(t));
   return { ok: true, got };
 }
 
-// approve the router for good right after a buy (the wallet is a burner), so a sell, including an automatic
-// one, is one transaction instead of approve + sell
+// approve the router for good right after a buy (the wallet is a burner), so a sell is one transaction
 async function preApprove(t) {
-  const a = u256(await ethCall(t, enc('dd62ed3e', me, ROUTER)));
-  if (a >= MAX256 >> 1n) return;
-  await serial(() => sendRaw({ to: t, data: enc('095ea7b3', ROUTER, MAX256), gas: 120000 }));
+  if (approving.has(t)) return;
+  if ((await allowanceOf(t)) >= MAX256 >> 1n) return;
+  approving.add(t);
+  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', ROUTER, MAX256), gas: 120000 })); }
+  catch (e) { approving.delete(t); throw e; }
 }
 
 // Resolves to true or false once the transaction has a receipt.
-// opts.amt: exact token amount (initials) · opts.why: first line, when an order or guard triggered it
+// opts.amt: exact token amount (initials) · opts.why: first line when an order triggered it
+//
+// Speed: the bag size is known from the last buy or card, so the sell quote starts at once alongside the
+// balance and approval reads (one round trip); if the bag turns out different, it is quoted again. With the
+// approval made right after the buy, the sell is a single transaction.
 async function sell(t, pct, replyTo, opts = {}) {
   const { slip } = cfg();
-  const [m, r, bal, hBefore] = await Promise.all([tokenMeta(t), findRoute(t), balOf(t), hypeBal()]);
+  const p0 = state.pos[t], r0 = state.routes[t];
+  const cached = p0?.balW ? BigInt(p0.balW) : null;
+  const guess = opts.amt == null && cached > 0n ? (cached * BigInt(Math.min(100, Math.max(1, Math.round(pct))))) / 100n : null;
+  const qGuess = r0?.kind === 'v4' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
+  const [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
+  cacheBal(t, bal);
   let amt;
   if (opts.amt != null) { amt = opts.amt > bal ? bal : opts.amt; pct = bal > 0n ? Number((amt * 1000n) / bal) / 10 : 0; }
   else { pct = Math.min(100, Math.max(1, Math.round(pct))); amt = (bal * BigInt(pct)) / 100n; }
   if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
-  const head = opts.why ? `${opts.icon || '🤖'} ${opts.why}\n` : '';
+  const head = opts.why ? `${opts.icon || '🎯'} ${opts.why}\n` : '';
   const msgP = say(`${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
   const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && spender === ROUTER ? MAX256 : amt), gas: 120000 });
   let txs, expect;
   try {
     if (r.kind === 'v4') {
-      const allowed = u256(await ethCall(t, enc('dd62ed3e', me, ROUTER)));
-      const slot = allowed >= amt ? null : await allowanceSlot(t, ROUTER);
-      if (allowed < amt && !slot) {
-        // unusual token storage: approve first, then quote for real
-        const ah = await serial(() => sendRaw(approveTx(ROUTER)));
-        await edit(await msgP, `${head}⏳ Approving ${esc(m.sym)} before selling · ${txLink(ah)}`);
-        const arc = await receipt(ah);
-        if (!arc || arc.status !== '0x1') throw new Error('approval failed or never confirmed');
-        expect = await v4QuoteSell(r, t, amt, null);
-        txs = [{ to: ROUTER, data: v4Sell(r, t, amt, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 }];
+      const swap = (out) => ({ to: ROUTER, data: v4Sell(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
+      if (allowed >= amt) {
+        expect = (r === r0 && amt === guess && (await qGuess)) || (await v4QuoteSell(r, t, amt, null));
+        txs = [swap(expect)];
       } else {
-        expect = await v4QuoteSell(r, t, amt, slot);
-        const sw = { to: ROUTER, data: v4Sell(r, t, amt, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
-        txs = allowed >= amt ? [sw] : [approveTx(ROUTER), sw];
+        const slot = await allowanceSlot(t, ROUTER);
+        if (!slot) {
+          // unusual token storage: approve first, then quote for real
+          const ah = await serial(() => sendRaw(approveTx(ROUTER)));
+          await edit(await msgP, `${head}⏳ Approving ${esc(m.sym)} before selling · ${txLink(ah)}`);
+          const arc = await receipt(ah);
+          if (!arc || arc.status !== '0x1') throw new Error('approval failed or never confirmed');
+          expect = await v4QuoteSell(r, t, amt, null);
+          txs = [swap(expect)];
+        } else {
+          expect = await v4QuoteSell(r, t, amt, slot);
+          // the approval sent after the buy goes first (lower nonce), so the sell needs no second one
+          txs = approving.has(t) ? [swap(expect)] : [approveTx(ROUTER), swap(expect)];
+        }
       }
     } else {
       const k = await kyRoute(t, NATIVE, amt);
@@ -625,11 +682,11 @@ async function sell(t, pct, replyTo, opts = {}) {
       const spender = lc(b.routerAddress);
       expect = BigInt(b.amountOut);
       const sw = { to: spender, value: BigInt(b.transactionValue || 0), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
-      const allowed = u256(await ethCall(t, enc('dd62ed3e', me, spender)));
-      txs = allowed >= amt ? [sw] : [approveTx(spender), sw];
+      const ka = await allowanceOf(t, spender);
+      txs = ka >= amt ? [sw] : [approveTx(spender), sw];
     }
   } catch (e) {
-    await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> failed: ${esc(e.message).slice(0, 200)}`);
+    await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> failed: ${esc(e.message).slice(0, 200)}`, cardButtons(t));
     return false;
   }
   return finishSell(t, m, pct, msgP, txs, expect, head, hBefore, bal, opts);
@@ -638,35 +695,39 @@ async function sell(t, pct, replyTo, opts = {}) {
 async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore, opts) {
   let hashes;
   try { hashes = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; }); }
-  catch (e) { await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`); return false; }
+  catch (e) { await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`, cardButtons(t)); return false; }
   const hash = hashes[hashes.length - 1];
+  const sentAt = Date.now();
   const rcP = receipt(hash);
   const msg = await msgP;
   await edit(msg, `${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> for ~${fmtH(num(expect))}${hashes.length > 1 ? ' (approve + sell)' : ''} · ${txLink(hash)}`);
   const rc = await rcP;
   if (!rc) { await edit(msg, `${head}⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`); return false; }
-  if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted · ${txLink(hash)}`); return false; }
-  const [hNow, left] = await Promise.all([hypeBal().catch(() => before), balOf(t).catch(() => tokBefore)]);
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> was dropped by the network; nothing sold. Tap again.`, cardButtons(t)); return false; }
+  if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted (price moved past your slippage?) · ${txLink(hash)}`, cardButtons(t)); return false; }
+  const [hNow, left] = await Promise.all([hypeBal(true).catch(() => before), balOf(t, me, true).catch(() => tokBefore)]);
   const got = num(hNow - before);
   const sold = num(tokBefore - left, m.d);
   const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; p.lastSell = Date.now();
+  p.cOut = (p.cOut ?? 0) + Math.max(got, 0);
+  cacheBal(t, left);
   if (left === 0n) { p.open = false; dropSellOrders(t); }
   J({ side: 'sell', coin: t, sym: m.sym, hype: Math.max(got, 0), tok: sold, pct, hash, why: opts.kind });
   const px = await hypeUsd();
-  await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${txLink(hash)}`, cardButtons(t));
+  await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}`, cardButtons(t));
   return true;
 }
 function track(hash, onDone, onTimeout) {
   receipt(hash).then((rc) => (rc ? onDone(rc) : onTimeout())).catch((e) => console.error('track', e.message));
 }
 
-// sell just enough to take back what went in (HYPE in minus HYPE already out); the rest rides free
+// sell just enough to take back what went into this round (HYPE in minus HYPE already out); the rest rides free
 async function initials(t, replyTo) {
-  const p = state.pos[t];
-  if (!p || !(p.hypeIn > 0)) throw new Error('no buy through this bot recorded for this coin');
-  const need = p.hypeIn - (p.hypeOut || 0);
-  if (need <= 0.0001) return say(`Initials are already out on <b>${esc(p.sym)}</b>: in ${fmtH(p.hypeIn)}, out ${fmtH(p.hypeOut)}. The rest is free.`, null, replyTo);
-  const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), balOf(t)]);
+  const p = state.pos[t], c = cyc(p);
+  if (!c || !(c.in > 0)) throw new Error('no buy through this bot recorded for this coin');
+  const need = c.in - (c.out || 0);
+  if (need <= 0.0001) return say(`Initials are already out on <b>${esc(p.sym)}</b>: in ${fmtH(c.in)}, out ${fmtH(c.out)}. The rest is free.`, null, replyTo);
+  const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), balOf(t, me, true)]);
   if (!r) throw new Error('no route for this token');
   if (bal === 0n) throw new Error(`you hold no ${m.sym}`);
   const needW = toWei(need.toFixed(18));
@@ -690,6 +751,7 @@ const orderText = (o) =>
   o.k === 'tp' ? `TP ${+o.x.toFixed(2)}× sell ${o.pct}%` :
   o.k === 'sl' ? `SL −${Math.round(o.drop * 100)}% sell ${o.pct}%` :
   o.k === 'trail' ? `trail ${Math.round(o.drop * 100)}% sell ${o.pct}%` :
+  o.k === 'lsell' ? `sell ${o.pct}% at MC ${o.dir === 'below' ? '≤' : '≥'} $${fmt(o.mc)}` :
   `buy ${o.hype} HYPE at MC ${o.dir === 'above' ? '≥' : '≤'} $${fmt(o.mc)}`;
 // "tp 2x 50 tp 5x 100 sl 40 trail 35" → [{ k, x | drop, pct }]
 // tp: multiple of the entry price (2x, or +100%), sells 50% by default
@@ -725,7 +787,7 @@ async function setOrders(t, specs, auto = false) {
   const r = await findRoute(t);
   const now = r ? await priceOf(t, r).catch(() => null) : null;
   const p = state.pos[t];
-  const entry = p?.tokIn > 0 && p.hypeIn > 0 ? p.hypeIn / p.tokIn : null;
+  const entry = entryOf(p);
   const base = entry || now;
   if (!base) throw new Error('cannot price this coin yet');
   const keep = (state.orders[t] || []).filter((o) => !(auto && o.auto));
@@ -746,7 +808,7 @@ function fireSell(t, share, why, o, icon) {
   busy.add(t);
   (async () => {
     let ok = false;
-    try { ok = await sell(t, share, null, { why, icon, kind: o ? o.k : icon ? 'copy' : 'guard' }); }
+    try { ok = await sell(t, share, null, { why, icon: icon || (o ? '🎯' : '🛡'), kind: o ? o.k : icon ? 'copy' : 'guard' }); }
     catch (e) { await say(`${icon || '🤖'} ${why}\n⚠️ Sell failed: ${esc(e.message).slice(0, 200)}`); }
     if (o) {
       if (ok) removeOrder(o.id);
@@ -773,20 +835,24 @@ async function guardCoin(t) {
   const px = await priceOf(t, r);
   if (!px) return;
   const os = state.orders[t] || [];
-  for (const o of os.filter((x) => x.k === 'lbuy')) {
-    if (o.exp && Date.now() > o.exp) { removeOrder(o.id); say(`⌛ Limit buy on <b>${esc(m.sym)}</b> expired (${orderText(o)}).`); continue; }
-    const u = await hypeUsd();
-    if (!u || !m.sup) continue;
-    const mc = px * num(m.sup, m.d) * u;
-    if (o.dir === 'above' ? mc >= o.mc : mc <= o.mc) {
-      removeOrder(o.id);
-      busy.add(t);
-      buy(t, o.hype, null, false, 'limit', { label: `🎯 Limit buy: <b>${esc(m.sym)}</b> MC $${fmt(mc)}` })
-        .catch((e) => say(`🎯 Limit buy on <b>${esc(m.sym)}</b> failed: ${esc(e.message).slice(0, 200)}`)).finally(() => busy.delete(t));
-      return;
-    }
+  const u = await hypeUsd();
+  const mcUsd = u && m.sup ? px * num(m.sup, m.d) * u : null;
+  for (const o of os.filter((x) => x.exp && Date.now() > x.exp)) { removeOrder(o.id); say(`⌛ Limit order on <b>${esc(m.sym)}</b> expired (${orderText(o)}).`); }
+  // limit buys: kept until one fills; a revert is retried on the next checks, up to 3 times
+  for (const o of os.filter((x) => x.k === 'lbuy' && !(x.exp && Date.now() > x.exp))) {
+    if (mcUsd == null || !(o.dir === 'above' ? mcUsd >= o.mc : mcUsd <= o.mc)) continue;
+    busy.add(t);
+    buy(t, o.hype, null, false, 'limit', { label: `🎯 Limit buy: <b>${esc(m.sym)}</b> MC $${fmt(mcUsd)}` })
+      .then((res) => {
+        if (res?.ok || res?.refused) return removeOrder(o.id);
+        if ((o.fails = (o.fails || 0) + 1) >= 3) { removeOrder(o.id); return say(`🎯 Gave up on ${orderText(o)} for <b>${esc(m.sym)}</b> after 3 failed buys.`); }
+        save();
+      })
+      .catch((e) => { removeOrder(o.id); say(`🎯 Limit buy on <b>${esc(m.sym)}</b> failed: ${esc(e.message).slice(0, 200)}`); })
+      .finally(() => busy.delete(t));
+    return;
   }
-  const sells = os.filter((x) => x.k !== 'lbuy');
+  const sells = os.filter((x) => x.k !== 'lbuy' && !(x.exp && Date.now() > x.exp));
   const p = state.pos[t];
   if (!sells.length && !isOpen(p)) return;
   const bal = await balOf(t);
@@ -798,7 +864,8 @@ async function guardCoin(t) {
     const why =
       o.k === 'tp' && px >= o.base * o.x ? `Take profit: <b>${esc(m.sym)}</b> is ${(px / o.base).toFixed(2)}× entry` :
       o.k === 'sl' && px <= o.base * (1 - o.drop) ? `Stop loss: <b>${esc(m.sym)}</b> is down ${Math.round((1 - px / o.base) * 100)}% from entry` :
-      o.k === 'trail' && px <= o.peak * (1 - o.drop) ? `Trailing stop: <b>${esc(m.sym)}</b> fell ${Math.round((1 - px / o.peak) * 100)}% from its high (${(o.peak / o.base).toFixed(2)}× entry)` : null;
+      o.k === 'trail' && px <= o.peak * (1 - o.drop) ? `Trailing stop: <b>${esc(m.sym)}</b> fell ${Math.round((1 - px / o.peak) * 100)}% from its high (${(o.peak / o.base).toFixed(2)}× entry)` :
+      o.k === 'lsell' && mcUsd != null && (o.dir === 'below' ? mcUsd <= o.mc : mcUsd >= o.mc) ? `Limit sell: <b>${esc(m.sym)}</b> MC $${fmt(mcUsd)} (${o.dir === 'below' ? 'at or under' : 'at or over'} $${fmt(o.mc)})` : null;
     if (why && (!fire || o.pct > fire.o.pct)) fire = { o, why };
   }
   if (fire) return fireSell(t, fire.o.pct, fire.why, fire.o);
@@ -847,7 +914,10 @@ async function handleFresh() {
   }
 }
 async function snipeBuy(f, s) {
-  const route = { kind: 'v4', name: pmName(f.pm), pm: f.pm, fee: f.fee, ts: f.ts, hook: f.hook };
+  // a coin that already trades elsewhere is bought on its best pool, not blindly on the new one (anyone can open a
+  // thin, mispriced pool for any token)
+  const others = (state.pools[f.t] || []).some((p) => p.id !== f.id);
+  const route = others ? undefined : { kind: 'v4', name: pmName(f.pm), pm: f.pm, fee: f.fee, ts: f.ts, hook: f.hook };
   const label = `🎯 Snipe: ${s.k === 'token' ? 'pool opened' : s.k === 'dev' ? `${short(s.w)} launched a coin` : `first coins on new pool manager ${short(f.pm)}`}`;
   const t0 = Date.now();
   for (let i = 0; ; i++) {
@@ -1129,23 +1199,18 @@ async function withdraw(to, amtStr) {
 
 const HELP =
   `<b>ely-router</b>\n` +
-  `Paste a token address (or a link with one) for a card with buy, sell, 💰 initials and 🤖 auto-sell buttons.\n` +
+  `Paste a token address (or a link with one) for a card: ⚡ buy, sell 25/50/100%, 💰 initials, 🎯 limit.\n` +
+  `/pos · open bags with one-tap sells\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;coin&gt; &lt;percent&gt; · /initials &lt;coin&gt;\n` +
   `&lt;coin&gt; = address, the symbol of a coin you hold, or its 8-character code\n\n` +
-  `<b>Auto-sell</b>\n` +
-  `/tp &lt;coin&gt; 2x 50 · /sl &lt;coin&gt; 40 · /trail &lt;coin&gt; 35 · /orders\n` +
-  `/auto ${DEFAULT_AUTO} (added to every buy) · /auto off\n` +
-  `/limit &lt;coin&gt; &lt;HYPE&gt; [below|above] &lt;MC $&gt;, e.g. /limit 0x… 1 20k\n\n` +
-  `<b>Snipe and copy</b>\n` +
-  `/snipe &lt;token&gt; &lt;HYPE&gt; (buys when its pool opens)\n` +
-  `/snipe dev &lt;wallet&gt; &lt;HYPE&gt; [count] · /snipe new &lt;HYPE&gt; [count] (new launchpad) · /snipes\n` +
-  `/copy &lt;wallet&gt; &lt;HYPE&gt; [name] · /copy off &lt;wallet|name|all&gt; · /copy sells on|off · /copy\n\n` +
-  `<b>Guards</b> (on every coin you hold)\n` +
-  `/set devsell 50 (sell when the creator dumps half; 0 = off) · /set rug on|off · /set preapprove on|off\n\n` +
-  `/bal · /pnl · /wallet · /stats 7d · /journal · /export · /report\n` +
-  `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check off · /set stale 5\n` +
-  `/set report quiet|on|off · /set copymax 10\n` +
-  `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /nonce if a transaction is stuck`;
+  `<b>Limit orders</b> (market cap in $, checked every 2 s)\n` +
+  `/limit &lt;coin&gt; 1 20k · buy 1 HYPE when MC falls to $20K (add "above" for breakouts)\n` +
+  `/limit sell &lt;coin&gt; 50 100k · /limit sell &lt;coin&gt; 100 below 3k · /limit sell &lt;coin&gt; 50 2x\n` +
+  `/orders · see and cancel\n\n` +
+  `/bal · /pnl · /stats 7d · /journal · /export · /report · /wallet\n` +
+  `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
+  `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /nonce if a transaction is stuck\n\n` +
+  `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
 const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
@@ -1190,11 +1255,90 @@ function copyView() {
   };
 }
 
+const LIMIT_HELP = 'Limit orders, triggered by market cap in $ (checked every 2 s):\n' +
+  '/limit &lt;coin&gt; &lt;HYPE&gt; 20k · buy when MC falls to $20K\n' +
+  '/limit &lt;coin&gt; &lt;HYPE&gt; above 50k · buy on a breakout\n' +
+  '/limit sell &lt;coin&gt; 50 100k · sell 50% when MC reaches $100K\n' +
+  '/limit sell &lt;coin&gt; 100 below 3k · sell all if MC falls to $3K\n' +
+  '/limit sell &lt;coin&gt; 50 2x · sell 50% at 2× your entry\n' +
+  'Add 12h or 7d at the end for an expiry (buys default to 3 days, sells to none). Or tap 🎯 Limit on a card and reply.';
+const limitAsk = {}; // message id of a card's 🎯 Limit question → token
+// "1 20k", "1 below 20k", "50 at 100k 12h", "50% 2x" → { side, a, dir, mc | x, exp }
+function parseLimit(side, ws) {
+  ws = ws.filter(Boolean);
+  const a = Number(String(ws[0] || '').replace('%', ''));
+  let i = 1, dir = side === 'buy' ? 'below' : 'above';
+  if (/^at$/i.test(ws[i] || '')) i++;
+  if (/^(below|above|under|over)$/i.test(ws[i] || '')) { dir = /above|over/i.test(ws[i]) ? 'above' : 'below'; i++; }
+  if (/^at$/i.test(ws[i] || '')) i++;
+  const xm = String(ws[i] || '').match(/^(\d*\.?\d+)x$/i);
+  const x = side === 'sell' && xm ? Number(xm[1]) : null;
+  const mc = x ? null : parseUsd(ws[i]);
+  i++;
+  const tm = String(ws[i] || '').match(/^(\d*\.?\d+)(h|d)$/i);
+  const exp = tm ? Date.now() + Number(tm[1]) * (lc(tm[2]) === 'd' ? 864e5 : 36e5) : side === 'buy' ? Date.now() + 3 * 864e5 : null;
+  if (!(a > 0) || (!mc && !x) || (side === 'sell' && a > 100)) return null;
+  return { side, a, dir, mc, x, exp };
+}
+async function addLimit(t, L, reply) {
+  if (L.side === 'buy' && L.a > cfg().max) throw new Error(`max per buy is ${cfg().max} HYPE (change with /set max)`);
+  const r = await findRoute(t);
+  if (!r) throw new Error('no route for this token');
+  const [m, pr, u, bal] = await Promise.all([tokenMeta(t), priceOf(t, r), hypeUsd(), balOf(t, me, true)]);
+  const sup = m.sup ? num(m.sup, m.d) : 0;
+  if (!pr || !sup || !u) throw new Error('cannot read this coin\'s market cap right now');
+  const now = pr * sup * u;
+  if (L.side === 'sell' && bal === 0n) return say(`You hold no ${esc(m.sym)} in the bot wallet; a limit sell needs a bag.`, null, reply);
+  if (L.x) {
+    const e = entryOf(state.pos[t]);
+    if (!e) return say(`No entry recorded for ${esc(m.sym)}, so "${L.x}x" has nothing to multiply. Use a market cap instead, e.g. 100k.`, null, reply);
+    L.mc = e * sup * u * L.x;
+  }
+  const o = L.side === 'buy' ? { id: oid(), k: 'lbuy', hype: L.a, mc: L.mc, dir: L.dir, at: Date.now(), exp: L.exp } : { id: oid(), k: 'lsell', pct: Math.round(L.a), mc: L.mc, dir: L.dir, at: Date.now(), exp: L.exp };
+  (state.orders[t] ||= []).push(o);
+  save();
+  const hit = L.dir === 'above' ? now >= L.mc : now <= L.mc;
+  const left = o.exp ? Math.round((o.exp - Date.now()) / 36e5) : null;
+  return say(`🎯 Limit ${L.side}: ${L.side === 'buy' ? `${L.a} HYPE of` : `${o.pct}% of your`} <b>${esc(m.sym)}</b> when MC ${L.dir === 'above' ? 'reaches' : 'falls to'} $${fmt(L.mc)}${L.x ? ` (${L.x}× entry)` : ''}.\nNow $${fmt(now)}${hit ? ', already there: it fills on the next check' : ` (${pct(L.mc / now - 1)} away)`}. ${left != null ? `Expires in ${left >= 48 ? Math.round(left / 24) + ' days' : left + ' h'}.` : 'No expiry.'}${L.side === 'buy' ? ' The sell check still runs.' : ''}`,
+    [[{ text: '✖ Cancel', callback_data: `o:${o.id}` }, { text: '📋 Orders', callback_data: `l:${t.slice(2)}` }]], reply);
+}
+// open bags with one-tap sells
+async function positionsView() {
+  const open = Object.entries(state.pos).filter(([, p]) => isOpen(p)).slice(-15);
+  const rows = await Promise.all(open.map(async ([t, p]) => {
+    try {
+      const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), balOf(t, me, true)]);
+      cacheBal(t, bal);
+      if (bal === 0n) { p.open = false; return null; }
+      const pr = r ? await priceOf(t, r).catch(() => null) : null;
+      const v = pr ? num(bal, m.d) * pr : null, c = cyc(p);
+      return { t, sym: m.sym, v, pl: v != null && c.in > 0 ? (v + c.out - c.in) / c.in : null, n: (state.orders[t] || []).length };
+    } catch { return null; }
+  }));
+  save();
+  const list = rows.filter(Boolean).sort((a, b) => (b.v || 0) - (a.v || 0));
+  if (!list.length) return { text: 'No open bags.' };
+  const px = await hypeUsd();
+  return {
+    text: `<b>Open bags</b>\n` + list.map((x) => `• <b>${esc(x.sym)}</b> ${x.v != null ? fmtH(x.v) + usd(x.v, px) : '?'}${x.pl != null ? ` · ${pct(x.pl)}` : ''}${x.n ? ` · 🎯 ${x.n}` : ''}`).join('\n'),
+    rows: list.map((x) => [{ text: `${x.sym} 50%`, callback_data: `s:${x.t.slice(2)}:50` }, { text: `${x.sym} 100%`, callback_data: `s:${x.t.slice(2)}:100` }, { text: '💰', callback_data: `i:${x.t.slice(2)}` }, { text: '🎯', callback_data: `m:${x.t.slice(2)}` }, { text: '🔎', callback_data: `c:${x.t.slice(2)}` }]),
+  };
+}
+
 async function onMessage(msg) {
   const text = (msg.text || '').trim();
   const [cmd0, ...args] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
   const reply = msg.message_id;
+  // an answer to a card's 🎯 Limit question
+  const asked = limitAsk[msg.reply_to_message?.message_id];
+  if (asked && !text.startsWith('/')) {
+    const w = text.split(/\s+/), side = lc(w[0]).replace(/^(b)$/, 'buy').replace(/^(s)$/, 'sell');
+    const L = side === 'buy' || side === 'sell' ? parseLimit(side, w.slice(1)) : null;
+    if (!L) return say(`Not understood. Reply to the question again with, for example:\n<code>buy 1 20k</code> · <code>buy 1 above 50k</code> · <code>sell 50 100k</code> · <code>sell 100 below 3k</code> · <code>sell 50 2x</code>`, null, reply);
+    return addLimit(asked, L, reply);
+  }
+  if (cmd === '/pos') { const v = await positionsView(); return say(v.text, v.rows); }
   if (cmd === '/start' || cmd === '/help') {
     const b = await hypeBal().catch(() => null);
     return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} (up to block ${state.poolsBlock})`);
@@ -1261,19 +1405,12 @@ async function onMessage(msg) {
     return say(`Auto-sell preset: <b>${cfg().auto === 'off' ? 'off' : parseSpec(cfg().auto).map(orderText).join(' · ')}</b>.${cfg().auto === 'off' ? '' : ' Added to every new buy; 🤖 Auto-sell on a card adds it to a coin you already hold.'}`);
   }
   if (cmd === '/limit') {
-    const t = coinArg(args[0]); const h = Number(args[1]);
-    let dir = 'below', i = 2;
-    if (/^(below|above|under|over)$/.test(lc(args[2] || ''))) { dir = /above|over/.test(lc(args[2])) ? 'above' : 'below'; i = 3; }
-    const mc = parseUsd(args[i]);
-    if (!t || !(h > 0) || !mc) return say('Usage: /limit &lt;coin&gt; &lt;HYPE&gt; [below|above] &lt;market cap $&gt;\ne.g. /limit 0xTOKEN 1 20k buys 1 HYPE when MC falls to $20K');
-    if (h > cfg().max) throw new Error(`max per buy is ${cfg().max} HYPE (change with /set max)`);
-    const r = await findRoute(t);
-    if (!r) throw new Error('no route for this token');
-    const [m, pr, u] = await Promise.all([tokenMeta(t), priceOf(t, r), hypeUsd()]);
-    const now = pr && m.sup && u ? pr * num(m.sup, m.d) * u : null;
-    (state.orders[t] ||= []).push({ id: oid(), k: 'lbuy', hype: h, mc, dir, at: Date.now(), exp: Date.now() + 3 * 864e5 });
-    save();
-    return say(`🎯 Limit buy: ${h} HYPE of <b>${esc(m.sym)}</b> when MC ${dir === 'above' ? 'rises to' : 'falls to'} $${fmt(mc)}${now ? ` (now $${fmt(now)}${(dir === 'below' ? now <= mc : now >= mc) ? ', already there: it buys on the next check' : ''})` : ''}. Sell check still runs. Expires in 3 days; /orders to cancel.`);
+    const side = lc(args[0]) === 'sell' ? 'sell' : lc(args[0]) === 'buy' ? 'buy' : null;
+    const rest = side ? args.slice(1) : args;
+    const t = coinArg(rest[0]);
+    const L = t ? parseLimit(side || 'buy', rest.slice(1)) : null;
+    if (!t || !L) return say(LIMIT_HELP);
+    return addLimit(t, L, reply);
   }
   if (cmd === '/snipe') {
     const sub = lc(args[0] || '');
@@ -1350,15 +1487,28 @@ async function onCallback(q) {
       return showCard(t);
     }
     const h = Number(b) / 10;
-    await ack(`Buying ${h} HYPE…`);
+    ack(`Buying ${h} HYPE…`); // the toast goes out alongside the trade, not before it
     return buy(t, h, reply, kind === 'f', kind === 'f' ? 'override' : srcOf(q.message?.text || ''));
   }
-  if (kind === 's' && t) { await ack(`Selling ${b}%…`); return sell(t, Number(b), reply); }
+  if (kind === 's' && t) {
+    const key = `${reply}:${q.data}`;
+    if (Date.now() - (taps[key] || 0) < 5000) return ack('Already selling');
+    taps[key] = Date.now();
+    ack(`Selling ${b}%…`); return sell(t, Number(b), reply);
+  }
+  if (kind === 'm' && t) {
+    await ack('');
+    const sym = esc(await symOf(t));
+    const held = (state.pos[t]?.balW || '0') !== '0';
+    const q2 = await tg('sendMessage', { chat_id: OWNER, parse_mode: 'HTML', text: `🎯 Limit order on <b>${sym}</b>: reply to this message with\n<code>buy 1 20k</code> buy 1 HYPE when MC falls to $20K\n<code>buy 1 above 50k</code> buy on a breakout${held ? '\n<code>sell 50 100k</code> sell 50% when MC reaches $100K\n<code>sell 100 below 3k</code> sell all if MC falls to $3K\n<code>sell 50 2x</code> sell 50% at 2× your entry' : ''}`, reply_markup: { force_reply: true, input_field_placeholder: held ? 'sell 50 100k' : 'buy 1 20k' } });
+    if (q2?.message_id) { limitAsk[q2.message_id] = t; const ks = Object.keys(limitAsk); if (ks.length > 50) delete limitAsk[ks[0]]; }
+    return;
+  }
   if (kind === 'i' && t) {
     const key = `${reply}:${q.data}`;
     if (Date.now() - (taps[key] || 0) < 5000) return ack('Already selling');
     taps[key] = Date.now();
-    await ack('Taking initials…'); return initials(t, reply);
+    ack('Taking initials…'); return initials(t, reply);
   }
   if (kind === 'a' && t) {
     if ((await balOf(t)) === 0n) return ack('You hold none of this coin');
@@ -1382,17 +1532,13 @@ async function onCallback(q) {
 async function main() {
   console.log(`ely-router · wallet ${account.address} · RPCs ${RPCS.length}`);
   await tg('setMyCommands', { commands: [
-    { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
+    { command: 'pos', description: 'Open bags with one-tap sells' },
     { command: 'buy', description: '/buy <token> <HYPE>' }, { command: 'sell', description: '/sell <coin> <percent>' },
+    { command: 'limit', description: '/limit <coin> 1 20k · /limit sell <coin> 50 100k' }, { command: 'orders', description: 'Limit orders: see and cancel' },
     { command: 'initials', description: '/initials <coin>: sell just enough to take your HYPE back' },
-    { command: 'tp', description: '/tp <coin> 2x 50: take profit' }, { command: 'sl', description: '/sl <coin> 40: stop loss' },
-    { command: 'trail', description: '/trail <coin> 35: trailing stop' }, { command: 'orders', description: 'Open orders and guards' },
-    { command: 'auto', description: 'Auto-sell preset added to every buy' }, { command: 'limit', description: '/limit <coin> <HYPE> <MC $>' },
-    { command: 'snipe', description: '/snipe <token|dev|new> <HYPE>' }, { command: 'snipes', description: 'Armed snipes' },
-    { command: 'copy', description: '/copy <wallet> <HYPE> [name]' },
-    { command: 'set', description: 'slip, max, sizes, guards' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
+    { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
     { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all' }, { command: 'journal', description: 'Last 15 trades' },
-    { command: 'export', description: 'Full trade journal as CSV' }, { command: 'report', description: 'Daily report now' },
+    { command: 'set', description: 'slip, max, sizes and more' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
     { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
     { command: 'help', description: 'Every command' },
   ] });
@@ -1400,6 +1546,9 @@ async function main() {
   const backlog = await tg('getUpdates', { offset: -1, timeout: 0 });
   if (backlog?.length) state.offset = backlog[backlog.length - 1].update_id + 1;
   const b = await hypeBal().catch(() => null);
+  // nonce and gas price ready before the first tap, gas price kept warm
+  await Promise.all([resyncNonce().catch(() => {}), gasPrice().catch(() => {})]);
+  setInterval(() => fetchGas().catch(() => {}), 25000);
   // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
   const first = !state.poolsBlock;
   if (first) console.log('indexing every v4 pool on Elysium…');
@@ -1420,7 +1569,7 @@ async function main() {
       if (cfg().report !== 'off' && d.getUTCHours() === REPORT_HOUR_UTC && state.reportDay !== day) { state.reportDay = day; save(); await dailyReport(cfg().report === 'on').catch((e) => console.error('report', e.message)); }
     }
   })();
-  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${knownPms.size} pool managers, kept live.\n${(() => { const c = cfg(), n = Object.values(state.orders).reduce((a, l) => a + l.length, 0); return `Orders ${n} · snipes ${state.snipes.length} · copying ${Object.keys(state.copy).length} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'}`; })()}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
+  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${knownPms.size} pool managers, kept live.${(() => { const c = cfg(), n = Object.values(state.orders).reduce((a, l) => a + l.length, 0), x = [n ? `${n} limit order${n > 1 ? 's' : ''}` : '', state.snipes.length ? `${state.snipes.length} snipes` : '', Object.keys(state.copy).length ? `copying ${Object.keys(state.copy).length}` : '', c.auto !== 'off' ? `auto-sell ${esc(c.auto)}` : '', c.devsell ? `dev guard ${c.devsell}%` : '', c.rug ? 'rug guard' : ''].filter(Boolean); return x.length ? '\n' + x.join(' · ') : ''; })()}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
   for (;;) {
     const ups = await tg('getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
     if (!ups) { await sleep(2000); continue; }
