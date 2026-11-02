@@ -436,7 +436,7 @@ async function showCard(t, m) {
 // ── trades ─────────────────────────────────────────────────────────────────────────────────────────
 const P = (t, sym) => (state.pos[t] ||= { sym, hypeIn: 0, hypeOut: 0, tokIn: 0, tokOut: 0, t: Date.now() });
 
-async function buy(t, hypeAmt, replyTo, force = false) {
+async function buy(t, hypeAmt, replyTo, force = false, src = 'command') {
   const { slip, max } = cfg();
   if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
@@ -449,6 +449,7 @@ async function buy(t, hypeAmt, replyTo, force = false) {
   if (cfg().check && !force) {
     sc = await sellCheck(r, t, wei);
     if (sc.ok === false) {
+      J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
       const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).` : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).`;
       return say(`${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
     }
@@ -470,11 +471,16 @@ async function buy(t, hypeAmt, replyTo, force = false) {
   const hash = await serial(() => sendRaw(tx));
   await edit(msg, `⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
   track(hash, async (rc) => {
-    if (rc.status !== '0x1') return edit(msg, `❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`);
+    if (rc.status !== '0x1') {
+      J({ side: 'revert', coin: t, sym: m.sym, hype: hypeAmt, src, slip: Number(slip), route: r.name, hash });
+      return edit(msg, `❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`);
+    }
     const got = (await balOf(t).catch(() => before)) - before;
-    const p = P(t, m.sym); p.hypeIn += hypeAmt; p.tokIn += num(got, m.d); save();
     const px = await hypeUsd();
     const mc = m.sup && got > 0n ? (hypeAmt / num(got, m.d)) * num(m.sup, m.d) : null;
+    const p = P(t, m.sym); p.hypeIn += hypeAmt; p.tokIn += num(got, m.d);
+    p.first ||= Date.now(); p.src ||= src; if (p.mc0Usd == null && mc && px) p.mc0Usd = mc * px;
+    J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
     return edit(msg, `✅ Bought <b>${fmt(num(got, m.d))} ${esc(m.sym)}</b> for ${hypeAmt} HYPE${mc ? ` · entry MC ${fmtH(mc)}${usd(mc, px)}` : ''} · ${txLink(hash)}`, cardButtons(t));
   }, () => edit(msg, `⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Elysium may be holding its batch; check ${txLink(hash)} and /nonce if it never lands.`));
 }
@@ -522,10 +528,11 @@ async function finishSell(t, m, pct, msg, txs, expect) {
   const hash = hashes[hashes.length - 1];
   await edit(msg, `⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> for ~${fmtH(num(expect))}${hashes.length > 1 ? ' (approve + sell)' : ''} · ${txLink(hash)}`);
   track(hash, async (rc) => {
-    if (rc.status !== '0x1') return edit(msg, `❌ Sell of <b>${esc(m.sym)}</b> reverted · ${txLink(hash)}`);
+    if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash }); return edit(msg, `❌ Sell of <b>${esc(m.sym)}</b> reverted · ${txLink(hash)}`); }
     const got = num((await hypeBal().catch(() => before)) - before);
     const sold = num(tokBefore - (await balOf(t).catch(() => tokBefore)), m.d);
-    const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; save();
+    const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; p.lastSell = Date.now();
+    J({ side: 'sell', coin: t, sym: m.sym, hype: Math.max(got, 0), tok: sold, pct, hash });
     const px = await hypeUsd();
     return edit(msg, `✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${txLink(hash)}`, cardButtons(t));
   }, () => edit(msg, `⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`));
@@ -569,6 +576,151 @@ async function pnl() {
   const total = tnow + tout - tin;
   return rows.slice(-20).join('\n') + `\n\nTotal: in ${fmtH(tin)} · out ${fmtH(tout)} · holding ${fmtH(tnow)} · <b>${total >= 0 ? '+' : ''}${fmtH(total)}</b>`;
 }
+// ── performance: trade journal, stats, nightly report with tips ───────────────────────────────────
+// Every buy, sell, revert and refused buy is journaled with where the tap came from (which alert type),
+// entry market cap, slippage and the sell check result. Open bags are valued every 10 minutes (their
+// peak is kept, to spot gains given back). /stats and a nightly report turn that into numbers and tips.
+state.journal ||= [];
+state.equity ||= [];   // daily wallet value snapshots [{ d: 'YYYY-MM-DD', v: HYPE }]
+const REPORT_HOUR_UTC = Number(process.env.REPORT_HOUR_UTC ?? 20); // 21:00 in Lagos
+const J = (e) => { state.journal.push({ t: Date.now(), ...e }); if (state.journal.length > 3000) state.journal.splice(0, state.journal.length - 3000); save(); };
+// which alert a ⚡ tap came from, by the alert's first emoji
+const srcOf = (txt = '') => {
+  const map = [['🚀', 'launch alert'], ['🔥', 'volume run'], ['🎯', 'group buy'], ['👛', 'wallet move'], ['🧬', 'fresh wallet'], ['🌉', 'bridge'], ['🚨', 'gate'], ['🛬', 'cielo arrival']];
+  for (const [e, n] of map) if (txt.startsWith(e)) return n;
+  return 'card';
+};
+async function valuePositions() {
+  for (const [t, p] of Object.entries(state.pos)) {
+    if (!(p.hypeIn > 0)) continue;
+    try {
+      const bal = await balOf(t);
+      if (bal === 0n) { p.now = 0; p.nowAt = Date.now(); continue; }
+      const m = await tokenMeta(t);
+      const r = await findRoute(t);
+      if (!r) continue;
+      const q = await quoteBuy(r, t, 10n ** 16n);
+      p.now = num(bal, m.d) * (0.01 / num(q, m.d));
+      p.nowAt = Date.now();
+      p.peak = Math.max(p.peak || 0, p.now + (p.hypeOut || 0)); // best total value this trade ever showed
+    } catch {}
+  }
+  save();
+}
+const pct = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(0)}%`;
+const mcBucket = (usdMc) => (usdMc == null ? null : usdMc < 5e3 ? 'under $5K' : usdMc < 20e3 ? '$5K to $20K' : usdMc < 100e3 ? '$20K to $100K' : 'over $100K');
+function stats(sinceMs = 0) {
+  const coins = new Set(state.journal.filter((e) => e.side === 'buy' && e.t >= sinceMs).map((e) => e.coin));
+  const rows = [];
+  for (const c of coins) {
+    const p = state.pos[c];
+    if (!p || !(p.hypeIn > 0)) continue;
+    const pl = (p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn;
+    rows.push({ c, sym: p.sym, inv: p.hypeIn, out: p.hypeOut || 0, now: p.now ?? 0, pl, r: pl / p.hypeIn, src: p.src || 'card', mc0: p.mc0Usd ?? null, peak: p.peak || 0, open: (p.now ?? 0) > 0.0005, first: p.first, lastSell: p.lastSell });
+  }
+  const j = state.journal.filter((e) => e.t >= sinceMs);
+  const s = {
+    rows,
+    inv: rows.reduce((a, x) => a + x.inv, 0), out: rows.reduce((a, x) => a + x.out, 0), now: rows.reduce((a, x) => a + x.now, 0),
+    buys: j.filter((e) => e.side === 'buy').length, sells: j.filter((e) => e.side === 'sell').length,
+    reverts: j.filter((e) => e.side === 'revert').length, refused: j.filter((e) => e.side === 'refused').length,
+  };
+  s.pl = s.now + s.out - s.inv;
+  const wins = rows.filter((x) => x.pl > 0), losses = rows.filter((x) => x.pl <= 0);
+  s.winRate = rows.length ? wins.length / rows.length : 0;
+  s.avgWin = wins.length ? wins.reduce((a, x) => a + x.r, 0) / wins.length : 0;
+  s.avgLoss = losses.length ? losses.reduce((a, x) => a + x.r, 0) / losses.length : 0;
+  const group = (key) => {
+    const g = {};
+    for (const x of rows) { const k = key(x); if (!k) continue; (g[k] ||= []).push(x); }
+    return Object.entries(g).map(([k, xs]) => ({ k, n: xs.length, avg: xs.reduce((a, x) => a + x.r, 0) / xs.length, pl: xs.reduce((a, x) => a + x.pl, 0), win: xs.filter((x) => x.pl > 0).length / xs.length }));
+  };
+  s.bySrc = group((x) => x.src).sort((a, b) => b.avg - a.avg);
+  s.byMc = group((x) => mcBucket(x.mc0)).sort((a, b) => b.avg - a.avg);
+  return s;
+}
+function tips(s, hypeNow) {
+  const out = [];
+  const tries = s.buys + s.reverts;
+  if (tries >= 5 && s.reverts / tries >= 0.3) out.push([5, `${s.reverts} of ${tries} buys reverted on slippage. Fresh launches move fast: try <code>/set slip 25</code> (now ${Number(cfg().slip) / 100}%).`]);
+  if (tries >= 8 && s.reverts === 0 && cfg().slip >= 3000n) out.push([5, `No reverts at ${Number(cfg().slip) / 100}% slippage: <code>/set slip 20</code> would stop you overpaying on fills.`]);
+  const src = s.bySrc.filter((x) => x.n >= 3);
+  if (src.length >= 2) {
+    const b = src[0], w = src[src.length - 1];
+    if (b.avg - w.avg > 0.3) out.push([6, `Buys from <b>${esc(b.k)}</b> average ${pct(b.avg)} (${b.n} coins) vs <b>${esc(w.k)}</b> ${pct(w.avg)} (${w.n}). Lean on the first, size down or skip the second.`]);
+  }
+  const mc = s.byMc.filter((x) => x.n >= 3);
+  if (mc.length >= 2 && mc[0].avg - mc[mc.length - 1].avg > 0.3) out.push([7, `Entries at <b>${mc[0].k}</b> market cap average ${pct(mc[0].avg)}; at ${mc[mc.length - 1].k} ${pct(mc[mc.length - 1].avg)}.`]);
+  const dead = s.rows.filter((x) => x.open && x.r <= -0.5 && Date.now() - (x.first || 0) > 24 * 3600e3).sort((a, b) => a.r - b.r);
+  if (dead.length) out.push([3, `Bags down over 50% for a day or more: ${dead.slice(0, 3).map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}. Cut them or write them off; they rarely come back.`]);
+  const runners = s.rows.filter((x) => x.open && x.out === 0 && x.now >= 2 * x.inv).sort((a, b) => b.now / b.inv - a.now / a.inv);
+  if (runners.length) out.push([1, `${runners.slice(0, 2).map((x) => `<b>${esc(x.sym)}</b> is ${(x.now / x.inv).toFixed(1)}×`).join(', ')} with nothing taken. Selling ${Math.round(100 / (runners[0].now / runners[0].inv))}% gets your stake back and the rest rides free.`]);
+  const gave = s.rows.filter((x) => !x.open && x.peak >= 2 * x.inv && x.out < 1.3 * x.inv);
+  if (gave.length) out.push([4, `You gave back gains on ${gave.slice(0, 2).map((x) => `${esc(x.sym)} (peaked ${(x.peak / x.inv).toFixed(1)}×, closed ${(x.out / x.inv).toFixed(1)}×)`).join(', ')}. A standing rule like "sell a third at 2×" would have locked it.`]);
+  if (s.rows.length >= 6 && s.winRate < 0.4 && s.avgWin < 2 * Math.abs(s.avgLoss)) out.push([8, `Win rate ${(s.winRate * 100).toFixed(0)}% with wins averaging ${pct(s.avgWin)} and losses ${pct(s.avgLoss)}: that loses money over time. Smaller sizes until one setup proves itself.`]);
+  const total = hypeNow + s.rows.reduce((a, x) => a + x.now, 0);
+  const big = s.rows.filter((x) => x.now > 0.4 * total && total > 0)[0];
+  if (big) out.push([2, `<b>${esc(big.sym)}</b> is ${((big.now / total) * 100).toFixed(0)}% of the wallet. One rug there sinks the week.`]);
+  return out.sort((x, y) => x[0] - y[0]).map((x) => x[1]).slice(0, 4);
+}
+function statsText(s, label, px) {
+  if (!s.rows.length && !s.reverts && !s.refused) return `No trades ${label}.`;
+  const best = [...s.rows].sort((a, b) => b.r - a.r).slice(0, 3), worst = [...s.rows].sort((a, b) => a.r - b.r).slice(0, 2);
+  return `<b>${label}</b>: ${s.rows.length} coins · ${s.buys} buys · ${s.sells} sells${s.reverts ? ` · ${s.reverts} reverted` : ''}${s.refused ? ` · ${s.refused} refused by the sell check` : ''}\n` +
+    `In ${fmtH(s.inv)} · out ${fmtH(s.out)} · still holding ${fmtH(s.now)} · <b>${s.pl >= 0 ? '+' : ''}${fmtH(s.pl)}</b>${usd(s.pl, px)}\n` +
+    (s.rows.length ? `Win rate ${(s.winRate * 100).toFixed(0)}% · avg win ${pct(s.avgWin)} · avg loss ${pct(s.avgLoss)}\n` : '') +
+    (best.length ? `Best: ${best.map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}\n` : '') +
+    (worst.length && worst[0].r < 0 ? `Worst: ${worst.map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}\n` : '') +
+    (s.bySrc.length > 1 ? `By source: ${s.bySrc.map((x) => `${esc(x.k)} ${pct(x.avg)} (${x.n})`).join(' · ')}\n` : '');
+}
+async function statsCommand(arg) {
+  await valuePositions();
+  const spans = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6, all: Infinity };
+  const k = spans[arg] ? arg : '7d';
+  const since = spans[k] === Infinity ? 0 : Date.now() - spans[k];
+  const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
+  const s = stats(since);
+  const t = tips(stats(0), num(hb));
+  return statsText(s, k === 'all' ? 'All time' : `Last ${k}`, px) + (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '\nTips appear once there are a few trades to learn from.') + `\n\n/stats 24h · /stats 7d · /stats 30d · /stats all`;
+}
+function journalText() {
+  const last = state.journal.slice(-15).reverse();
+  if (!last.length) return 'Journal is empty.';
+  const icon = { buy: '🟢', sell: '🔵', revert: '❌', refused: '🚫', 'sell-revert': '❌' };
+  return last.map((e) => `${icon[e.side] || '•'} ${new Date(e.t).toISOString().slice(5, 16).replace('T', ' ')} ${e.side} <b>${esc(e.sym)}</b> ${e.hype != null ? fmtH(e.hype) : ''}${e.mcUsd ? ` · MC $${fmt(e.mcUsd)}` : ''}${e.src ? ` · ${esc(e.src)}` : ''}${e.sc != null ? ` · rt ${(e.sc * 100).toFixed(0)}%` : ''}`).join('\n') + '\n\n/export sends the full journal as a CSV.';
+}
+async function exportJournal() {
+  const cols = ['time', 'side', 'symbol', 'coin', 'hype', 'tokens', 'mc_usd', 'source', 'slippage_pct', 'roundtrip_pct', 'route', 'tx'];
+  const lines = [cols.join(',')].concat(state.journal.map((e) => [new Date(e.t).toISOString(), e.side, e.sym, e.coin, e.hype ?? '', e.tok ?? '', e.mcUsd != null ? Math.round(e.mcUsd) : '', e.src ?? '', e.slip != null ? e.slip / 100 : '', e.sc != null ? (e.sc * 100).toFixed(1) : '', e.route ?? '', e.hash ?? ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')));
+  const fd = new FormData();
+  fd.append('chat_id', OWNER);
+  fd.append('caption', `Trade journal · ${state.journal.length} entries`);
+  fd.append('document', new Blob([lines.join('\n')], { type: 'text/csv' }), `ely-router-journal-${new Date().toISOString().slice(0, 10)}.csv`);
+  const r = await fetch(`https://api.telegram.org/bot${TG}/sendDocument`, { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) }).then((x) => x.json()).catch((e) => ({ ok: false, description: e.message }));
+  if (!r.ok) return say(`Export failed: ${esc(r.description || '?')}`);
+}
+// nightly: wallet value vs yesterday, the day's trades, open bags, tips
+async function dailyReport() {
+  await valuePositions();
+  const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
+  const hype = num(hb);
+  const open = Object.values(state.pos).filter((p) => (p.now ?? 0) > 0.0005).sort((a, b) => b.now - a.now);
+  const value = hype + open.reduce((a, p) => a + p.now, 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const prev = state.equity[state.equity.length - 1];
+  state.equity = state.equity.filter((e) => e.d !== today).concat([{ d: today, v: value }]).slice(-120);
+  save();
+  const s = stats(Date.now() - 864e5);
+  const t = tips(stats(0), hype);
+  const ch = prev && prev.d !== today ? value - prev.v : null;
+  const text = `📒 <b>Daily report</b> · wallet ${fmtH(value)}${usd(value, px)}${ch != null ? ` (${ch >= 0 ? '+' : ''}${fmtH(ch)} vs ${prev.d})` : ''}\n` +
+    `Free HYPE ${fmtH(hype)} · ${open.length} open bag${open.length === 1 ? '' : 's'}\n\n` +
+    statsText(s, 'Last 24h', px) +
+    (open.length ? `\n<b>Open bags</b>\n${open.slice(0, 8).map((p) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
+    (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '');
+  return say(text);
+}
+
 async function withdraw(to, amtStr) {
   const bal = await hypeBal();
   const gasCost = 21000n * (await gasPrice()) * 2n;
@@ -584,6 +736,7 @@ const HELP =
   `Paste a token address (or a link with one) for a card with buy and sell buttons.\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;token&gt; &lt;percent&gt;\n` +
   `/bal · /pnl · /wallet\n` +
+  `/stats 7d · /journal · /export · /report (nightly at 21:00 too)\n` +
   `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5\n` +
   `/set tax 25 (sell check limit) · /set check off · /set stale 5\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt;\n` +
@@ -605,6 +758,10 @@ async function onMessage(msg) {
   if (cmd === '/wallet') return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium. The key only lives on your VPS.`);
   if (cmd === '/bal') return say(await balances());
   if (cmd === '/pnl') return say(await pnl());
+  if (cmd === '/stats') return say(await statsCommand(lc(args[0] || '')));
+  if (cmd === '/journal') return say(journalText());
+  if (cmd === '/export') return exportJournal();
+  if (cmd === '/report') return dailyReport();
   if (cmd === '/nonce') { const n = await resyncNonce(); return say(`Nonce resynced: next is ${n}.`); }
   if (cmd === '/set') {
     const [k, v] = args;
@@ -662,7 +819,7 @@ async function onCallback(q) {
     }
     const h = Number(b) / 10;
     await ack(`Buying ${h} HYPE…`);
-    return buy(t, h, reply, kind === 'f');
+    return buy(t, h, reply, kind === 'f', kind === 'f' ? 'override' : srcOf(q.message?.text || ''));
   }
   if (kind === 's' && t) { await ack(`Selling ${b}%…`); return sell(t, Number(b), reply); }
   if (kind === 'r' && t) { await ack('Refreshing…'); delete state.routes[t]; return showCard(t, q.message); }
@@ -678,6 +835,8 @@ async function main() {
     { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
     { command: 'buy', description: '/buy <token> <HYPE>' }, { command: 'sell', description: '/sell <token> <percent>' },
     { command: 'set', description: 'slip / max / sizes' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
+    { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all' }, { command: 'journal', description: 'Last 15 trades' },
+    { command: 'export', description: 'Full trade journal as CSV' }, { command: 'report', description: 'Daily report now' },
     { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
   ] });
   // taps and messages sent while the bot was down are dropped, so an old ⚡ tap never buys hours later
@@ -689,6 +848,15 @@ async function main() {
   if (first) console.log('indexing every v4 pool on Elysium…');
   await indexPools().catch((e) => console.error('index', e.message));
   (async () => { for (;;) { await sleep(4000); await indexPools().catch(() => {}); } })();
+  // open bags valued every 10 minutes; the daily report goes out once a day at REPORT_HOUR_UTC
+  (async () => { for (;;) { await sleep(600000); await valuePositions().catch(() => {}); } })();
+  (async () => {
+    for (;;) {
+      await sleep(60000);
+      const d = new Date(), day = d.toISOString().slice(0, 10);
+      if (d.getUTCHours() === REPORT_HOUR_UTC && state.reportDay !== day) { state.reportDay = day; save(); await dailyReport().catch((e) => console.error('report', e.message)); }
+    }
+  })();
   await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${new Set(Object.values(state.pools).flat().map((p) => p.pm)).size} pool managers, kept live.${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
   for (;;) {
     const ups = await tg('getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
