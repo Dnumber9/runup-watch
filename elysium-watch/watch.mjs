@@ -39,6 +39,7 @@ const RUN_MIN_BUYERS = 8;
 const RUN_MULT = 3;              // times its own baseline pace
 const RUN_MIN_BUY_SHARE = 0.55;
 const WALLET_MIN_HYPE = 0.5;     // ignore dust HYPE moves for tracked wallets
+const DUST_USD = Number(process.env.DUST_USD || 5); // token moves worth less than this (reflections, airdrops, tax payouts) are not pinged
 // group buys: several wallets of one group (wallets.json "group") buying the same coin close together
 const GROUP_WINDOW_MIN = 30;
 const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
@@ -615,7 +616,11 @@ async function main() {
       const price = state.tok[t]?.price;
       const val = price ? amt * price : null;
       const valTxt = val != null ? ` (~${px ? usd(val * px) : hype(val)})` : '';
-      if (W.has(to)) {
+      // dust filter: skip moves known to be worth under DUST_USD (unpriced moves still show)
+      const usdOf = (h) => (h == null ? null : px ? h * px : h * 50);
+      const dustIn = (usdOf(txBuy[l.transactionHash] || val) ?? Infinity) < DUST_USD;
+      const dustOut = (usdOf(val) ?? Infinity) < DUST_USD;
+      if (W.has(to) && !dustIn) {
         const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
         M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
@@ -626,7 +631,7 @@ async function main() {
           }
         }
       }
-      if (W.has(f)) {
+      if (W.has(f) && !dustOut) {
         const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
         M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${walletLink(to)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
       }
