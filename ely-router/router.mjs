@@ -29,6 +29,8 @@
 // Limit orders (checked every 2 s, by market cap in $): buy when MC falls to or rises past a level; sell part
 //   or all when MC reaches a level, falls to one, or hits a multiple of your entry. Set with /limit or by
 //   replying to a card's 🎯 Limit question.
+// Pinned panel: one message pinned at the top of the chat lists every open trade with one-tap sells, edited
+//   every minute and after each trade, so alerts never bury it (/pin re-sends it at the bottom).
 // Extras, off unless set: take profit, stop loss and trailing stop (/tp /sl /trail), an auto-sell preset on
 //   every buy (/auto), dev and rug guards (/set devsell, /set rug), snipes (/snipe) and copy trading (/copy).
 //
@@ -122,6 +124,7 @@ const cfg = () => ({
   auto: state.set.auto ?? process.env.AUTO_SELL ?? 'off',               // orders added to every buy, e.g. "tp 2x 50 trail 40"
   copymax: Number(state.set.copymax ?? process.env.COPY_MAX_DAY ?? 10), // copy buys per day, all wallets together
   copysells: (state.set.copysells ?? 'on') !== 'off',                   // mirror the copied wallet's sells
+  pin: (state.set.pin ?? process.env.PIN_TRADES ?? 'on') !== 'off',      // pinned open-trades panel at the top of the chat
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
@@ -461,6 +464,7 @@ async function tg(method, body) {
       if (j.ok) return j.result;
       if (j.error_code === 429) { await sleep(1000 * (j.parameters?.retry_after || 2)); continue; }
       if (/message is not modified/.test(j.description || '')) return null;
+      if (/message to edit not found|MESSAGE_ID_INVALID|message can't be edited/i.test(j.description || '')) return { gone: true };
       console.error('telegram', method, j.description);
       return null;
     } catch (e) { if (i === 2) console.error('telegram', method, e.message); await sleep(800); }
@@ -618,6 +622,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     if (specs.length) autoLine = `\n🤖 ${(await setOrders(t, specs, true)).map(orderText).join(' · ')}`;
   } catch (e) { autoLine = `\n⚠️ Auto-sell not set: ${esc(e.message)}`; }
   save();
+  refreshPin();
   await edit(msg, `${head}✅ Bought <b>${fmt(num(got, m.d))} ${esc(m.sym)}</b> for ${hypeAmt} HYPE${mc ? ` · entry MC ${fmtH(mc)}${usd(mc, px)}` : ''} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}${autoLine}`, cardButtons(t));
   return { ok: true, got };
 }
@@ -713,6 +718,7 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   cacheBal(t, left);
   if (left === 0n) { p.open = false; dropSellOrders(t); }
   J({ side: 'sell', coin: t, sym: m.sym, hype: Math.max(got, 0), tok: sold, pct, hash, why: opts.kind });
+  refreshPin();
   const px = await hypeUsd();
   await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}`, cardButtons(t));
   return true;
@@ -1200,7 +1206,7 @@ async function withdraw(to, amtStr) {
 const HELP =
   `<b>ely-router</b>\n` +
   `Paste a token address (or a link with one) for a card: ⚡ buy, sell 25/50/100%, 💰 initials, 🎯 limit.\n` +
-  `/pos · open bags with one-tap sells\n` +
+  `/pos · open bags with one-tap sells · /pin · re-pin the open trades panel at the bottom (/set pin off to stop)\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;coin&gt; &lt;percent&gt; · /initials &lt;coin&gt;\n` +
   `&lt;coin&gt; = address, the symbol of a coin you hold, or its 8-character code\n\n` +
   `<b>Limit orders</b> (market cap in $, checked every 2 s)\n` +
@@ -1317,12 +1323,52 @@ async function positionsView() {
   }));
   save();
   const list = rows.filter(Boolean).sort((a, b) => (b.v || 0) - (a.v || 0));
-  if (!list.length) return { text: 'No open bags.' };
+  if (!list.length) return { text: 'No open bags.', rows: [], list };
   const px = await hypeUsd();
   return {
+    list, px,
     text: `<b>Open bags</b>\n` + list.map((x) => `• <b>${esc(x.sym)}</b> ${x.v != null ? fmtH(x.v) + usd(x.v, px) : '?'}${x.pl != null ? ` · ${pct(x.pl)}` : ''}${x.n ? ` · 🎯 ${x.n}` : ''}`).join('\n'),
     rows: list.map((x) => [{ text: `${x.sym} 50%`, callback_data: `s:${x.t.slice(2)}:50` }, { text: `${x.sym} 100%`, callback_data: `s:${x.t.slice(2)}:100` }, { text: '💰', callback_data: `i:${x.t.slice(2)}` }, { text: '🎯', callback_data: `m:${x.t.slice(2)}` }, { text: '🔎', callback_data: `c:${x.t.slice(2)}` }]),
   };
+}
+
+// ── pinned open-trades panel ───────────────────────────────────────────────────────────────────────
+// One message pinned at the top of the chat lists every open bag with one-tap sells, so alerts never bury
+// what you are in. It is edited in place every minute and right after each trade. A new one is sent (and
+// pinned) only when a trade opens while nothing is pinned, when the old one was deleted, or with /pin.
+state.pin ||= {};
+let pinJob = null;
+const clock = () => new Date().toLocaleTimeString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Lagos', hour: '2-digit', minute: '2-digit' });
+function refreshPin(resend = false) {
+  if (!cfg().pin) return Promise.resolve();
+  if (pinJob) return pinJob.then(() => (resend ? refreshPin(true) : undefined));
+  pinJob = (async () => {
+    const v = await positionsView();
+    const P = state.pin;
+    if (!v.list?.length) {
+      if (P.id) {
+        await tg('editMessageText', { chat_id: OWNER, message_id: P.id, text: `📌 No open trades · ${clock()}`, parse_mode: 'HTML' });
+        await tg('unpinChatMessage', { chat_id: OWNER, message_id: P.id });
+        state.pin = {}; save();
+      }
+      return;
+    }
+    const tot = v.list.reduce((a, x) => a + (x.v || 0), 0);
+    const text = `📌 <b>Open trades</b> · ${v.list.length} · ${fmtH(tot)}${usd(tot, v.px)} · ${clock()}\n` + v.text.replace(/^<b>Open bags<\/b>\n/, '');
+    const sig = v.list.map((x) => `${x.t}:${(x.v || 0).toPrecision(3)}:${x.pl != null ? x.pl.toFixed(2) : ''}:${x.n}`).join('|');
+    if (!resend && P.id && P.sig === sig && Date.now() - (P.at || 0) < 5 * 60e3) return; // nothing moved: leave it alone
+    if (P.id && !resend) {
+      const r = await tg('editMessageText', { chat_id: OWNER, message_id: P.id, text, parse_mode: 'HTML', disable_web_page_preview: true, ...kb(v.rows) });
+      if (!r?.gone) { state.pin = { id: P.id, sig, at: Date.now() }; save(); return; }
+    }
+    // a fresh panel at the bottom, pinned without a notification; the old one is unpinned and removed
+    const m = await tg('sendMessage', { chat_id: OWNER, text, parse_mode: 'HTML', disable_web_page_preview: true, disable_notification: true, ...kb(v.rows) });
+    if (!m?.message_id) return;
+    await tg('pinChatMessage', { chat_id: OWNER, message_id: m.message_id, disable_notification: true });
+    if (P.id && P.id !== m.message_id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: P.id }); await tg('deleteMessage', { chat_id: OWNER, message_id: P.id }); }
+    state.pin = { id: m.message_id, sig, at: Date.now() }; save();
+  })().catch((e) => console.error('pin', e.message)).finally(() => { pinJob = null; });
+  return pinJob;
 }
 
 async function onMessage(msg) {
@@ -1339,6 +1385,7 @@ async function onMessage(msg) {
     return addLimit(asked, L, reply);
   }
   if (cmd === '/pos') { const v = await positionsView(); return say(v.text, v.rows); }
+  if (cmd === '/pin') { if (!cfg().pin) return say('The pinned panel is off. /set pin on turns it back on.'); await refreshPin(true); if (!state.pin.id) return say('No open trades to pin.'); return; }
   if (cmd === '/start' || cmd === '/help') {
     const b = await hypeBal().catch(() => null);
     return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} (up to block ${state.poolsBlock})`);
@@ -1365,7 +1412,8 @@ async function onMessage(msg) {
     else if (k === 'rug' && /^(on|off)$/.test(lv)) state.set.rug = lv;
     else if (k === 'preapprove' && /^(on|off)$/.test(lv)) state.set.preapprove = lv;
     else if (k === 'copymax' && Number(v) >= 0) state.set.copymax = Number(v);
-    else return say('Usage: /set slip 15 · max 5 · sizes 0.5,1,2,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · preapprove on|off · copymax 10');
+    else if (k === 'pin' && /^(on|off)$/.test(lv)) { state.set.pin = lv; if (lv === 'off' && state.pin?.id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: state.pin.id }); state.pin = {}; } }
+    else return say('Usage: /set slip 15 · max 5 · sizes 0.5,1,2,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · preapprove on|off · copymax 10 · pin on|off');
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
@@ -1532,7 +1580,7 @@ async function onCallback(q) {
 async function main() {
   console.log(`ely-router · wallet ${account.address} · RPCs ${RPCS.length}`);
   await tg('setMyCommands', { commands: [
-    { command: 'pos', description: 'Open bags with one-tap sells' },
+    { command: 'pos', description: 'Open bags with one-tap sells' }, { command: 'pin', description: 'Re-pin the open trades panel' },
     { command: 'buy', description: '/buy <token> <HYPE>' }, { command: 'sell', description: '/sell <coin> <percent>' },
     { command: 'limit', description: '/limit <coin> 1 20k · /limit sell <coin> 50 100k' }, { command: 'orders', description: 'Limit orders: see and cancel' },
     { command: 'initials', description: '/initials <coin>: sell just enough to take your HYPE back' },
@@ -1562,6 +1610,9 @@ async function main() {
   (async () => { for (;;) { await sleep(Object.keys(state.copy).length ? 1000 : 5000); await copyTick().catch((e) => console.error('copy', e.message)); } })();
   // open bags valued every 10 minutes; the daily report goes out once a day at REPORT_HOUR_UTC
   (async () => { for (;;) { await sleep(600000); await valuePositions().catch(() => {}); } })();
+  // the pinned open-trades panel: up to date at start, then every minute
+  refreshPin();
+  (async () => { for (;;) { await sleep(60000); await refreshPin(); } })();
   (async () => {
     for (;;) {
       await sleep(60000);
