@@ -7,12 +7,14 @@
 //   3. Tracked wallets (wallets.json): swaps, token transfers, HYPE moves, contract deploys, launches.
 // Alerts go to Telegram: launches that get real traction, volume runs, tracked-wallet moves,
 // a brand-new launchpad appearing, the official mainnet RPC opening, and a digest every few hours.
+// gate.mjs runs on the same blocks every tick to catch Ascend and Signal the moment they go live.
 
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { gate, gateDigest, gatePms } from './gate.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
-const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
@@ -318,6 +320,8 @@ async function main() {
   try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
   const firstRun = !state;
   state ||= { v: 1, block: 0, runs: 0, started: now(), pools: {}, v3: {}, tok: {}, meta: {}, alerted: {}, unknownPm: {}, digestAt: now(), official: false, px: null };
+  // pool managers the gate identified as Ascend or Signal join the launchpad list
+  for (const [pm, x] of Object.entries(gatePms(state))) if (!LAUNCHPADS[pm]) { LAUNCHPADS[pm] = { name: x.name, hook: x.hook }; INFRA.add(pm); }
   let wallets = [];
   try { wallets = JSON.parse(fs.readFileSync(WALLETS, 'utf8')); } catch {}
   const okW = wallets.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.address));
@@ -404,7 +408,7 @@ async function main() {
     try { state.tok[coin].creator = lc((await rpc('eth_getTransactionByHash', [tx]))?.from); } catch {}
   }
   for (const [pm, u] of Object.entries(state.unknownPm)) {
-    if (!u.alerted && u.n >= 3 && !firstRun) {
+    if (!u.alerted && u.n >= 3 && !firstRun && !gatePms(state)[pm]) {
       u.alerted = now();
       msgs.push(
         `🆕 <b>New launchpad pool contract on Elysium</b>\n` +
@@ -751,6 +755,11 @@ async function main() {
     msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
   }
 
+  // 4d. Ascend and Signal going live: new contracts fingerprinted, team wallets, their pools, off-chain tells (gate.mjs)
+  try {
+    await gate({ state, logs, blocks, from, head, rpc, getLogs, hrpc, msgs, known: new Set(Object.keys(LAUNCHPADS)), buttons: (t) => buyButtons('e', t) });
+  } catch (e) { console.log('gate failed:', e.message); }
+
   // 5. the official mainnet RPC opening up (one ping, ever)
   if (!state.official && now() - (state.officialCheckedAt || 0) > 600) {
     state.officialCheckedAt = now();
@@ -784,7 +793,8 @@ async function main() {
     msgs.push(
       `📊 <b>Elysium, last ${Math.round(span)}h</b>${px ? ` · HYPE $${px.toFixed(2)}` : ''}\n` +
       `New coins: ${Object.entries(launches).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}\n` +
-      (lines.length ? lines.join('\n') : 'No trading recorded.')
+      (lines.length ? lines.join('\n') : 'No trading recorded.') +
+      (state.gate ? `\n${gateDigest(state)}` : '')
     );
     for (const r of Object.values(state.tok)) r.dvol = 0;
   }
@@ -814,7 +824,7 @@ async function main() {
   state.runs++;
   fs.writeFileSync(STATE, JSON.stringify(state));
   for (const m of msgs) await tg(m);
-  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts`);
+  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued`);
 }
 
 // ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────

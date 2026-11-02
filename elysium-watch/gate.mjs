@@ -113,7 +113,7 @@ const X_ACCOUNTS = {
 const ELY_RX = /elysium|\b99901\b|0x1863d/i;
 
 // thresholds: share of a reference's distinctive selectors that a new contract must carry
-const HIGH = 0.6, HIGH_EXTRA = 0.75, POSSIBLE = 0.35, MIN_SHARED = 6, MIN_SHARED_HIGH = 8, MIN_REF = 6;
+const HIGH = 0.6, HIGH_EXTRA = 0.75, POSSIBLE = 0.35, MIN_SHARED = 10, MIN_SHARED_HIGH = 10, MIN_REF = 10;
 const MIN_CODE = 1000;           // bytes; smaller contracts are proxies (followed) or trivia
 const FREQ_COMMON = 3;           // a selector in this many unrelated Elysium contracts is generic
 const CAND_PER_TICK = 40, REF_CALLS_PER_TICK = 120, GAP_PER_TICK = 3000;
