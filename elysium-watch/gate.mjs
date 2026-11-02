@@ -686,6 +686,10 @@ async function checkSite(ctx, g, msgs, key, url, label) {
   const page = await web(url);
   if (blocked(page)) throw new Error(`blocked from GitHub's servers (HTTP ${page.status})`);
   const title = ((page.text.match(/<title>([^<]*)/i) || [])[1] || '').trim();
+  // a host that is down (Cloudflare tunnel or origin errors) has nothing to compare; its return is the news
+  if (page.status >= 500 || /tunnel error|error 10\d\d|origin is unreachable|bad gateway|web server is down/i.test(title + ' ' + page.text.slice(0, 3000))) { st.down ||= now(); return; }
+  const wasDown = st.down || /tunnel error|error 10\d\d/i.test(st.base?.title || '');
+  delete st.down;
   const gated = /coming soon|private access|access code/i.test(page.text);
   const scripts = scriptsIn(page.text, page.url);
   // scripts: new URLs are read once; small ones (unhashed names like /gate/intro-v1.js) every time
@@ -699,11 +703,16 @@ async function checkSite(ctx, g, msgs, key, url, label) {
   const addrs = [...new Set([...addrsIn(page.text), ...scripts.flatMap((u) => cache[u]?.a || [])])];
   const chain = /\b99901\b|0x1863d/i.test(page.text) || scripts.some((u) => cache[u]?.c);
   // visible text only (pages embed live coin data whose names can say anything)
-  const visible = page.text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
+  const visible = page.text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/[\w.-]+\.[a-z]{2,}(\/\S*)?/gi, ' '); // hostnames do not count
   const ely = /\belysium\b/i.test(visible);
   const now1 = { s: page.status, title, gated, addrs, chain, ely, scripts: scripts.map((u) => new URL(u).pathname) };
-  if (!st.base) { st.base = now1; return; }
+  if (!st.base) {
+    st.base = now1;
+    if (wasDown && once(g, key + ':up:' + now1.title)) msgs.push(`🌐 <b>${esc(label)} is online</b> (${esc(url)})\nIt was down until now. Title: "${esc(title)}"`);
+    return;
+  }
   const b = st.base, notes = [];
+  if (wasDown) notes.push('it is back online after being down');
   if (now1.s !== b.s) notes.push(`status ${b.s} → ${now1.s}`);
   if (now1.title !== b.title) notes.push(`title "${esc(b.title)}" → "${esc(now1.title)}"`);
   if (b.gated && !now1.gated && now1.s === 200) notes.push('the access gate is gone');
@@ -714,7 +723,7 @@ async function checkSite(ctx, g, msgs, key, url, label) {
   if (newA.length) notes.push(`new Elysium contract addresses:\n${newA.slice(0, 8).map((a) => `• <code>${a}</code>`).join('\n')}`);
   // Ascend's own site showing an address before anything is deployed there: watch it for code
   if (key === 'ascend') for (const a of cand.filter((a) => !newA.includes(a))) g.codewatch[a] = 'address shown on Ascend\'s site';
-  if (now1.ely && !b.ely) notes.push('the page now mentions Elysium');
+  if (now1.ely && b.ely === false) notes.push('the page now mentions Elysium'); // undefined = baseline from before this check existed
   if (now1.chain && !b.chain) notes.push('chain id 99901 appears in its code');
   const newS = now1.scripts.filter((p) => !b.scripts.includes(p));
   if (newS.length && !notes.length && newS.some((p) => !/_next\/static\/chunks\//.test(p))) notes.push(`new scripts: ${newS.slice(0, 4).map(esc).join(', ')}`);
