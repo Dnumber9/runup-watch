@@ -287,11 +287,19 @@ function chainConfigs(t) {
 // ── state ──────────────────────────────────────────────────────────────────────────────────────────
 function init(state) {
   const g = (state.gate ||= {});
-  g.v ||= 1;
+  g.v ||= 1; // 2: wallets are never promoted to "team" from a fingerprint alone
   for (const k of ['refs', 'refTry', 'seen', 'sk', 'freq', 'found', 'pms', 'team', 'tn', 'codewatch', 'web', 'next', 'alerted', 'hyper']) g[k] ||= {};
   g.q ||= [];
   g.depq ||= [];
   for (const [a, w] of Object.entries(g.codewatch)) if (/shown on status\./.test(w)) delete g.codewatch[a]; // old noise from Signal's keeper page
+  if ((g.v || 1) < 2) {
+    for (const [a, w] of Object.entries(g.team)) if (/unconfirmed|deployer on Elysium/.test(w.label || '')) delete g.team[a];
+    for (const [a, x] of Object.entries(state.auto || {})) if (x.from === 'gate' && /deployer/.test(x.label || '')) delete state.auto[a];
+    g.found = {};
+    g.sk = {};
+    g.q = (g.q || []).filter((c) => c.why !== 'team');
+    g.v = 2;
+  }
   for (const t of TEAM) if (!g.team[t.a]) g.team[t.a] = { label: t.label, fam: t.fam, testnet: !!t.testnet, contract: !!t.contract, woke: 0, n: null, b: null };
   return g;
 }
@@ -614,7 +622,7 @@ async function report(ctx, g, c, rc, an, v, byTeam) {
   const linked = by && g.team[by] ? g.team[by] : null;
   const fam = r?.f || c.fam || linked?.fam || famOf(g, c.a) || 'Ascend/Signal';
   const hi = v.lvl === 2 || byTeam || c.why === 'watched';
-  const key = (hi ? 'hit:' : 'maybe:') + (hi ? c.a : an.skel);
+  const key = byTeam || c.why === 'watched' ? 'hit:' + c.a : (hi ? 'hit:' : 'maybe:') + an.skel; // same code again = no new alert
   if (!once(g, key)) return;
   const how = { team: 'deployed by a team wallet', create: 'deployed directly', create2: 'deployed through a CREATE2 deployer', hook: `hook of a new pool on ${short(c.pm || '')}`, emitter: 'first seen emitting events', watched: `code appeared at a watched address (${c.note || ''})` }[c.why] || c.why;
   const match = r ? `${v.same ? 'Identical build to' : `Matches ${Math.round(v.sc * 100)}% of the distinctive functions of`} <b>${esc(r.n)}</b>${v.same ? '' : ` (${v.sh} shared)`}` : 'No close match to their known code (new build, or not theirs)';
@@ -624,10 +632,8 @@ async function report(ctx, g, c, rc, an, v, byTeam) {
   if (hi) {
     g.found[c.a] = { fam, name: r?.n || 'team contract', t: now() };
     if (rc.impl) g.found[rc.impl] = g.found[c.a];
-    if (by && !g.team[by]) {
-      g.team[by] = { label: `${fam} deployer on Elysium${linked ? '' : ' (unconfirmed)'}`, fam, woke: now(), n: null, b: null };
-      (ctx.state.auto ||= {})[by] ||= { label: `${fam} deployer ${by.slice(2, 6)}`, group: fam.toLowerCase(), from: 'gate', t: now() };
-    }
+    // the deployer is NOT promoted to a team wallet: a copycat or shared code would make every later deploy
+    // of theirs look like Ascend or Signal. Only wallets tied to the teams by evidence are in TEAM.
   }
 }
 const famOf = (g, a) => (a && g.team[a] ? g.team[a].fam : null);
