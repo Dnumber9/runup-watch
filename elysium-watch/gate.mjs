@@ -99,6 +99,23 @@ const COMMON_SIGS = [
   'multicall(bytes[])', 'initialize()', 'implementation()', 'version()', 'onERC721Received(address,address,uint256,bytes)',
   'onERC1155Received(address,address,uint256,uint256,bytes)', 'onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)',
   'Error(string)', 'Panic(uint256)', 'unlockCallback(bytes)', 'poolManager()', 'WETH9()', 'refundETH()', 'sweepToken(address,uint256,address)',
+  // OpenZeppelin TimelockController (Ascend's deployer made one on testnet; anyone can deploy the same)
+  'schedule(address,uint256,bytes,bytes32,bytes32,uint256)', 'scheduleBatch(address[],uint256[],bytes[],bytes32,bytes32,uint256)',
+  'execute(address,uint256,bytes,bytes32,bytes32)', 'executeBatch(address[],uint256[],bytes[],bytes32,bytes32)', 'cancel(bytes32)',
+  'getMinDelay()', 'updateDelay(uint256)', 'isOperation(bytes32)', 'isOperationPending(bytes32)', 'isOperationReady(bytes32)',
+  'isOperationDone(bytes32)', 'getTimestamp(bytes32)', 'hashOperation(address,uint256,bytes,bytes32,bytes32)',
+  'hashOperationBatch(address[],uint256[],bytes[],bytes32,bytes32)', 'PROPOSER_ROLE()', 'EXECUTOR_ROLE()', 'CANCELLER_ROLE()',
+  'getOperationState(bytes32)', 'TIMELOCK_ADMIN_ROLE()',
+  // OpenZeppelin VestingWallet, Multicall3, ERC-4626 vaults
+  'release()', 'release(address)', 'released()', 'released(address)', 'releasable()', 'releasable(address)', 'vestedAmount(uint64)',
+  'vestedAmount(address,uint64)', 'start()', 'duration()', 'end()',
+  'aggregate((address,bytes)[])', 'aggregate3((address,bool,bytes)[])', 'aggregate3Value((address,bool,uint256,bytes)[])',
+  'tryAggregate(bool,(address,bytes)[])', 'tryBlockAndAggregate(bool,(address,bytes)[])', 'blockAndAggregate((address,bytes)[])',
+  'getBlockHash(uint256)', 'getBlockNumber()', 'getCurrentBlockCoinbase()', 'getCurrentBlockTimestamp()', 'getEthBalance(address)',
+  'getLastBlockHash()', 'getChainId()', 'getBasefee()', 'getCurrentBlockDifficulty()', 'getCurrentBlockGasLimit()',
+  'asset()', 'totalAssets()', 'convertToShares(uint256)', 'convertToAssets(uint256)', 'maxDeposit(address)', 'previewDeposit(uint256)',
+  'deposit(uint256,address)', 'maxMint(address)', 'previewMint(uint256)', 'mint(uint256,address)', 'maxWithdraw(address)',
+  'previewWithdraw(uint256)', 'withdraw(uint256,address,address)', 'maxRedeem(address)', 'previewRedeem(uint256)', 'redeem(uint256,address,address)',
 ];
 const CREATE2_DEPLOYERS = new Set(['0x4e59b44847b379578588920ca78fbf26c0b4956c', '0x914d7fec6aac8cd542e72bca78b30650d45643d7']); // input = salt ++ initcode
 
@@ -343,7 +360,7 @@ async function buildRefs(ctx, g, budget) {
 }
 // selectors that say nothing: standard interfaces, code already on Elysium, and ones learned as common here
 async function commonSet(ctx, g) {
-  if (!g.common || now() - g.common.at > 24 * 3600) {
+  if (!g.common || now() - g.common.at > 24 * 3600 || g.common.v !== 2) {
     const s = new Set(COMMON_SIGS.map(sel));
     for (const x of ['00000000', 'ffffffff', '4e487b71', '08c379a0']) s.add(x);
     const k = new Set();
@@ -352,18 +369,19 @@ async function commonSet(ctx, g) {
     const generic = await pmap(GENERIC_ETH, 3, (a) => realCode(ethCall, a));
     let got = 0;
     for (const rc of [...codes, ...generic]) if (rc && rc.code.length > 2) { got++; const an = analyze(rc.code); k.add(an.skel); for (const x of an.sels) s.add(x); }
-    if (got >= 4 || !g.common) g.common = { at: got >= 10 ? now() : now() - 23 * 3600, s: [...s], k: [...k] };
+    if (got >= 4 || !g.common) g.common = { v: 2, at: got >= 10 ? now() : now() - 23 * 3600, s: [...s], k: [...k] };
   }
   const set = new Set(g.common.s);
   set.skel = new Set(g.common.k || []);
   for (const [x, n] of Object.entries(g.freq)) if (n >= FREQ_COMMON) set.add(x);
   return set;
 }
-// best reference for a fingerprint
+// best reference for a fingerprint. Named references (their launchpad, router, hook, factory…) can raise a
+// "possible"; the bulk testnet builds (often stock contracts like timelocks) only count on a strong match.
 function evaluate(g, an, common) {
-  const cand = new Set(an.sels.filter((s) => !common.has(s)));
-  let best = null;
   if (common.skel?.has(an.skel)) return { lvl: 0 }; // stock code already on Elysium (pool managers, WHYPE…)
+  const cand = new Set(an.sels.filter((s) => !common.has(s)));
+  let core = null, extra = null;
   for (const [key, r] of Object.entries(g.refs)) {
     if (common.skel?.has(r.k)) continue;
     const D = r.s.filter((s) => !common.has(s));
@@ -372,12 +390,14 @@ function evaluate(g, an, common) {
     let sh = 0;
     for (const s of D) if (cand.has(s)) sh++;
     const sc = sh / Math.max(D.length, cand.size);
-    if (!best || sc > best.sc || (sc === best.sc && sh > best.sh)) best = { key, sc, sh };
+    const cur = r.x ? extra : core;
+    if (!cur || sc > cur.sc || (sc === cur.sc && sh > cur.sh)) { if (r.x) extra = { key, sc, sh }; else core = { key, sc, sh }; }
   }
-  if (!best) return { lvl: 0 };
-  const r = g.refs[best.key];
-  const lvl = best.sc >= (r.x ? HIGH_EXTRA : HIGH) && best.sh >= MIN_SHARED_HIGH ? 2 : best.sc >= POSSIBLE && best.sh >= MIN_SHARED ? 1 : 0;
-  return { ...best, lvl };
+  if (core && core.sc >= HIGH && core.sh >= MIN_SHARED_HIGH) return { ...core, lvl: 2 };
+  if (extra && extra.sc >= HIGH_EXTRA && extra.sh >= MIN_SHARED_HIGH) return { ...extra, lvl: 2 };
+  if (core && core.sc >= POSSIBLE && core.sh >= MIN_SHARED) return { ...core, lvl: 1 };
+  const best = [core, extra].filter(Boolean).sort((x, y) => y.sc - x.sc)[0];
+  return best ? { ...best, lvl: 0 } : { lvl: 0 };
 }
 
 // ── the tick ───────────────────────────────────────────────────────────────────────────────────────
