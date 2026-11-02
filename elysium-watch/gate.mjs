@@ -59,6 +59,7 @@ const NAMED = [
   ['h', '0x6227f0128935079abc6993f1166dc5d716032aec', 'Signal hook v4b', 'Signal'],
   ['h', '0x3f7c902b0d49a2eed3e03a9f518036a284756aec', 'Signal hook r3', 'Signal'],
   ['h', '0xcf9d5f4dc9860060db528bc9722cc3d828fc807c', 'Signal router', 'Signal'],
+  ['h', '0x9c4bdf29bfa05c8c7f4625745477e337877fb3d5', 'Signal router 2', 'Signal'],
   ['h', '0x547b9bcf603e1ed1082c39f7ecae313cdc319e62', 'Signal rules', 'Signal'],
   ['h', '0xc21ffa66550deeae5177675a58ee422a17c8b8f6', 'Signal rules v4', 'Signal'],
   ['h', '0xdc61c99d5fb7348c9c9c609938a353a02bd0fe07', 'Signal tokens', 'Signal'],
@@ -78,6 +79,15 @@ const INFRA_99901 = [
   '0x000000000022d473030f116ddee9f6b43ac78ba3', // Permit2
   '0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81', // WHYPE
 ];
+// stock Uniswap v4 periphery (Ethereum deployments): anyone can deploy these, so they never count either
+const GENERIC_ETH = [
+  '0x000000000004444c5dc75cb358380d2e3de08a90', // PoolManager
+  '0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e', // PositionManager
+  '0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203', // V4Quoter
+  '0x7ffe42c4a5deea5b0fec41c94c136cf115597227', // StateView
+  '0x66a9893cc07d91d95644aedd05d03f95e1dba8af', // UniversalRouter
+];
+const ETH_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.llamarpc.com', 'https://cloudflare-eth.com'];
 const COMMON_SIGS = [
   'name()', 'symbol()', 'decimals()', 'totalSupply()', 'balanceOf(address)', 'transfer(address,uint256)', 'transferFrom(address,address,uint256)',
   'approve(address,uint256)', 'allowance(address,address)', 'increaseAllowance(address,uint256)', 'decreaseAllowance(address,uint256)',
@@ -236,6 +246,8 @@ async function web(url, { ms = 20000, accept = 'text/html,application/xhtml+xml,
   const text = await r.text();
   return { status: r.status, url: r.url || url, text };
 }
+// Cloudflare or Vercel bot walls answer datacenter IPs with a challenge page: never baseline those
+const blocked = (r) => [403, 429, 503].includes(r.status) && /just a moment|challenge|cf-chl|vercel|too many requests|attention required/i.test(r.text.slice(0, 5000) + ' ' + r.status) || r.status === 429;
 const addrsIn = (t) => [...new Set((String(t).match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) || []).map(lc))].filter((a) => !/^0x0{30}/.test(a) && !/^0x(e{40}|f{40})$/.test(a));
 const scriptsIn = (html, base) => {
   const out = new Set();
@@ -333,12 +345,16 @@ async function commonSet(ctx, g) {
   if (!g.common || now() - g.common.at > 24 * 3600) {
     const s = new Set(COMMON_SIGS.map(sel));
     for (const x of ['00000000', 'ffffffff', '4e487b71', '08c379a0']) s.add(x);
+    const k = new Set();
     const codes = await pmap(INFRA_99901, 6, (a) => realCode(ctx.call, a));
+    const ethCall = async (m, p) => { let e; for (const u of ETH_RPCS) { try { return await rpcAt(u, m, p, 12000); } catch (x) { e = x; } } throw e; };
+    const generic = await pmap(GENERIC_ETH, 3, (a) => realCode(ethCall, a));
     let got = 0;
-    for (const rc of codes) if (rc && rc.code.length > 2) { got++; for (const x of analyze(rc.code).sels) s.add(x); }
-    if (got >= 4 || !g.common) g.common = { at: got >= 4 ? now() : now() - 23 * 3600, s: [...s] };
+    for (const rc of [...codes, ...generic]) if (rc && rc.code.length > 2) { got++; const an = analyze(rc.code); k.add(an.skel); for (const x of an.sels) s.add(x); }
+    if (got >= 4 || !g.common) g.common = { at: got >= 10 ? now() : now() - 23 * 3600, s: [...s], k: [...k] };
   }
   const set = new Set(g.common.s);
+  set.skel = new Set(g.common.k || []);
   for (const [x, n] of Object.entries(g.freq)) if (n >= FREQ_COMMON) set.add(x);
   return set;
 }
@@ -346,10 +362,12 @@ async function commonSet(ctx, g) {
 function evaluate(g, an, common) {
   const cand = new Set(an.sels.filter((s) => !common.has(s)));
   let best = null;
+  if (common.skel?.has(an.skel)) return { lvl: 0 }; // stock code already on Elysium (pool managers, WHYPE…)
   for (const [key, r] of Object.entries(g.refs)) {
-    if (r.k === an.skel) return { key, sc: 1, sh: cand.size, same: true, lvl: 2 };
+    if (common.skel?.has(r.k)) continue;
     const D = r.s.filter((s) => !common.has(s));
-    if (D.length < MIN_REF) continue;
+    if (D.length < MIN_REF) continue; // generic reference: nothing distinctive left to match on
+    if (r.k === an.skel) return { key, sc: 1, sh: D.length, same: true, lvl: 2 };
     let sh = 0;
     for (const s of D) if (cand.has(s)) sh++;
     const sc = sh / Math.max(D.length, cand.size);
@@ -603,7 +621,7 @@ async function webChecks(ctx, g, msgs, t0) {
   if (due(g, 'w:registry', 1800)) jobs.push(['registry', () => checkRegistry(g, msgs)]);
   const handles = Object.keys(X_ACCOUNTS);
   const xi = Math.floor(now() / 120) % handles.length;
-  if (due(g, 'w:x:' + handles[xi], 300)) jobs.push(['x:' + handles[xi], () => checkX(g, msgs, handles[xi])]);
+  if (process.env.GATE_X === '1' && due(g, 'w:x:' + handles[xi], 300)) jobs.push(['x:' + handles[xi], () => checkX(g, msgs, handles[xi])]);
   const left = Math.max(5000, 35000 - (Date.now() - t0));
   await Promise.all(jobs.map(async ([k, fn]) => {
     const st = (g.web[k] ||= {});
@@ -620,7 +638,13 @@ async function checkSignalApp(ctx, g, msgs) {
   const scripts = scriptsIn(page.text, page.url);
   const seen = new Set(st.urls || []);
   const fresh = scripts.filter((u) => !seen.has(u));
-  let ely = ELY_RX.test(page.text) ? 'page' : null;
+  // the page embeds live coin data (names can contain "Elysium"), so only chain fields count there
+  const chains = [...new Set([...page.text.matchAll(/\\?"chain\\?":\\?"([a-z0-9_-]{2,20})/gi)].map((m) => lc(m[1])))];
+  const newChains = st.chains ? chains.filter((c) => !st.chains.includes(c)) : [];
+  st.chains = [...new Set([...(st.chains || []), ...chains])];
+  const elyChain = newChains.find((c) => /ely|99901/.test(c));
+  if (elyChain && once(g, 'sigchain:' + elyChain)) msgs.push(`🌐 <b>Signal is listing Elysium coins</b>\nIts live coin feed now has chain "${esc(elyChain)}" next to ${esc(chains.filter((c) => c !== elyChain).join(', '))}.`);
+  let ely = null;
   const rows = [];
   for (const u of fresh.slice(0, 40)) {
     const t = (await web(u, { accept: '*\/*' }).catch(() => null))?.text || '';
@@ -636,8 +660,9 @@ async function checkSignalApp(ctx, g, msgs) {
   }
   const mainnet = rows.filter((r) => r.ch === '99901');
   for (const r of mainnet) g.codewatch[r.a] = `Signal app ${r.k} for Elysium`;
-  if (ely && !st.ely) {
+  if ((ely || mainnet.length) && !st.ely) {
     st.ely = now();
+    ely ||= 'its contract config';
     if (st.at) msgs.push(`🌐 <b>Signal's app now mentions Elysium</b>\nFound in ${esc(ely)} on signal.family.${mainnet.length ? `\nElysium contracts in its config:\n${mainnet.slice(0, 10).map((r) => `• ${esc(r.k)} <code>${r.a}</code>`).join('\n')}\nWatching them for code.` : '\nNo Elysium contract addresses in it yet.'}`);
   }
   st.n = scripts.length;
@@ -658,6 +683,7 @@ async function checkSignalEly(g, msgs) {
 async function checkSite(g, msgs, key, url, label) {
   const st = (g.web[key] ||= {});
   const page = await web(url);
+  if (blocked(page)) throw new Error(`blocked from GitHub's servers (HTTP ${page.status})`);
   const title = ((page.text.match(/<title>([^<]*)/i) || [])[1] || '').trim();
   const gated = /coming soon|private access|access code/i.test(page.text);
   const scripts = scriptsIn(page.text, page.url);
@@ -693,10 +719,11 @@ async function checkDocs(g, msgs) {
   const st = (g.web.docs ||= {});
   const pages = ['/docs/connecting-to-elysium', '/docs/contract-addresses', '/ecosystem', '/ecosystem/ascend', '/ecosystem/signal', '/explorer'];
   const res = await pmap(pages, 3, (p) => web('https://elysium.kinetiq.xyz' + p));
+  if (res.every((r) => !r || blocked(r))) throw new Error(`blocked from GitHub's servers (HTTP ${res.find(Boolean)?.status || '?'})`);
   const cur = {};
   pages.forEach((p, i) => {
     const r = res[i];
-    if (!r) return;
+    if (!r || blocked(r)) return;
     const gate = /partner-access/.test(r.url) || /open to partners|access code/i.test(r.text);
     cur[p] = { gate, soon: (r.text.match(/coming soon/gi) || []).length, addrs: addrsIn(r.text).slice(0, 60), chain: /\b99901\b|0x1863d/.test(r.text), s: r.status };
   });
@@ -795,16 +822,16 @@ function refCounts(g) {
 function webLine(g) {
   const names = { sigapp: 'Signal app', sigely: 'Signal Elysium page', ascend: 'Ascend site', docs: 'Kinetiq docs', registry: 'chain registry' };
   const ok = [], bad = [];
-  for (const [k, n] of Object.entries(names)) { const s = g.web[k]; if (!s?.at) continue; (s.ok ? ok : bad).push(n); }
+  for (const [k, n] of Object.entries(names)) { const s = g.web[k]; if (!s?.at) continue; (s.ok ? ok : bad).push(n + (!s.ok && /blocked/.test(s.err || '') ? ' (bot wall, hourly browser check covers it)' : '')); }
   const ct = Object.keys(g.web.ct || {}).length;
   const xs = Object.entries(g.web.xs || {}).filter(([, s]) => s.last).length;
   const xbad = Object.keys(X_ACCOUNTS).filter((h) => g.web['x:' + h] && !g.web['x:' + h].ok).length;
-  return `${ok.length ? 'ok: ' + ok.join(', ') : ''}${bad.length ? ` · failing: ${bad.join(', ')}` : ''} · certificates ${ct}/${CT_DOMAINS.length} domains · X ${xs}/${Object.keys(X_ACCOUNTS).length}${xbad ? ' (embed blocked)' : ''}`;
+  return `${ok.length ? 'ok: ' + ok.join(', ') : ''}${bad.length ? ` · not reachable: ${bad.join(', ')}` : ''} · certificates ${ct}/${CT_DOMAINS.length} domains${process.env.GATE_X === '1' ? ` · X ${xs}/${Object.keys(X_ACCOUNTS).length}${xbad ? ' (embed blocked)' : ''}` : ' · X via the hourly task'}`;
 }
 function armedText(g) {
   const c = refCounts(g);
-  const sig = g.web.sigapp?.ely ? 'already mentions Elysium' : 'no Elysium yet';
-  const asc = g.web.ascend?.base ? `"${esc(g.web.ascend.base.title || '?')}"${g.web.ascend.base.gated ? ', gated' : ''}` : 'unreachable';
+  const sig = g.web.sigapp?.ely ? 'already has Elysium in its code' : `no Elysium yet (chains: ${(g.web.sigapp?.chains || []).join(', ') || '?'})`;
+  const asc = g.web.ascend?.base ? `"${esc(g.web.ascend.base.title || '?')}"${g.web.ascend.base.gated ? ', gated' : ''}` : 'behind a bot wall from GitHub (hourly browser check covers it)';
   const reg = g.web.registry?.listed ? 'listed' : g.web.registry?.found?.length ? `PR ${g.web.registry.found.map((i) => `#${i.n} (${i.s})`).join(', ')}` : 'not listed';
   return `🛡 <b>Ascend/Signal gate watch is armed</b>\n` +
     `References: ${c.Ascend} Ascend and ${c.Signal} Signal contracts.\n` +
@@ -837,7 +864,7 @@ if (process.argv[2] === '--selftest') {
   const g = init(state);
   const ctx = { state, rpc: call99901, hrpc: hcall, call: call99901, msgs: [], known: new Set() };
   let done = false;
-  for (let i = 0; i < 12 && !done; i++) done = await buildRefs(ctx, g, 150).catch((e) => (out('refs error', e.message), false));
+  for (let i = 0; i < 30 && !done; i++) done = await buildRefs(ctx, g, 150).catch((e) => (out('refs error', e.message), false));
   out(ok(done), 'references', JSON.stringify(refCounts(g)), 'tries left', Object.keys(g.refTry).length);
   const common = await commonSet(ctx, g);
   out('common selectors', common.size);
