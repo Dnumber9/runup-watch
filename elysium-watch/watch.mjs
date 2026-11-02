@@ -619,6 +619,7 @@ async function main() {
   if (W.size) {
     const moves = {};
     const M = (w) => (moves[w] ||= []);
+    const lastBuy = {}; // wallet → the coin it bought or launched last in this scan (gets the ⚡ buttons)
     // token transfers in/out (swaps show up here as tokens arriving from / leaving a pool)
     for (const l of logs) {
       if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
@@ -640,6 +641,7 @@ async function main() {
         const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
         M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
+          lastBuy[to] = t;
           const paid = txBuy[l.transactionHash] || val || 0;
           for (const g of [G.get(to), '*'].filter(Boolean)) {
             const k = g + '|' + t;
@@ -696,6 +698,7 @@ async function main() {
     for (const { coin, tx: lt } of launchTxs) {
       const c = state.tok[coin]?.creator;
       if (c && W.has(c)) {
+        lastBuy[c] = coin;
         const meta = await tokenMeta(state, coin);
         M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')} · <a href="${BUY_PAGE}?t=${coin}">⚡ buy</a>${txLink(lt)}`);
       }
@@ -717,7 +720,9 @@ async function main() {
       for (let i = list.length - 1; i >= 0; i--) {
         list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
       }
-      msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : ''));
+      const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
+      // ⚡ buttons for the coin it just bought or launched (one tap through the trade bot when it is set up)
+      msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
     }
   }
 
