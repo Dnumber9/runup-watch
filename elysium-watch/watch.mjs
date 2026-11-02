@@ -40,7 +40,8 @@ const RUN_MIN_SWAPS = 15;
 const RUN_MIN_BUYERS = 8;
 const RUN_MULT = 3;              // times its own baseline pace
 const RUN_MIN_BUY_SHARE = 0.55;
-const WALLET_MIN_HYPE = 0.5;     // ignore dust HYPE moves for tracked wallets
+// wallet pings carry buys, sells and launches; plain HYPE moves (sent, received, bridged in) only from this size
+const WALLET_BIG_HYPE = Number(process.env.WALLET_BIG_HYPE || 25);
 const DUST_USD = Number(process.env.DUST_USD || 5); // token moves worth less than this (reflections, airdrops, tax payouts) are not pinged
 // group buys: several wallets of one group (wallets.json "group") buying the same coin close together
 const GROUP_WINDOW_MIN = 30;
@@ -646,7 +647,8 @@ async function main() {
       const dustOut = (usdOf(val) ?? Infinity) < DUST_USD;
       if (W.has(to) && !dustIn) {
         const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
-        M(to).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'received' ? ` from ${walletLink(f)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
+        // plain token transfers (received, minted) are not pinged, only buys
+        if (kind === 'bought') M(to).push(`bought ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
           lastBuy[to] = t;
           const paid = txBuy[l.transactionHash] || val || 0;
@@ -658,7 +660,8 @@ async function main() {
       }
       if (W.has(f) && !dustOut) {
         const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
-        M(f).push(`${kind} ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt}${kind === 'sent' ? ` to ${walletLink(to)}` : ''} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+        // plain token transfers (sent, burned) are not pinged, only sells
+        if (kind === 'sold') M(f).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
       }
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
@@ -669,7 +672,7 @@ async function main() {
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
-        if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
+        if (W.has(f) && val >= WALLET_BIG_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
         // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): follow each recipient
         if (W.has(f) && val > 0 && (tx.input || '0x') !== '0x') {
@@ -679,7 +682,7 @@ async function main() {
         }
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
-        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
+        if (W.has(to) && val >= WALLET_BIG_HYPE) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
     // fresh wallets funded by tracked ones: start tracking them (same group as the funder)
