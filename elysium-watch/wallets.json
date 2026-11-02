@@ -461,5 +461,75 @@
   "address": "0x4e19bc0944c2c904833c25722fb1c8d9907bc172",
   "label": "EOS launcher (funded the bundle)",
   "group": "eosteam"
+ },
+ {
+  "address": "0xf45832d5ad62a06a2a5d9b26e1b932cfd26341b3",
+  "label": "BOXA #6 cluster (ECAT early)",
+  "group": "smart"
+ },
+ {
+  "address": "0x991e645cbba882b705fe7441c48d58d17b2a0c0e",
+  "label": "BOXA #6 cluster (ECAT early)",
+  "group": "smart"
+ },
+ {
+  "address": "0x356db8cdc3746922928f0905e3f3f13b927d4335",
+  "label": "BOXA #6 cluster (ECAT early)",
+  "group": "smart"
+ },
+ {
+  "address": "0xa450f6dbf9737495c9b723ec11a269f9cdf700bb",
+  "label": "ECAT top PnL (ely trader)",
+  "group": "smart"
+ },
+ {
+  "address": "0x7aeb860272506ad5ce893a79369adbbc5a3fa0a4",
+  "label": "ECAT 12x fresh (possibly informed)",
+  "group": "smart"
+ },
+ {
+  "address": "0x161464f923282e1dccd85a9a37b0f7c9d36fa5e8",
+  "label": "ECAT early (614-tx ely trader)",
+  "group": "smart"
+ },
+ {
+  "address": "0xf4aa7cc5c3c55baec3f249ef141bce30ba67a255",
+  "label": "ECAT early 7x",
+  "group": "smart"
+ },
+ {
+  "address": "0xebc71231de1e9173f696617ef1aff38bec0c9389",
+  "label": "ECAT early (442-tx ely trader)",
+  "group": "smart"
+ },
+ {
+  "address": "0x484246980f2c26e27144efb821f1d3e3c9b9cdb5",
+  "label": "ECAT early holder",
+  "group": "smart"
+ },
+ {
+  "address": "0x787ae789038168f4b2885025e2153ec261093d43",
+  "label": "ECAT early",
+  "group": "smart"
+ },
+ {
+  "address": "0xe57e10897e9c7f494ca946d4056395ed4b0b242b",
+  "label": "ely sniper e57e (EOS+ECAT)",
+  "group": "smart"
+ },
+ {
+  "address": "0x57f0a0aacf1a650c879a69c7f94f93ff348d700c",
+  "label": "ely sniper e57e alt",
+  "group": "smart"
+ },
+ {
+  "address": "0x8bfee4f379d78955c5a42e9335af361a7e9101e3",
+  "label": "ely sniper 8bfe (EOS +15s)",
+  "group": "smart"
+ },
+ {
+  "address": "0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28",
+  "label": "ely sniper d8ba (EOS +15s)",
+  "group": "smart"
  }
 ]
