@@ -92,6 +92,14 @@ const V4 = [
 const WROUTER = '0x822c686fc480ae8204260fbd46c524a4a30cbdf8';
 const ELYSPUMP_PM = '0x5fb015a49f5b35073f9ce01c2adb287a75f89600';
 const WRAPPED = new Set(['0x5ab377328592c03b5e7adb09254adb043f91fa11']); // the WHYPE that router wraps into
+// Uniswap v3 forks paired with WHYPE (BOXA v2 launches, StockiumSwap graduates): their SwapRouter takes native HYPE
+// in and wraps it, and a sell is swap + unwrap in one multicall, so both stay one transaction
+const V3WHYPE = '0xba876237b0f021a6c6d852d6c26e107997cc5e81';
+const V3DEX = [
+  { name: 'BOXA v2', factory: '0xd5a7c10820446c58868a204b8979b8cc9cb2a1a3', router: '0x03c820b17f17ea86449f6cf700788c97511566c4' },
+  { name: 'StockiumSwap', factory: '0x4f66184a9ffabb7f7071d590c2c48dedf41676f4', router: '0xf7d8d5f9b9125b3d29c5778df5e54c1bbe77f224' },
+];
+const V3FEES = [10000, 3000, 500, 100];
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -306,10 +314,31 @@ const wSwap = (r, t, buy, amt, minOut, to, dl) => {
   const [c0, c1] = r.qFirst ? [r.q, t] : [t, r.q];
   return enc('0ee97731', 192, amt, minOut, to, buy ? 0 : 1, dl, 1, c0, c1, r.fee, r.ts, r.hook, buy === r.qFirst ? 1 : 0);
 };
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4';
-const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : ROUTER);
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+// ABI encoding of f(bytes[]) for multicall
+const encBytesArray = (sel, items) => {
+  const parts = items.map(strip);
+  let off = parts.length * 32;
+  const offs = [], body = [];
+  for (const h of parts) {
+    const n = h.length / 2, padded = h.padEnd(Math.ceil(n / 32) * 64, '0');
+    offs.push(word(off)); body.push(word(n) + padded); off += 32 + padded.length / 2;
+  }
+  return '0x' + sel + word(32) + word(parts.length) + offs.join('') + body.join('');
+};
+// v3 SwapRouter: exactInputSingle(tokenIn, tokenOut, fee, recipient, deadline, amountIn, minOut, priceLimit); a sell
+// swaps into WHYPE held by the router, then unwrapWETH9(minOut, recipient) pays native HYPE
+const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', V3WHYPE, t, r.fee, to, dl, wei, minOut, 0);
+const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, V3WHYPE, r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3';
+const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' ? r.router : ROUTER);
+const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router)]);
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+// a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
+const sellQuoteData = (r, t, amt) => (r.kind === 'v3' ? enc('414bf389', t, V3WHYPE, r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
+// byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
+const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
+const routeLabel = (r) => (r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
@@ -330,7 +359,7 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
-  const data = sellData(r, t, amt, 0, me, 2 ** 31 - 1);
+  const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
   return u256(await ethCall(routerOf(r), data, { from: me }, ov, true));
 }
@@ -404,6 +433,7 @@ async function findRoute(t, fresh = false) {
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   let cands = (state.pools[t] || []).slice(-8).map(routeOf);
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
+  cands = cands.concat(await v3Pools(t));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
   const good = (await Promise.all(cands.map(quote))).filter(Boolean).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
   let route = good[0]?.r || null;
@@ -413,6 +443,17 @@ async function findRoute(t, fresh = false) {
   if (!route && !state.poolsBlock) route = await scanV4(t, async (r) => (await quote(r))?.r || null); // index not built yet
   if (route) { state.routes[t] = route; save(); }
   return route;
+}
+// WHYPE pools of the v3 forks: every fee tier of every factory, asked at once
+async function v3Pools(t) {
+  const out = [];
+  await Promise.all(V3DEX.flatMap((x) => V3FEES.map(async (fee) => {
+    try {
+      const pool = '0x' + strip(await ethCall(x.factory, enc('1698ee82', t, V3WHYPE, fee), {}, undefined, true)).slice(24);
+      if (pool !== ZERO) out.push({ kind: 'v3', name: x.name, router: x.router, fee, pool });
+    } catch {}
+  })));
+  return out;
 }
 // a pool on a PoolManager we have never seen: find its Initialize event (recent blocks first)
 async function scanV4(t, ok) {
@@ -444,8 +485,7 @@ async function sellCheck(r, t, wei) {
   if (!isPool(r)) return { ok: null, note: 'sell check skipped (KyberSwap route)' };
   const bd = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1), sd = sellData(r, t, 0, 0, SIM, 2 ** 31 - 1);
   const len = (h) => (h.length - 2) / 2;
-  // where the helper writes the bag into the sell's amount: v4Sell's 7th argument, the wrapped router's 2nd
-  const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(r.kind === 'wv4' ? 36 : 196) + strip(bd) + strip(sd);
+  const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(amtOffset(r, t)) + strip(bd) + strip(sd);
   const big = hex(wei + 10n ** 21n);
   try {
     const res = await ethCall(SIM, data, { from: me, value: hex(wei) }, { [SIM]: { code: RT_CODE, balance: big }, [me]: { balance: big } });
@@ -530,7 +570,7 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
-  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
+  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
   const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t, me, true), sellCheck(r, t, 10n ** 17n), devInfo]);
@@ -548,7 +588,7 @@ async function cardText(t) {
   }
   const os = state.orders[t] || [];
   const text =
-    `<b>${esc(m.sym)}</b> · ${isPool(r) ? `${esc(r.name)} v4` : 'via KyberSwap'}\n` +
+    `<b>${esc(m.sym)}</b> · ${isPool(r) ? esc(routeLabel(r)) : 'via KyberSwap'}\n` +
     `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
     (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
     (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}${entry && sup && px ? ` · entry MC $${fmt(entry * sup * px)}` : ''}\n` : '') +
@@ -695,7 +735,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
   const head = opts.why ? `${opts.icon || '🎯'} ${opts.why}\n` : '';
   const msgP = say(`${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
-  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && (spender === ROUTER || spender === WROUTER) ? MAX256 : amt), gas: 120000 });
+  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 120000 });
   let txs, expect;
   try {
     if (isPool(r)) {
