@@ -19,7 +19,7 @@ const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.bo
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
 const BOXA = 'https://boxa.pro';      // BOXA's API (token index)
-const BOXA_SITE = 'https://boxa.club'; // links in alerts
+const ELYXA = 'https://elyxa.trade'; // links in alerts (indexes every launchpad's trades and wallet PnL)
 
 const LOG_RANGE = 500;           // the chain got busy: small log windows, split further if a node times out
 const FIRST_LOOKBACK = 900;      // first run: about the last hour (14 blocks a minute)
@@ -91,10 +91,10 @@ function int256(hex) {
   const x = BigInt('0x' + hex);
   return x >= 1n << 255n ? x - (1n << 256n) : x;
 }
-const assetLink = (t, label = 'BOXA') => `<a href="${BOXA_SITE}/asset?address=${t}">${label}</a>`;
-// wallets open on BOXA's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
+const assetLink = (t, label = 'chart') => `<a href="${ELYXA}/#/terminal/${t}">${label}</a>`;
+// wallets open on Elyxa's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
 const EXPLORER = 'https://elysium.kinetiq.xyz/explorer';
-const walletLink = (a, label) => `<a href="${BOXA_SITE}/portfolio?address=${a}">${label || short(a)}</a>`;
+const walletLink = (a, label) => `<a href="${ELYXA}/#/portfolio?w=${a}">${label || short(a)}</a>`;
 const txLink = (h) => (h ? ` · <a href="${EXPLORER}/transaction/${h}">tx</a>` : '');
 
 let rpcIdx = 0;
@@ -187,8 +187,8 @@ const asLinks = (buttons) => buttons.map((b) => {
   if (!m) return b;
   return { text: b.text, url: `${BUY_PAGE}?t=0x${m[2]}${m[3] ? `&a=${Number(m[3]) / 10}` : ''}` };
 });
-// BOXA's asset page only trades BOXA coins; everything else opens in the quick-buy page
-const coinLink = (state, t) => (state.tok[t]?.lp === BOXA_PM ? assetLink(t, 'open on BOXA') : `<a href="${BUY_PAGE}?t=${t}">open in quick buy</a>`);
+// Elyxa's terminal charts coins from every launchpad; quick buy stays as the one-tap route
+const coinLink = (state, t) => `${assetLink(t, 'open on Elyxa')} · <a href="${BUY_PAGE}?t=${t}">quick buy</a>`;
 
 // alerts go through the trade bot when it is set up, else the command bot (both set in main); the old bot is the fallback
 let ALERT = null, TRADE = null;
@@ -791,7 +791,7 @@ async function main() {
     for (const [t, r] of rows) {
       const m = await tokenMeta(state, t);
       const mc = r.price && m.supply ? r.price * m.supply : null;
-      lines.push(`${lines.length + 1}. <a href="${BOXA_SITE}/asset?address=${t}">${esc(m.s)}</a> · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${LAUNCHPADS[r.lp]?.name || 'Uniswap'}`);
+      lines.push(`${lines.length + 1}. ${assetLink(t, esc(m.s))} · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${LAUNCHPADS[r.lp]?.name || 'Uniswap'}`);
     }
     const launches = {};
     for (const r of Object.values(state.tok)) if (r.born && r.born >= since) launches[LAUNCHPADS[r.lp]?.name || 'other'] = (launches[LAUNCHPADS[r.lp]?.name || 'other'] || 0) + 1;
