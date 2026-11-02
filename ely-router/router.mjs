@@ -1,240 +1,591 @@
-// ely-router: one-tap buys and sells from Telegram, for Stockium curves (HyperEVM) and StockiumSwap pools (Elysium).
+// ely-router: one-tap Elysium trading from Telegram.
 //
-// Runs on your own machine or VPS with a fresh burner wallet. The key lives only in .env there.
-// The watcher's alerts carry "Buy 1 / 3 / 5 HYPE" buttons; tapping one sends a callback to this bot,
-// which signs and sends the trade, then replies with the result and Sell buttons.
+// Runs on your own VPS with a fresh burner wallet. The key is generated on the VPS (setup.sh) and only
+// lives in .env there (chmod 600). Paste any Elysium token address into the trade bot to get a card with
+// Buy and Sell buttons. Alerts from the watcher carry ⚡ buttons that buy in one tap through this bot.
 //
-// Chat commands (only from your TELEGRAM_CHAT_ID):
-//   /buy <curve or token address> <HYPE>     buy (curve on HyperEVM, or a token on Elysium)
-//   /sell <curve or token address> [percent] sell your balance (default 100%)
-//   /bal                                      HYPE balance on both chains
-//   /help
+// Routes, tried in order:
+//   1. Launchpad pools on Uniswap v4 (eleos, BOXA, Kleos, plus any new PoolManager found by its Initialize
+//      event), traded through eleos's stateless v4 router. New launches work from their first block.
+//   2. KyberSwap's aggregator, for everything it indexes on Elysium (v3 DEXes, ElysPump v4, older pools).
+//
+// Chat (only from OWNER_ID):
+//   paste a token or a link containing one   card with live price, market cap, your bag, buttons
+//   /buy <token> <HYPE>   /sell <token> <percent>
+//   /bal   /pnl   /wallet
+//   /set slip <percent>   /set max <HYPE>   /set sizes 0.5,1,2,5
+//   /withdraw <address> <HYPE|all>   (asks you to confirm)
+//   /nonce   resync the nonce after stuck transactions
+//
+// CLI: node router.mjs --new-wallet   creates a burner key in .env if there is none, prints the address
 
 import fs from 'node:fs';
-import {
-  createPublicClient, createWalletClient, http, defineChain, parseAbi, parseEther, formatEther, formatUnits, maxUint256, encodeFunctionData,
-} from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { keccak256, concat, pad as vpad, toHex } from 'viem';
+import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 
-// ── config (.env next to this file, or real environment variables) ─────────────────────────────────
-const envFile = new URL('./.env', import.meta.url);
-if (fs.existsSync(envFile)) {
-  for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
+// ── config ─────────────────────────────────────────────────────────────────────────────────────────
+const ENV = new URL('./.env', import.meta.url);
+const readEnv = () => {
+  if (!fs.existsSync(ENV)) return;
+  for (const line of fs.readFileSync(ENV, 'utf8').split('\n')) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/\s+#.*$/, '').trim().replace(/^["']|["']$/g, '');
   }
+};
+readEnv();
+
+if (process.argv[2] === '--new-wallet') {
+  if (process.env.PRIVATE_KEY) {
+    console.log('A wallet already exists:', privateKeyToAccount(process.env.PRIVATE_KEY).address);
+  } else {
+    const key = generatePrivateKey();
+    fs.appendFileSync(ENV, `${fs.existsSync(ENV) && !fs.readFileSync(ENV, 'utf8').endsWith('\n') ? '\n' : ''}PRIVATE_KEY=${key}\n`);
+    fs.chmodSync(ENV, 0o600);
+    console.log('New burner wallet:', privateKeyToAccount(key).address);
+    console.log('Its key is in .env on this machine only. Fund the address with HYPE on Elysium.');
+  }
+  process.exit(0);
 }
-// dry run: `node router.mjs --dry buy|sell <address> <HYPE|percent>` quotes the trade and prints the call it would send
-const DRY = process.argv[2] === '--dry';
-const need = (k) => { if (DRY) return process.env[k] || ''; if (!process.env[k]) { console.error(`missing ${k} in .env`); process.exit(1); } return process.env[k]; };
-const TG = need('TELEGRAM_BOT_TOKEN');
-const CHAT = String(need('TELEGRAM_CHAT_ID'));
-const KEY = need('PRIVATE_KEY') || '0x' + '11'.repeat(32);
-const MAX_BUY = Number(process.env.MAX_BUY_HYPE || 5);          // hard cap per trade
-const SLIP_BPS = BigInt(process.env.SLIPPAGE_BPS || 1500);       // 15% default; launches move fast
-const HYPER_RPC = process.env.HYPER_RPC || 'https://rpc.hyperliquid.xyz/evm';
-const ELY_RPC = process.env.ELY_RPC || 'https://rpc-live.elysp.com';
 
-// ── chains and contracts ─────────────────────────────────────────────────────────────────────────
-const native = { name: 'HYPE', symbol: 'HYPE', decimals: 18 };
-const hyperevm = defineChain({ id: 999, name: 'HyperEVM', nativeCurrency: native, rpcUrls: { default: { http: [HYPER_RPC] } } });
-const elysium = defineChain({ id: 99901, name: 'Elysium', nativeCurrency: native, rpcUrls: { default: { http: [ELY_RPC] } } });
+const need = (k) => { if (!process.env[k]) { console.error(`missing ${k} in .env`); process.exit(1); } return process.env[k]; };
+const TG = need('TRADE_BOT_TOKEN');
+const OWNER = String(need('OWNER_ID'));
+const account = privateKeyToAccount(need('PRIVATE_KEY'));
+const me = account.address.toLowerCase();
 
-const STK = {
-  gatewayRouter: '0x5D24f760DD7664b4214bDD4B04a3f62B9edd68c0', // HyperEVM → Elysium token gateway
-  factory: '0x4F66184A9FFabB7f7071D590C2c48DEDf41676f4',       // StockiumSwap (Uniswap v3 fork) on Elysium
-  router: '0xf7d8d5f9B9125b3d29c5778Df5E54c1bbe77f224',
-  quoter: '0x1947918B6bf36112F7bA8AA983e8D94ce574163a',
-  whype: '0xba876237b0f021a6c6d852d6c26e107997cc5e81',          // the router's WETH9 on Elysium
-};
-const FEES = [10000, 3000, 500, 100];
+const CHAIN_ID = 99901;
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elyspump.com,https://rpc-live.elysp.com')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const EXPLORER = process.env.EXPLORER || 'https://www.thekleos.xyz/scan/tx/';
+const KYBER = 'https://aggregator-api.kyberswap.com/elysium/api/v1';
+const KYBER_ID = process.env.KYBER_CLIENT_ID || 'ely-router';
 
-const curveAbi = parseAbi([
-  'function buy(uint256 minTokensOut, uint256 minPairOut) payable returns (uint256)',
-  'function sell(uint256 tokensIn, uint256 minHypeOut) returns (uint256)',
-  'function quoteBuy(uint256 hypeIn) view returns (uint256 tokensOut, uint256 fee)',
-  'function quoteSell(uint256 tokensIn) view returns (uint256 hypeOut, uint256 fee)',
-  'function token() view returns (address)',
-  'function graduated() view returns (bool)',
-]);
-const erc20 = parseAbi([
-  'function balanceOf(address) view returns (uint256)',
-  'function allowance(address,address) view returns (uint256)',
-  'function approve(address,uint256) returns (bool)',
-  'function decimals() view returns (uint8)',
-  'function symbol() view returns (string)',
-]);
-const gatewayAbi = parseAbi(['function calculateL2TokenAddress(address l1Token) view returns (address)']);
-const factoryAbi = parseAbi(['function getPool(address,address,uint24) view returns (address)']);
-const poolAbi = parseAbi(['function liquidity() view returns (uint128)']);
-const quoterAbi = parseAbi(['function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)) returns (uint256 amountOut, uint160, uint32, uint256)']);
-const routerAbi = parseAbi([
-  'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) payable returns (uint256)',
-  'function multicall(bytes[] data) payable returns (bytes[])',
-  'function unwrapWETH9(uint256 amountMinimum, address recipient) payable',
-]);
+const ROUTER = '0x04c6b3b5f11ff5f7ef3635f23e9697e4be8443ad'; // eleos's v4 swap router: stateless, no owner
+const V4 = [
+  { name: 'eleos', pm: '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da', hook: '0x8680965555dcea2a4c0ed3a29e59a8aa424e6acc', fee: 0, ts: 200 },
+  { name: 'BOXA', pm: '0x06c63714fbf1f5753017123e2fcfdede4540b2c4', hook: '0xbcc1f22d137c1d98dfa5548e4d4261d7aee06acc', fee: 0, ts: 200 },
+  { name: 'Kleos', pm: '0xb308b5df891c300a5f5a5b8fdbc30108ba842490', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc', fee: 0, ts: 200 },
+];
+const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
+const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const ZERO = '0x0000000000000000000000000000000000000000';
+const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const SIM = '0x00000000000000000000000000000000000b0a7a'; // throwaway "from" for quotes (balance via state override)
+const MAX256 = (1n << 256n) - 1n;
 
-const account = privateKeyToAccount(KEY.startsWith('0x') ? KEY : '0x' + KEY);
-const C = {
-  h: { pub: createPublicClient({ chain: hyperevm, transport: http() }), wal: createWalletClient({ account, chain: hyperevm, transport: http() }), scan: 'https://hyperevmscan.io/tx/' },
-  e: { pub: createPublicClient({ chain: elysium, transport: http() }), wal: createWalletClient({ account, chain: elysium, transport: http() }), scan: 'https://elysium.kinetiq.xyz/explorer/transaction/' },
-};
-const me = account.address;
-const minOut = (x) => (x * (10000n - SLIP_BPS)) / 10000n;
+// ── state (settings, positions, caches) ────────────────────────────────────────────────────────────
+const STATE = new URL('./state.json', import.meta.url);
+let state = {};
+try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
+state.offset ||= 0;
+state.pos ||= {};      // token → { sym, hypeIn, hypeOut, tokIn, tokOut, t }
+state.routes ||= {};   // token → route
+state.slots ||= {};    // token → allowance mapping base slot (for sell quotes before approving)
+state.set ||= {};
+const cfg = () => ({
+  slip: BigInt(state.set.slip ?? process.env.SLIPPAGE_BPS ?? 1500),
+  max: Number(state.set.max ?? process.env.MAX_BUY_HYPE ?? 5),
+  sizes: (state.set.sizes ?? process.env.BUY_SIZES ?? '0.5,1,2,5').split(',').map((s) => s.trim()).filter(Boolean),
+});
+let saveTimer = null;
+const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFileSync(STATE, JSON.stringify(state, (k, v) => (typeof v === 'bigint' ? v.toString() : v))), 300); };
+
+// ── small helpers ──────────────────────────────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const lc = (s) => String(s || '').toLowerCase();
+const strip = (h) => lc(h).replace(/^0x/, '');
+const hex = (n) => '0x' + BigInt(n).toString(16);
 const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const word = (v) => {
+  if (typeof v === 'number') v = BigInt(v);
+  if (typeof v === 'bigint') return (v < 0n ? (1n << 256n) + v : v).toString(16).padStart(64, '0');
+  return strip(v).padStart(64, '0');
+};
+const enc = (sel, ...args) => '0x' + sel + args.map(word).join('');
+const u256 = (r) => BigInt('0x' + (strip(r).slice(0, 64) || '0'));
+const num = (b, d = 18) => Number(b) / 10 ** d;
+const toWei = (s, d = 18) => {
+  s = String(s).trim();
+  if (!/^\d*\.?\d+$|^\d+\.$/.test(s)) return null;
+  const [i, f = ''] = s.split('.');
+  return BigInt(i || '0') * 10n ** BigInt(d) + BigInt((f + '0'.repeat(d)).slice(0, d) || '0');
+};
+const fmt = (n) => {
+  if (!isFinite(n)) return '?';
+  const a = Math.abs(n);
+  return a >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : a >= 1 ? n.toFixed(3) : a === 0 ? '0' : n.toPrecision(3);
+};
+const fmtH = (h) => (h >= 100 ? h.toFixed(0) : h >= 1 ? h.toFixed(2) : h.toPrecision(3)) + ' HYPE';
+const decStr = (r) => {
+  const h = strip(r);
+  const utf = (x) => Buffer.from(x, 'hex').toString('utf8').replace(/\0/g, '');
+  if (h.length >= 128) { const o = Number(BigInt('0x' + h.slice(0, 64))) * 2, n = Number(BigInt('0x' + h.slice(o, o + 64))); return utf(h.slice(o + 64, o + 64 + n * 2)); }
+  return utf(h.slice(0, 64));
+};
+const txLink = (h) => `<a href="${EXPLORER}${h}">tx</a>`;
 
-// ── Telegram ─────────────────────────────────────────────────────────────────────────────────────
-async function tg(method, body) {
-  const r = await fetch(`https://api.telegram.org/bot${TG}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  return r.json();
+// ── RPC: rotate for reads, broadcast to every node for sends ───────────────────────────────────────
+const reverted = (e) => e && (e.code === 3 || /revert/i.test(e.message || ''));
+const transient = (e) => /abort|timeout|timed? ?out|rate limit|busy|unavailable|fetch failed|ECONN|ENOTFOUND|socket|502|503|504|-32005/i.test(`${e.name} ${e.message} ${e.code}`);
+async function call1(url, method, params, ms = 8000) {
+  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(ms) });
+  const j = await r.json();
+  if (j.error) { const e = new Error(j.error.message || 'rpc error'); e.code = j.error.code; throw e; }
+  return j.result;
 }
-const say = (text, buttons) => tg('sendMessage', { chat_id: CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(buttons ? { reply_markup: { inline_keyboard: [buttons] } } : {}) });
-const sellButtons = (chain, addr) => [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${chain}:${addr.slice(2)}:${p}` }));
-
-// ── resolve what an address is ───────────────────────────────────────────────────────────────────
-async function isCurve(addr) {
-  try { await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'quoteBuy', args: [parseEther('0.01')] }); return true; } catch { return false; }
-}
-async function elyPool(token) {
-  let best = null;
-  for (const fee of FEES) {
-    const pool = await C.e.pub.readContract({ address: STK.factory, abi: factoryAbi, functionName: 'getPool', args: [token, STK.whype, fee] }).catch(() => null);
-    if (!pool || /^0x0+$/.test(pool)) continue;
-    const liq = await C.e.pub.readContract({ address: pool, abi: poolAbi, functionName: 'liquidity' }).catch(() => 0n);
-    if (!best || liq > best.liq) best = { pool, fee, liq };
+let rpcIdx = 0;
+async function rpc(method, params, tries = 8) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    const url = RPCS[(rpcIdx + i) % RPCS.length];
+    try { const r = await call1(url, method, params); rpcIdx = (rpcIdx + i) % RPCS.length; return r; }
+    catch (e) { if (!transient(e)) throw e; last = e; await sleep(150 * (i + 1)); }
   }
-  return best && best.liq > 0n ? best : null;
+  throw last;
 }
-// a graduated curve's token lives on Elysium at the gateway's L2 address
-async function curveToEly(curve) {
-  const l1 = await C.h.pub.readContract({ address: curve, abi: curveAbi, functionName: 'token' });
-  return C.h.pub.readContract({ address: STK.gatewayRouter, abi: gatewayAbi, functionName: 'calculateL2TokenAddress', args: [l1] });
-}
-
-async function send(chain, req) {
-  if (DRY) { console.log(`[dry] ${chain === 'h' ? 'HyperEVM' : 'Elysium'} ${req.functionName} on ${req.address}${req.value ? ` value ${formatEther(req.value)} HYPE` : ''}`, JSON.stringify(req.args, (k, v) => (typeof v === 'bigint' ? v.toString() : v))); return '0xdry'; }
-  const hash = await C[chain].wal.writeContract(req);
-  const rcpt = await C[chain].pub.waitForTransactionReceipt({ hash, timeout: 90_000 });
-  if (rcpt.status !== 'success') throw new Error(`reverted: ${C[chain].scan}${hash}`);
-  return hash;
-}
-async function approveIfNeeded(chain, token, spender, amount) {
-  if (DRY) return;
-  const a = await C[chain].pub.readContract({ address: token, abi: erc20, functionName: 'allowance', args: [me, spender] });
-  if (a < amount) await send(chain, { address: token, abi: erc20, functionName: 'approve', args: [spender, maxUint256] });
-}
-
-// ── trades ───────────────────────────────────────────────────────────────────────────────────────
-async function buy(chain, addr, hypeAmt) {
-  if (!(hypeAmt > 0) || hypeAmt > MAX_BUY) throw new Error(`amount must be between 0 and ${MAX_BUY} HYPE (MAX_BUY_HYPE)`);
-  const value = parseEther(String(hypeAmt));
-  if (chain === 'h' || (chain === '?' && await isCurve(addr))) {
-    const graduated = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'graduated' }).catch(() => false);
-    if (graduated) return buy('e', await curveToEly(addr), hypeAmt);
-    const [out] = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'quoteBuy', args: [value] });
-    const hash = await send('h', { address: addr, abi: curveAbi, functionName: 'buy', args: [minOut(out), 0n], value });
-    const tok = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'token' });
-    const sym = await C.h.pub.readContract({ address: tok, abi: erc20, functionName: 'symbol' }).catch(() => '?');
-    return { text: `✅ Bought ~${fmt(out)} <b>${sym}</b> for ${hypeAmt} HYPE on its Stockium curve\n<a href="${C.h.scan}${hash}">tx</a>`, buttons: sellButtons('h', addr) };
+async function ethCall(to, data, extra = {}, override) {
+  if (!override) return rpc('eth_call', [{ to, data, ...extra }, 'latest']);
+  // state overrides are not supported everywhere: walk the nodes until one answers or the call really reverts
+  let last;
+  for (let i = 0; i < RPCS.length * 2; i++) {
+    try { return await call1(RPCS[i % RPCS.length], 'eth_call', [{ to, data, ...extra }, 'latest', override]); }
+    catch (e) { if (reverted(e)) throw e; last = e; }
   }
-  const p = await elyPool(addr);
-  if (!p) throw new Error('no StockiumSwap HYPE pool for that token on Elysium (BOXA, elyspump and Kleos pools are not wired in yet)');
-  const { result } = await C.e.pub.simulateContract({ address: STK.quoter, abi: quoterAbi, functionName: 'quoteExactInputSingle', args: [{ tokenIn: STK.whype, tokenOut: addr, amountIn: value, fee: p.fee, sqrtPriceLimitX96: 0n }], account: me });
-  const out = result[0];
-  const hash = await send('e', {
-    address: STK.router, abi: routerAbi, functionName: 'exactInputSingle', value,
-    args: [{ tokenIn: STK.whype, tokenOut: addr, fee: p.fee, recipient: me, deadline: BigInt(Math.floor(Date.now() / 1000) + 300), amountIn: value, amountOutMinimum: minOut(out), sqrtPriceLimitX96: 0n }],
-  });
-  const sym = await C.e.pub.readContract({ address: addr, abi: erc20, functionName: 'symbol' }).catch(() => '?');
-  return { text: `✅ Bought ~${fmt(out)} <b>${sym}</b> for ${hypeAmt} HYPE on StockiumSwap (Elysium)\n<a href="${C.e.scan}${hash}">tx</a>`, buttons: sellButtons('e', addr) };
+  throw last;
+}
+async function broadcast(raw) {
+  const res = await Promise.allSettled(RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [raw], 12000)));
+  if (res.some((r) => r.status === 'fulfilled')) return;
+  const why = res.map((r) => r.reason?.message || '').join(' | ');
+  if (/already known|known transaction|already imported/i.test(why)) return;
+  const e = new Error(why.slice(0, 220));
+  e.nonceLow = /nonce too low/i.test(why);
+  throw e;
 }
 
-async function sell(chain, addr, pct) {
-  pct = Math.min(100, Math.max(1, Number(pct) || 100));
-  if (chain === 'h' || (chain === '?' && await isCurve(addr))) {
-    const graduated = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'graduated' }).catch(() => false);
-    const tok = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'token' });
-    if (graduated) throw new Error('this curve has graduated: bridge the tokens to Elysium and sell there with /sell <Elysium token address>');
-    const bal = await C.h.pub.readContract({ address: tok, abi: erc20, functionName: 'balanceOf', args: [me] });
-    const amt = (bal * BigInt(pct)) / 100n;
-    if (amt === 0n) throw new Error('you hold none of this token on HyperEVM');
-    await approveIfNeeded('h', tok, addr, amt);
-    const [out] = await C.h.pub.readContract({ address: addr, abi: curveAbi, functionName: 'quoteSell', args: [amt] });
-    const hash = await send('h', { address: addr, abi: curveAbi, functionName: 'sell', args: [amt, minOut(out)] });
-    return { text: `✅ Sold ${pct}% for ~${formatEther(out)} HYPE on the Stockium curve\n<a href="${C.h.scan}${hash}">tx</a>` };
+// one send at a time, nonces handed out locally so an approve and its sell can go back to back
+let nextNonce = null, queue = Promise.resolve(), gpCache = { v: 0n, t: 0 };
+const serial = (fn) => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
+async function resyncNonce() {
+  const [l, p] = await Promise.all([rpc('eth_getTransactionCount', [me, 'latest']), rpc('eth_getTransactionCount', [me, 'pending']).catch(() => '0x0')]);
+  nextNonce = Math.max(Number(BigInt(l)), Number(BigInt(p)));
+  return nextNonce;
+}
+async function gasPrice() {
+  if (Date.now() - gpCache.t < 30000) return gpCache.v;
+  let g = BigInt(await rpc('eth_gasPrice', []).catch(() => '0x5f5e100')) * 2n;
+  if (g < 2n * 10n ** 8n) g = 2n * 10n ** 8n;
+  gpCache = { v: g, t: Date.now() };
+  return g;
+}
+async function sendRaw(tx) {
+  if (nextNonce == null) await resyncNonce();
+  const nonce = nextNonce;
+  const raw = await account.signTransaction({ chainId: CHAIN_ID, type: 'legacy', nonce, to: tx.to, value: BigInt(tx.value || 0), data: tx.data, gas: BigInt(tx.gas), gasPrice: await gasPrice() });
+  try { await broadcast(raw); }
+  catch (e) { if (e.nonceLow) await resyncNonce(); throw e; }
+  nextNonce = nonce + 1;
+  return keccak256(raw);
+}
+async function receipt(hash, maxMs = 2 * 3600 * 1000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    try { const r = await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
+    await sleep(Date.now() - t0 < 120000 ? 1500 : 15000);
   }
-  const p = await elyPool(addr);
-  if (!p) throw new Error('no StockiumSwap HYPE pool for that token on Elysium');
-  const bal = await C.e.pub.readContract({ address: addr, abi: erc20, functionName: 'balanceOf', args: [me] });
-  const amt = (bal * BigInt(pct)) / 100n;
-  if (amt === 0n) throw new Error('you hold none of this token on Elysium');
-  await approveIfNeeded('e', addr, STK.router, amt);
-  const { result } = await C.e.pub.simulateContract({ address: STK.quoter, abi: quoterAbi, functionName: 'quoteExactInputSingle', args: [{ tokenIn: addr, tokenOut: STK.whype, amountIn: amt, fee: p.fee, sqrtPriceLimitX96: 0n }], account: me });
-  const min = minOut(result[0]);
-  // swap into wrapped HYPE held by the router, then unwrap to native HYPE in the same transaction
-  const swap = encodeFunctionData({ abi: routerAbi, functionName: 'exactInputSingle', args: [{ tokenIn: addr, tokenOut: STK.whype, fee: p.fee, recipient: STK.router, deadline: BigInt(Math.floor(Date.now() / 1000) + 300), amountIn: amt, amountOutMinimum: min, sqrtPriceLimitX96: 0n }] });
-  const unwrap = encodeFunctionData({ abi: routerAbi, functionName: 'unwrapWETH9', args: [min, me] });
-  const hash = await send('e', { address: STK.router, abi: routerAbi, functionName: 'multicall', args: [[swap, unwrap]] });
-  return { text: `✅ Sold ${pct}% for ~${formatEther(result[0])} HYPE on StockiumSwap\n<a href="${C.e.scan}${hash}">tx</a>` };
+  return null;
 }
 
-const fmt = (x) => { const n = Number(formatUnits(x, 18)); return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : n.toFixed(2); };
-
-async function balances() {
-  const [h, e] = await Promise.all([C.h.pub.getBalance({ address: me }).catch(() => null), C.e.pub.getBalance({ address: me }).catch(() => null)]);
-  return `Wallet <code>${me}</code>\nHyperEVM: ${h == null ? 'unreachable' : formatEther(h)} HYPE\nElysium: ${e == null ? 'unreachable' : formatEther(e)} HYPE\nMax per buy: ${MAX_BUY} HYPE · slippage ${Number(SLIP_BPS) / 100}%`;
+// ── tokens, prices ─────────────────────────────────────────────────────────────────────────────────
+const meta = {};
+async function tokenMeta(t) {
+  if (meta[t]) return meta[t];
+  const [s, d, sup] = await Promise.all([
+    ethCall(t, '0x95d89b41').then(decStr).catch(() => '?'),
+    ethCall(t, '0x313ce567').then((r) => Number(u256(r))).catch(() => 18),
+    ethCall(t, '0x18160ddd').then(u256).catch(() => 0n),
+  ]);
+  return (meta[t] = { sym: (s || '?').replace(/[^\w$.+\- ]/g, '').slice(0, 20) || '?', d, sup });
 }
-
-// ── loop ─────────────────────────────────────────────────────────────────────────────────────────
-const recent = new Map(); // callback data → time, so a double tap doesn't buy twice
-async function handle(kind, chain, addr, arg) {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return say('That is not an address.');
-  addr = addr.toLowerCase();
-  await say(`⏳ ${kind === 'b' ? `Buying ${arg} HYPE of` : `Selling ${arg}% of`} <code>${short(addr)}</code>…`);
+const balOf = async (t, w = me) => u256(await ethCall(t, enc('70a08231', w)));
+const hypeBal = async () => BigInt(await rpc('eth_getBalance', [me, 'latest']));
+let usdPx = { v: null, t: 0 };
+async function hypeUsd() {
+  if (Date.now() - usdPx.t < 300000) return usdPx.v;
   try {
-    const r = kind === 'b' ? await buy(chain, addr, Number(arg)) : await sell(chain, addr, arg);
-    await say(r.text, r.buttons);
-  } catch (e) {
-    await say(`❌ ${String(e.shortMessage || e.message).slice(0, 300)}`);
+    const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"type":"allMids"}', signal: AbortSignal.timeout(5000) }).then((x) => x.json());
+    usdPx = { v: Number(r.HYPE) || null, t: Date.now() };
+  } catch { usdPx.t = Date.now() - 240000; }
+  return usdPx.v;
+}
+const usd = (h, px) => {
+  if (!px) return '';
+  const v = h * px, a = Math.abs(v);
+  return ` ($${a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : a >= 10 ? v.toFixed(0) : v.toFixed(2)})`;
+};
+
+// ── routes ─────────────────────────────────────────────────────────────────────────────────────────
+const v4Buy = (r, t, minOut, to, dl) => enc('c727282f', r.pm, ZERO, t, r.fee, r.ts, r.hook, minOut, to, dl);
+const v4Sell = (r, t, amt, minOut, to, dl) => enc('a7fee01b', r.pm, ZERO, t, r.fee, r.ts, r.hook, amt, minOut, to, dl);
+const deadline = () => Math.floor(Date.now() / 1000) + 600;
+
+async function v4QuoteBuy(r, t, wei) {
+  const data = v4Buy(r, t, 0, SIM, 2 ** 31 - 1);
+  return u256(await ethCall(ROUTER, data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
+}
+// allowance(me, ROUTER) lives at keccak(spender, keccak(owner, base)); find base once so sells can be quoted before approving
+async function allowanceSlot(t, spender) {
+  const key = t + ':' + spender;
+  if (key in state.slots) return state.slots[key];
+  const max = '0x' + 'f'.repeat(64);
+  for (let base = 0; base <= 12; base++) {
+    const slot = keccak256(concat([vpad(spender), keccak256(concat([vpad(me), vpad(toHex(base))]))]));
+    try {
+      const r = await ethCall(t, enc('dd62ed3e', me, spender), {}, { [t]: { stateDiff: { [slot]: max } } });
+      if (u256(r) === MAX256) { state.slots[key] = slot; save(); return slot; }
+    } catch {}
   }
+  state.slots[key] = null; save();
+  return null;
+}
+async function v4QuoteSell(r, t, amt, slot) {
+  const data = v4Sell(r, t, amt, 0, me, 2 ** 31 - 1);
+  const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
+  return u256(await ethCall(ROUTER, data, { from: me }, ov));
+}
+async function kyber(path, body) {
+  const r = await fetch(KYBER + path, { method: body ? 'POST' : 'GET', headers: { 'x-client-id': KYBER_ID, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) }).then((x) => x.json());
+  if (r.code !== 0 || !r.data) throw new Error(r.message === 'route not found' || r.message === 'token not found' ? 'no KyberSwap route' : `KyberSwap: ${r.message}`);
+  return r.data;
+}
+const kyRoute = (tin, tout, amt) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tout}&amountIn=${amt}`);
+const kyBuild = (sum, slip) => kyber('/route/build', { routeSummary: sum, sender: me, recipient: me, slippageTolerance: Number(slip), deadline: deadline() });
+
+async function findRoute(t, fresh = false) {
+  if (!fresh && state.routes[t]) return state.routes[t];
+  const probe = 10n ** 16n;
+  const ok = async (r) => { try { return (await v4QuoteBuy(r, t, probe)) > 0n ? r : null; } catch { return null; } };
+  const hits = (await Promise.all(V4.map((x) => ok({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts })))).filter(Boolean);
+  let route = hits[0] || null;
+  if (!route) {
+    try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
+  }
+  if (!route) route = await scanV4(t, ok);
+  if (route) { state.routes[t] = route; save(); }
+  return route;
+}
+// a pool on a PoolManager we have never seen: find its Initialize event (recent blocks first)
+async function scanV4(t, ok) {
+  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  for (let end = head; end > head - 60000; end -= 8000) {
+    const jobs = [];
+    for (let k = 0; k < 4; k++) {
+      const to = end - k * 2000, from = to - 1999;
+      jobs.push(rpc('eth_getLogs', [{ fromBlock: hex(Math.max(0, from)), toBlock: hex(to), topics: [T_INIT, null, '0x' + word(ZERO), '0x' + word(t)] }]).catch(() => []));
+    }
+    for (const l of (await Promise.all(jobs)).flat()) {
+      const d = strip(l.data);
+      const r = await ok({ kind: 'v4', name: 'v4 ' + short(lc(l.address)), pm: lc(l.address), hook: '0x' + d.slice(152, 192), fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))) });
+      if (r) return r;
+    }
+  }
+  return null;
+}
+// tokens out for `wei` HYPE, on whatever route the token uses
+async function quoteBuy(r, t, wei) {
+  if (r.kind === 'v4') return v4QuoteBuy(r, t, wei);
+  return BigInt((await kyRoute(NATIVE, t, wei)).routeSummary.amountOut);
+}
+
+// ── Telegram ───────────────────────────────────────────────────────────────────────────────────────
+async function tg(method, body) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${TG}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(method === 'getUpdates' ? 40000 : 15000) });
+      const j = await r.json();
+      if (j.ok) return j.result;
+      if (j.error_code === 429) { await sleep(1000 * (j.parameters?.retry_after || 2)); continue; }
+      if (/message is not modified/.test(j.description || '')) return null;
+      console.error('telegram', method, j.description);
+      return null;
+    } catch (e) { if (i === 2) console.error('telegram', method, e.message); await sleep(800); }
+  }
+  return null;
+}
+const kb = (rows) => (rows ? { reply_markup: { inline_keyboard: rows } } : {});
+const say = (text, rows, reply) => tg('sendMessage', { chat_id: OWNER, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(reply ? { reply_to_message_id: reply, allow_sending_without_reply: true } : {}), ...kb(rows) });
+const edit = (m, text, rows) => (m ? tg('editMessageText', { chat_id: OWNER, message_id: m.message_id, text, parse_mode: 'HTML', disable_web_page_preview: true, ...kb(rows) }) : say(text, rows));
+
+const cardButtons = (t) => {
+  const h = t.slice(2);
+  return [
+    cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })),
+    [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${h}:${p}` })).concat([{ text: '🔄', callback_data: `r:${h}` }]),
+  ];
+};
+
+// ── card ───────────────────────────────────────────────────────────────────────────────────────────
+async function cardText(t) {
+  const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
+  if (!r) return { text: `No route for <code>${t}</code>.\nNot a v4 launchpad pool, and KyberSwap does not know it (Obol launches are not wired in yet).` };
+  const probe = 10n ** 16n;
+  const [p, one, bal] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t)]);
+  const spot = num(probe) / num(p, m.d);               // HYPE per token
+  const mc = m.sup ? spot * num(m.sup, m.d) : null;
+  const impact = one ? 1 - num(one, m.d) * spot : null;
+  const pos = state.pos[t];
+  const bagH = num(bal, m.d) * spot;
+  let pnl = '';
+  if (pos && pos.hypeIn > 0) {
+    const pl = (bagH + pos.hypeOut - pos.hypeIn) / pos.hypeIn * 100;
+    pnl = ` · PnL <b>${pl >= 0 ? '+' : ''}${pl.toFixed(0)}%</b>`;
+  }
+  const text =
+    `<b>${esc(m.sym)}</b> · ${r.kind === 'v4' ? `${esc(r.name)} v4` : 'via KyberSwap'}\n` +
+    `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
+    (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
+    (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}\n` : '') +
+    `<code>${t}</code>`;
+  return { text, rows: cardButtons(t) };
+}
+async function showCard(t, m) {
+  const c = await cardText(t);
+  return m ? edit(m, c.text, c.rows) : say(c.text, c.rows);
+}
+
+// ── trades ─────────────────────────────────────────────────────────────────────────────────────────
+const P = (t, sym) => (state.pos[t] ||= { sym, hypeIn: 0, hypeOut: 0, tokIn: 0, tokOut: 0, t: Date.now() });
+
+async function buy(t, hypeAmt, replyTo) {
+  const { slip, max } = cfg();
+  if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
+  if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
+  const wei = toWei(String(hypeAmt));
+  const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), hypeBal()]);
+  if (!r) throw new Error('no route for this token');
+  if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
+  const msg = await say(`⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…`, null, replyTo);
+  let tx, expect;
+  if (r.kind === 'v4') {
+    expect = await v4QuoteBuy(r, t, wei);
+    tx = { to: ROUTER, value: wei, data: v4Buy(r, t, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+  } else {
+    const k = await kyRoute(NATIVE, t, wei);
+    const b = await kyBuild(k.routeSummary, slip);
+    expect = BigInt(b.amountOut);
+    tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
+  }
+  const before = await balOf(t);
+  const hash = await serial(() => sendRaw(tx));
+  await edit(msg, `⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
+  track(hash, async (rc) => {
+    if (rc.status !== '0x1') return edit(msg, `❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`);
+    const got = (await balOf(t).catch(() => before)) - before;
+    const p = P(t, m.sym); p.hypeIn += hypeAmt; p.tokIn += num(got, m.d); save();
+    const px = await hypeUsd();
+    const mc = m.sup && got > 0n ? (hypeAmt / num(got, m.d)) * num(m.sup, m.d) : null;
+    return edit(msg, `✅ Bought <b>${fmt(num(got, m.d))} ${esc(m.sym)}</b> for ${hypeAmt} HYPE${mc ? ` · entry MC ${fmtH(mc)}${usd(mc, px)}` : ''} · ${txLink(hash)}`, cardButtons(t));
+  }, () => edit(msg, `⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Elysium may be holding its batch; check ${txLink(hash)} and /nonce if it never lands.`));
+}
+
+async function sell(t, pct, replyTo) {
+  const { slip } = cfg();
+  pct = Math.min(100, Math.max(1, Math.round(pct)));
+  const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), balOf(t)]);
+  if (!r) throw new Error('no route for this token');
+  const amt = (bal * BigInt(pct)) / 100n;
+  if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
+  const msg = await say(`⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
+  let spender, swapTx, expect;
+  if (r.kind === 'v4') {
+    spender = ROUTER;
+    const allowed = u256(await ethCall(t, enc('dd62ed3e', me, spender)));
+    const slot = allowed >= amt ? null : await allowanceSlot(t, spender);
+    if (allowed < amt && !slot) {
+      // unusual token storage: approve first, then quote for real
+      const ah = await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, amt), gas: 120000 }));
+      await edit(msg, `⏳ Approving ${esc(m.sym)} before selling · ${txLink(ah)}`);
+      const arc = await receipt(ah);
+      if (!arc || arc.status !== '0x1') throw new Error('approval failed or never confirmed');
+      expect = await v4QuoteSell(r, t, amt, null);
+      swapTx = { to: ROUTER, data: v4Sell(r, t, amt, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+      return finishSell(t, m, pct, msg, [swapTx], expect);
+    }
+    expect = await v4QuoteSell(r, t, amt, allowed >= amt ? null : slot);
+    swapTx = { to: ROUTER, data: v4Sell(r, t, amt, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+    return finishSell(t, m, pct, msg, allowed >= amt ? [swapTx] : [{ to: t, data: enc('095ea7b3', spender, amt), gas: 120000 }, swapTx], expect);
+  }
+  const k = await kyRoute(t, NATIVE, amt);
+  const b = await kyBuild(k.routeSummary, slip);
+  spender = lc(b.routerAddress);
+  expect = BigInt(b.amountOut);
+  swapTx = { to: spender, value: BigInt(b.transactionValue || 0), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
+  const allowed = u256(await ethCall(t, enc('dd62ed3e', me, spender)));
+  return finishSell(t, m, pct, msg, allowed >= amt ? [swapTx] : [{ to: t, data: enc('095ea7b3', spender, amt), gas: 120000 }, swapTx], expect);
+}
+// approve (exact amount, if needed) and the sell go out back to back with consecutive nonces
+async function finishSell(t, m, pct, msg, txs, expect) {
+  const before = await hypeBal();
+  const tokBefore = await balOf(t);
+  const hashes = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; });
+  const hash = hashes[hashes.length - 1];
+  await edit(msg, `⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> for ~${fmtH(num(expect))}${hashes.length > 1 ? ' (approve + sell)' : ''} · ${txLink(hash)}`);
+  track(hash, async (rc) => {
+    if (rc.status !== '0x1') return edit(msg, `❌ Sell of <b>${esc(m.sym)}</b> reverted · ${txLink(hash)}`);
+    const got = num((await hypeBal().catch(() => before)) - before);
+    const sold = num(tokBefore - (await balOf(t).catch(() => tokBefore)), m.d);
+    const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; save();
+    const px = await hypeUsd();
+    return edit(msg, `✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${txLink(hash)}`, cardButtons(t));
+  }, () => edit(msg, `⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`));
+}
+function track(hash, onDone, onTimeout) {
+  receipt(hash).then((rc) => (rc ? onDone(rc) : onTimeout())).catch((e) => console.error('track', e.message));
+}
+
+// ── other commands ─────────────────────────────────────────────────────────────────────────────────
+async function balances() {
+  const [b, px] = await Promise.all([hypeBal(), hypeUsd()]);
+  const lines = [`Wallet <code>${account.address}</code>`, `HYPE: <b>${fmtH(num(b))}</b>${usd(num(b), px)}`];
+  const held = [];
+  for (const t of Object.keys(state.pos).slice(-15)) {
+    try { const bal = await balOf(t); if (bal > 0n) held.push([t, bal]); } catch {}
+  }
+  for (const [t, bal] of held.slice(0, 10)) {
+    const m = await tokenMeta(t);
+    let v = '';
+    try { const r = await findRoute(t); const p = await quoteBuy(r, t, 10n ** 16n); const h = num(bal, m.d) * (0.01 / num(p, m.d)); v = ` ≈ ${fmtH(h)}`; } catch {}
+    lines.push(`• ${esc(m.sym)}: ${fmt(num(bal, m.d))}${v} · /c_${t.slice(2, 10)}`);
+  }
+  lines.push(`Max per buy ${cfg().max} HYPE · slippage ${Number(cfg().slip) / 100}%`);
+  return lines.join('\n');
+}
+async function pnl() {
+  const rows = [];
+  let tin = 0, tout = 0, tnow = 0;
+  for (const [t, p] of Object.entries(state.pos)) {
+    if (!p.hypeIn) continue;
+    let now = 0;
+    try {
+      const bal = await balOf(t);
+      if (bal > 0n) { const m = await tokenMeta(t); const r = await findRoute(t); const q = await quoteBuy(r, t, 10n ** 16n); now = num(bal, m.d) * (0.01 / num(q, m.d)); }
+    } catch {}
+    const pl = now + p.hypeOut - p.hypeIn;
+    tin += p.hypeIn; tout += p.hypeOut; tnow += now;
+    rows.push(`${pl >= 0 ? '🟢' : '🔴'} <b>${esc(p.sym)}</b> in ${fmtH(p.hypeIn)} · out ${fmtH(p.hypeOut)} · holding ${fmtH(now)} · <b>${pl >= 0 ? '+' : ''}${fmtH(pl)}</b>`);
+  }
+  if (!rows.length) return 'No trades through this bot yet.';
+  const total = tnow + tout - tin;
+  return rows.slice(-20).join('\n') + `\n\nTotal: in ${fmtH(tin)} · out ${fmtH(tout)} · holding ${fmtH(tnow)} · <b>${total >= 0 ? '+' : ''}${fmtH(total)}</b>`;
+}
+async function withdraw(to, amtStr) {
+  const bal = await hypeBal();
+  const gasCost = 21000n * (await gasPrice()) * 2n;
+  const value = amtStr === 'all' ? bal - gasCost : toWei(amtStr);
+  if (!value || value <= 0n || value > bal - gasCost / 2n) throw new Error(`not enough HYPE (wallet has ${fmtH(num(bal))})`);
+  const hash = await serial(() => sendRaw({ to, value, data: '0x', gas: 21000 }));
+  const msg = await say(`⏳ Sending ${fmtH(num(value))} to <code>${to}</code> · ${txLink(hash)}`);
+  track(hash, (rc) => edit(msg, `${rc.status === '0x1' ? '✅ Sent' : '❌ Failed to send'} ${fmtH(num(value))} to <code>${to}</code> · ${txLink(hash)}`), () => edit(msg, `⌛ Withdrawal not confirmed after 2 h · ${txLink(hash)}`));
+}
+
+const HELP =
+  `<b>ely-router</b>\n` +
+  `Paste a token address (or a link with one) for a card with buy and sell buttons.\n` +
+  `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;token&gt; &lt;percent&gt;\n` +
+  `/bal · /pnl · /wallet\n` +
+  `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5\n` +
+  `/withdraw &lt;address&gt; &lt;HYPE|all&gt;\n` +
+  `/nonce if a transaction is stuck`;
+
+// ── update handling ────────────────────────────────────────────────────────────────────────────────
+const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
+const pending = {}; // withdraw confirmations: id → {to, amt}
+
+async function onMessage(msg) {
+  const text = (msg.text || '').trim();
+  const [cmd0, ...args] = text.split(/\s+/);
+  const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
+  if (cmd === '/start' || cmd === '/help') {
+    const b = await hypeBal().catch(() => null);
+    return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}`);
+  }
+  if (cmd === '/wallet') return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium. The key only lives on your VPS.`);
+  if (cmd === '/bal') return say(await balances());
+  if (cmd === '/pnl') return say(await pnl());
+  if (cmd === '/nonce') { const n = await resyncNonce(); return say(`Nonce resynced: next is ${n}.`); }
+  if (cmd === '/set') {
+    const [k, v] = args;
+    if (k === 'slip' && Number(v) > 0 && Number(v) <= 50) state.set.slip = Math.round(Number(v) * 100);
+    else if (k === 'max' && Number(v) > 0) state.set.max = Number(v);
+    else if (k === 'sizes' && /^[\d.,]+$/.test(v || '')) state.set.sizes = v;
+    else return say('Usage: /set slip 15 · /set max 5 · /set sizes 0.5,1,2,5');
+    save();
+    return say(`Saved. Slippage ${Number(cfg().slip) / 100}% · max ${cfg().max} HYPE · sizes ${cfg().sizes.join(', ')}`);
+  }
+  if (cmd === '/buy') {
+    const t = addrIn(args[0]); const a = Number(args[1]);
+    if (!t || !(a > 0)) return say('Usage: /buy 0xTOKEN 1.5');
+    return buy(t, a, msg.message_id);
+  }
+  if (cmd === '/sell') {
+    const t = addrIn(args[0]); const p = Number(String(args[1] || '100').replace('%', ''));
+    if (!t || !(p > 0)) return say('Usage: /sell 0xTOKEN 50');
+    return sell(t, p, msg.message_id);
+  }
+  if (cmd === '/withdraw') {
+    const to = addrIn(args[0]); const a = lc(args[1] || '');
+    if (!to || !(a === 'all' || toWei(a))) return say('Usage: /withdraw 0xYOURWALLET 5  (or all)');
+    const id = Math.random().toString(36).slice(2, 10);
+    pending[id] = { to, a };
+    return say(`Send <b>${a === 'all' ? 'all HYPE' : a + ' HYPE'}</b> from the bot wallet to <code>${to}</code>?`, [[{ text: '✅ Send', callback_data: `w:${id}` }, { text: 'Cancel', callback_data: `x:${id}` }]]);
+  }
+  const short8 = cmd.match(/^\/c_([0-9a-f]{8})$/);
+  if (short8) { const t = Object.keys(state.pos).find((x) => x.slice(2, 10) === short8[1]); if (t) return showCard(t); }
+  const t = addrIn(text);
+  if (t) { const m = await say(`🔎 Loading <code>${short(t)}</code>…`); return showCard(t, m); }
+  return say(HELP);
+}
+
+async function onCallback(q) {
+  const [kind, a, b] = String(q.data || '').split(':');
+  const ack = (text) => tg('answerCallbackQuery', { callback_query_id: q.id, text, show_alert: false });
+  const t = /^[0-9a-f]{40}$/.test(a || '') ? '0x' + a : null;
+  const reply = q.message?.message_id;
+  if (kind === 'b' && t) { const h = Number(b) / 10; await ack(`Buying ${h} HYPE…`); return buy(t, h, reply); }
+  if (kind === 's' && t) { await ack(`Selling ${b}%…`); return sell(t, Number(b), reply); }
+  if (kind === 'r' && t) { await ack('Refreshing…'); delete state.routes[t]; return showCard(t, q.message); }
+  if (kind === 'c' && t) { await ack('Loading…'); return showCard(t); }
+  if (kind === 'w' && pending[a]) { const p = pending[a]; delete pending[a]; await ack('Sending…'); return withdraw(p.to, p.a); }
+  if (kind === 'x') { delete pending[a]; await ack('Cancelled'); return edit(q.message, 'Cancelled.'); }
+  return ack('');
 }
 
 async function main() {
-  if (DRY) {
-    const [, , kind, addr, arg] = process.argv.slice(1);
-    const r = kind === 'sell' ? await sell('?', addr.toLowerCase(), arg) : await buy('?', addr.toLowerCase(), Number(arg));
-    console.log(r.text.replace(/<[^>]+>/g, ''));
-    return;
-  }
-  console.log(`ely-router running for ${me}`);
-  await say(`🟢 Router online\n${await balances()}`);
-  let offset = 0;
+  console.log(`ely-router · wallet ${account.address} · RPCs ${RPCS.length}`);
+  await tg('setMyCommands', { commands: [
+    { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
+    { command: 'buy', description: '/buy <token> <HYPE>' }, { command: 'sell', description: '/sell <token> <percent>' },
+    { command: 'set', description: 'slip / max / sizes' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
+    { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
+  ] });
+  // taps and messages sent while the bot was down are dropped, so an old ⚡ tap never buys hours later
+  const backlog = await tg('getUpdates', { offset: -1, timeout: 0 });
+  if (backlog?.length) state.offset = backlog[backlog.length - 1].update_id + 1;
+  const b = await hypeBal().catch(() => null);
+  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
   for (;;) {
-    let up;
-    try { up = await tg('getUpdates', { offset, timeout: 50, allowed_updates: ['message', 'callback_query'] }); }
-    catch { await new Promise((r) => setTimeout(r, 3000)); continue; }
-    for (const u of up.result || []) {
-      offset = u.update_id + 1;
-      const cq = u.callback_query;
-      if (cq) {
-        tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {});
-        if (String(cq.from.id) !== CHAT && String(cq.message?.chat?.id) !== CHAT) continue;
-        const m = String(cq.data || '').match(/^([bs]):([he]):([0-9a-fA-F]{40}):([\d.]+)$/);
-        if (!m) continue;
-        if (Date.now() - (recent.get(cq.data) || 0) < 5000) continue;
-        recent.set(cq.data, Date.now());
-        handle(m[1], m[2], '0x' + m[3], m[4]);
-        continue;
-      }
-      const msg = u.message;
-      if (!msg?.text || String(msg.chat.id) !== CHAT) continue;
-      const [cmd, a1, a2] = msg.text.trim().split(/\s+/);
-      if (cmd === '/buy' && a1 && a2) handle('b', '?', a1, a2);
-      else if (cmd === '/sell' && a1) handle('s', '?', a1, a2 || '100');
-      else if (cmd === '/bal') say(await balances());
-      else if (cmd === '/help' || cmd === '/start') say('Commands:\n/buy &lt;curve or token&gt; &lt;HYPE&gt;\n/sell &lt;curve or token&gt; [percent]\n/bal\nOr tap the Buy buttons on alerts.');
+    const ups = await tg('getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
+    if (!ups) { await sleep(2000); continue; }
+    for (const u of ups) {
+      state.offset = u.update_id + 1;
+      const from = String(u.message?.from?.id ?? u.callback_query?.from?.id ?? '');
+      const chat = String(u.message?.chat?.id ?? u.callback_query?.message?.chat?.id ?? '');
+      if (from !== OWNER || chat !== OWNER) continue; // only you, only in your private chat with the bot
+      const job = u.message ? onMessage(u.message) : onCallback(u.callback_query);
+      job.catch((e) => { console.error('handler', e.message); say(`⚠️ ${esc(e.message).slice(0, 300)}`); });
     }
+    save();
   }
 }
-
 main().catch((e) => { console.error(e); process.exit(1); });
