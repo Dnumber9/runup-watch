@@ -416,5 +416,50 @@
  {
   "address": "0xa86ff917f855285566f089282923636ea75730cd",
   "label": "ELEOS dev (eleos.fun)"
+ },
+ {
+  "address": "0x63210c7e4b3551c74934bfedd565030c8cefe0b0",
+  "label": "EOS team 2.12% (moved in today)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x70bcf54a9fdabece02713696c42af378f43ed3a9",
+  "label": "EOS team 1.5% (moved in today)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xc1c577671ce9f12531b26667f176d1311d8b1f72",
+  "label": "EOS team 1.42% (moved in today)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x9b0a3f8a1f7b0487d1a26b673c3a01a59ec06e6a",
+  "label": "EOS team 2.10% (launch bundle)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xa8ae83cba844afee664cf6183c485e9a5ab809a2",
+  "label": "EOS team 2.08% (launch bundle)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x48312d36eb8745c3dc0fdf8e57174c66b3f9875e",
+  "label": "EOS team 2.06% (launch bundle)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xcded638408e245fc7099f53ce929bd3c840a9a0a",
+  "label": "EOS team 2.05% (launch bundle)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xdfdd93b242bea37639a44de17746ef332b9b9c7f",
+  "label": "EOS team 2.02% (launch bundle)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x4e19bc0944c2c904833c25722fb1c8d9907bc172",
+  "label": "EOS launcher (funded the bundle)",
+  "group": "eosteam"
  }
 ]
