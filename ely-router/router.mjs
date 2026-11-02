@@ -103,6 +103,7 @@ const cfg = () => ({
   tax: Number(state.set.tax ?? process.env.MAX_TAX_PCT ?? 25),     // refuse when buying and selling straight back loses more than this %
   check: (state.set.check ?? process.env.SELL_CHECK ?? 'on') !== 'off',
   stale: Number(state.set.stale ?? process.env.STALE_MIN ?? 5),   // ⚡ taps on alerts older than this many minutes show the card first
+  report: state.set.report ?? process.env.DAILY_REPORT ?? 'quiet', // nightly report: quiet (only when there is news), on, off
 });
 let saveTimer = null;
 const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFileSync(STATE, JSON.stringify(state, (k, v) => (typeof v === 'bigint' ? v.toString() : v))), 300); };
@@ -700,7 +701,7 @@ async function exportJournal() {
   if (!r.ok) return say(`Export failed: ${esc(r.description || '?')}`);
 }
 // nightly: wallet value vs yesterday, the day's trades, open bags, tips
-async function dailyReport() {
+async function dailyReport(force = true) {
   await valuePositions();
   const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
   const hype = num(hb);
@@ -711,7 +712,15 @@ async function dailyReport() {
   state.equity = state.equity.filter((e) => e.d !== today).concat([{ d: today, v: value }]).slice(-120);
   save();
   const s = stats(Date.now() - 864e5);
-  const t = tips(stats(0), hype);
+  let t = tips(stats(0), hype);
+  // quiet mode: a tip already shown in the last 3 days is not repeated, and a day with no trades and
+  // no new tip sends nothing at all
+  state.tipsSeen ||= {};
+  const key = (x) => x.replace(/<[^>]+>/g, '').replace(/[\d.,%×+-]+/g, '#').slice(0, 80);
+  if (!force) t = t.filter((x) => !(Date.now() - (state.tipsSeen[key(x)] || 0) < 3 * 864e5));
+  for (const x of t) state.tipsSeen[key(x)] = Date.now();
+  const traded = s.buys + s.sells + s.reverts + s.refused > 0;
+  if (!force && cfg().report === 'quiet' && !traded && !t.length) return null;
   const ch = prev && prev.d !== today ? value - prev.v : null;
   const text = `📒 <b>Daily report</b> · wallet ${fmtH(value)}${usd(value, px)}${ch != null ? ` (${ch >= 0 ? '+' : ''}${fmtH(ch)} vs ${prev.d})` : ''}\n` +
     `Free HYPE ${fmtH(hype)} · ${open.length} open bag${open.length === 1 ? '' : 's'}\n\n` +
@@ -736,7 +745,8 @@ const HELP =
   `Paste a token address (or a link with one) for a card with buy and sell buttons.\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;token&gt; &lt;percent&gt;\n` +
   `/bal · /pnl · /wallet\n` +
-  `/stats 7d · /journal · /export · /report (nightly at 21:00 too)\n` +
+  `/stats 7d · /journal · /export · /report\n` +
+  `/set report quiet|on|off (nightly 21:00; quiet = only when there is news)\n` +
   `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5\n` +
   `/set tax 25 (sell check limit) · /set check off · /set stale 5\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt;\n` +
@@ -771,10 +781,11 @@ async function onMessage(msg) {
     else if (k === 'tax' && Number(v) > 0 && Number(v) <= 100) state.set.tax = Number(v);
     else if (k === 'check' && /^(on|off)$/.test(v || '')) state.set.check = v;
     else if (k === 'stale' && Number(v) >= 0) state.set.stale = Number(v);
-    else return say('Usage: /set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check on|off · /set stale 5 (minutes, 0 = off)');
+    else if (k === 'report' && /^(on|off|quiet)$/.test(v || '')) state.set.report = v;
+    else return say('Usage: /set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check on|off · /set stale 5 (minutes, 0 = off) · /set report quiet|on|off');
     save();
     const c = cfg();
-    return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'}`);
+    return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · nightly report ${c.report}`);
   }
   if (cmd === '/buy') {
     const t = addrIn(args[0]); const a = Number(args[1]);
@@ -854,7 +865,7 @@ async function main() {
     for (;;) {
       await sleep(60000);
       const d = new Date(), day = d.toISOString().slice(0, 10);
-      if (d.getUTCHours() === REPORT_HOUR_UTC && state.reportDay !== day) { state.reportDay = day; save(); await dailyReport().catch((e) => console.error('report', e.message)); }
+      if (cfg().report !== 'off' && d.getUTCHours() === REPORT_HOUR_UTC && state.reportDay !== day) { state.reportDay = day; save(); await dailyReport(cfg().report === 'on').catch((e) => console.error('report', e.message)); }
     }
   })();
   await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${new Set(Object.values(state.pools).flat().map((p) => p.pm)).size} pool managers, kept live.${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
