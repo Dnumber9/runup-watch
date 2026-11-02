@@ -11,6 +11,14 @@
 //      router on whichever pool gives the most tokens. New launches work from their first block.
 //   2. KyberSwap's aggregator, for everything else it indexes on Elysium (v3 DEXes, WHYPE pairs).
 //
+// Safety before every buy:
+//   Sell check: the buy is simulated together with an immediate sell of everything it returns (a tiny
+//   helper contract placed only inside the simulation, never deployed). If the coin cannot be sold back
+//   (honeypot, blocked sells) or the round trip loses more than the tax limit, the bot does not buy and
+//   offers a "Buy anyway" button instead.
+//   Stale taps: a ⚡ tap on an alert older than a few minutes shows the coin's current card first, and a
+//   second tap on the same button within a few seconds is ignored.
+//
 // Chat (only from OWNER_ID):
 //   paste a token or a link containing one   card with live price, market cap, your bag, buttons
 //   /buy <token> <HYPE>   /sell <token> <percent>
@@ -92,6 +100,9 @@ const cfg = () => ({
   slip: BigInt(state.set.slip ?? process.env.SLIPPAGE_BPS ?? 1500),
   max: Number(state.set.max ?? process.env.MAX_BUY_HYPE ?? 5),
   sizes: (state.set.sizes ?? process.env.BUY_SIZES ?? '0.5,1,2,5').split(',').map((s) => s.trim()).filter(Boolean),
+  tax: Number(state.set.tax ?? process.env.MAX_TAX_PCT ?? 25),     // refuse when buying and selling straight back loses more than this %
+  check: (state.set.check ?? process.env.SELL_CHECK ?? 'on') !== 'off',
+  stale: Number(state.set.stale ?? process.env.STALE_MIN ?? 5),   // ⚡ taps on alerts older than this many minutes show the card first
 });
 let saveTimer = null;
 const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFileSync(STATE, JSON.stringify(state, (k, v) => (typeof v === 'bigint' ? v.toString() : v))), 300); };
@@ -137,7 +148,7 @@ const transient = (e) => /abort|timeout|timed? ?out|rate limit|busy|unavailable|
 async function call1(url, method, params, ms = 8000) {
   const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(ms) });
   const j = await r.json();
-  if (j.error) { const e = new Error(j.error.message || 'rpc error'); e.code = j.error.code; throw e; }
+  if (j.error) { const e = new Error(j.error.message || 'rpc error'); e.code = j.error.code; e.data = j.error.data; throw e; }
   return j.result;
 }
 let rpcIdx = 0;
@@ -336,6 +347,29 @@ async function scanV4(t, ok) {
   }
   return null;
 }
+// ── sell check: buy and sell straight back in one simulated call ──────────────────────────────────────
+// Helper bytecode (hand-assembled, lives only in the simulation's state override at SIM): calldata is
+// router, token, buyLen, sellLen, amountOffset, buyData, sellData. It buys with all its value, reads its
+// token balance, approves the router, writes that balance into sellData and sells. Returns (got, back).
+// Reverts with 1 if the buy failed, 2 if balanceOf failed, 3 if the sell failed.
+const RT_CODE = '0x36156100c3576040358060a060003760006000826000346000355af1156100a2576370a0823160e01b6000523060045260206000602460006020355afa156100ad5760005163095ea7b360e01b60005260003560045280602452600060006044600060006020355af15047606035808460a00161010037826080356101000152600060008261010060006000355af1156100b85750470360205260005260406000f35b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b00';
+async function sellCheck(r, t, wei) {
+  if (r.kind !== 'v4') return { ok: null, note: 'sell check skipped (KyberSwap route)' };
+  const buyData = v4Buy(r, t, 0, SIM, 2 ** 31 - 1), sellData = v4Sell(r, t, 0, 0, SIM, 2 ** 31 - 1);
+  const len = (h) => (h.length - 2) / 2;
+  const data = '0x' + word(ROUTER) + word(t) + word(len(buyData)) + word(len(sellData)) + word(196) + strip(buyData) + strip(sellData);
+  const big = hex(wei + 10n ** 21n);
+  try {
+    const res = await ethCall(SIM, data, { from: me, value: hex(wei) }, { [SIM]: { code: RT_CODE, balance: big }, [me]: { balance: big } });
+    const got = u256(res), back = BigInt('0x' + (strip(res).slice(64, 128) || '0'));
+    const loss = 1 - num(back) / num(wei);
+    return { ok: got > 0n && back > 0n && loss * 100 <= cfg().tax, got, back, loss, note: `sell check: round trip ${(loss * 100).toFixed(1)}%` };
+  } catch (e) {
+    const code = String(e.data || '').slice(-2);
+    if (code === '03') return { ok: false, blocked: true, note: 'cannot be sold back (honeypot or sells blocked)' };
+    return { ok: null, note: 'sell check unavailable' }; // buy step refused a contract buyer, or the node failed
+  }
+}
 // tokens out for `wei` HYPE, on whatever route the token uses
 async function quoteBuy(r, t, wei) {
   if (r.kind === 'v4') return v4QuoteBuy(r, t, wei);
@@ -374,7 +408,7 @@ async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
   if (!r) return { text: `No route for <code>${t}</code>.\nNo native-HYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
-  const [p, one, bal] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t)]);
+  const [p, one, bal, sc] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t), sellCheck(r, t, 10n ** 17n)]);
   const spot = num(probe) / num(p, m.d);               // HYPE per token
   const mc = m.sup ? spot * num(m.sup, m.d) : null;
   const impact = one ? 1 - num(one, m.d) * spot : null;
@@ -390,6 +424,7 @@ async function cardText(t) {
     `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
     (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
     (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}\n` : '') +
+    (sc.blocked ? `🚫 <b>Cannot be sold back</b> in a simulation: likely a honeypot\n` : sc.ok === false ? `⚠️ Buy and sell back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (tax or fees)\n` : sc.loss != null ? `✓ Sell check: buy and sell back loses ${(sc.loss * 100).toFixed(1)}%\n` : '') +
     `<code>${t}</code>`;
   return { text, rows: cardButtons(t) };
 }
@@ -401,7 +436,7 @@ async function showCard(t, m) {
 // ── trades ─────────────────────────────────────────────────────────────────────────────────────────
 const P = (t, sym) => (state.pos[t] ||= { sym, hypeIn: 0, hypeOut: 0, tokIn: 0, tokOut: 0, t: Date.now() });
 
-async function buy(t, hypeAmt, replyTo) {
+async function buy(t, hypeAmt, replyTo, force = false) {
   const { slip, max } = cfg();
   if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
@@ -409,7 +444,16 @@ async function buy(t, hypeAmt, replyTo) {
   let [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), hypeBal()]);
   if (!r) throw new Error('no route for this token');
   if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
-  const msg = await say(`⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…`, null, replyTo);
+  // sell check first: refuse coins that cannot be sold back or lose too much on a round trip
+  let sc = { note: '' };
+  if (cfg().check && !force) {
+    sc = await sellCheck(r, t, wei);
+    if (sc.ok === false) {
+      const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).` : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).`;
+      return say(`${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
+    }
+  }
+  const msg = await say(`⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…${sc.note ? ` (${sc.note})` : ''}`, null, replyTo);
   let tx, expect;
   if (r.kind === 'v4') expect = await v4QuoteBuy(r, t, wei).catch(() => null);
   if (r.kind === 'v4' && expect == null) { r = await findRoute(t, true); if (!r) throw new Error('no route for this token any more'); } // pool changed: pick again
@@ -541,12 +585,14 @@ const HELP =
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;token&gt; &lt;percent&gt;\n` +
   `/bal · /pnl · /wallet\n` +
   `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5\n` +
+  `/set tax 25 (sell check limit) · /set check off · /set stale 5\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt;\n` +
   `/nonce if a transaction is stuck`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
 const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
 const pending = {}; // withdraw confirmations: id → {to, amt}
+const taps = {};    // recent ⚡ taps, to drop accidental double taps
 
 async function onMessage(msg) {
   const text = (msg.text || '').trim();
@@ -565,9 +611,13 @@ async function onMessage(msg) {
     if (k === 'slip' && Number(v) > 0 && Number(v) <= 50) state.set.slip = Math.round(Number(v) * 100);
     else if (k === 'max' && Number(v) > 0) state.set.max = Number(v);
     else if (k === 'sizes' && /^[\d.,]+$/.test(v || '')) state.set.sizes = v;
-    else return say('Usage: /set slip 15 · /set max 5 · /set sizes 0.5,1,2,5');
+    else if (k === 'tax' && Number(v) > 0 && Number(v) <= 100) state.set.tax = Number(v);
+    else if (k === 'check' && /^(on|off)$/.test(v || '')) state.set.check = v;
+    else if (k === 'stale' && Number(v) >= 0) state.set.stale = Number(v);
+    else return say('Usage: /set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check on|off · /set stale 5 (minutes, 0 = off)');
     save();
-    return say(`Saved. Slippage ${Number(cfg().slip) / 100}% · max ${cfg().max} HYPE · sizes ${cfg().sizes.join(', ')}`);
+    const c = cfg();
+    return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'}`);
   }
   if (cmd === '/buy') {
     const t = addrIn(args[0]); const a = Number(args[1]);
@@ -598,7 +648,22 @@ async function onCallback(q) {
   const ack = (text) => tg('answerCallbackQuery', { callback_query_id: q.id, text, show_alert: false });
   const t = /^[0-9a-f]{40}$/.test(a || '') ? '0x' + a : null;
   const reply = q.message?.message_id;
-  if (kind === 'b' && t) { const h = Number(b) / 10; await ack(`Buying ${h} HYPE…`); return buy(t, h, reply); }
+  if ((kind === 'b' || kind === 'f') && t) {
+    // the same button twice within a few seconds is one buy, not two
+    const key = `${reply}:${q.data}`;
+    if (Date.now() - (taps[key] || 0) < 5000) return ack('Already buying');
+    if (Object.keys(taps).length > 500) for (const k of Object.keys(taps)) delete taps[k];
+    taps[key] = Date.now();
+    // an old alert: show today's price first instead of buying blind
+    const age = Math.floor(Date.now() / 1000) - (q.message?.date || 0);
+    if (kind === 'b' && cfg().stale > 0 && age > cfg().stale * 60) {
+      await ack(`This is ${age >= 3600 ? (age / 3600).toFixed(1) + ' h' : Math.round(age / 60) + ' min'} old. Showing the current price.`);
+      return showCard(t);
+    }
+    const h = Number(b) / 10;
+    await ack(`Buying ${h} HYPE…`);
+    return buy(t, h, reply, kind === 'f');
+  }
   if (kind === 's' && t) { await ack(`Selling ${b}%…`); return sell(t, Number(b), reply); }
   if (kind === 'r' && t) { await ack('Refreshing…'); delete state.routes[t]; return showCard(t, q.message); }
   if (kind === 'c' && t) { await ack('Loading…'); return showCard(t); }
