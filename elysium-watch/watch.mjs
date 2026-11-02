@@ -40,8 +40,8 @@ const RUN_MIN_SWAPS = 15;
 const RUN_MIN_BUYERS = 8;
 const RUN_MULT = 3;              // times its own baseline pace
 const RUN_MIN_BUY_SHARE = 0.55;
-// wallet pings carry buys, sells and launches; plain HYPE moves (sent, received, bridged in) only from this size
-const WALLET_BIG_HYPE = Number(process.env.WALLET_BIG_HYPE || 25);
+// wallet pings carry buys, sells, launches and HYPE moves from this size (small sends are how bundles get funded); plain token transfers are skipped
+const WALLET_MIN_HYPE = Number(process.env.WALLET_MIN_HYPE || 0.2);
 const DUST_USD = Number(process.env.DUST_USD || 5); // token moves worth less than this (reflections, airdrops, tax payouts) are not pinged
 // group buys: several wallets of one group (wallets.json "group") buying the same coin close together
 const GROUP_WINDOW_MIN = 30;
@@ -672,17 +672,17 @@ async function main() {
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
-        if (W.has(f) && val >= WALLET_BIG_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
+        // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): one line for the split, then follow each recipient
+        const batch = W.has(f) && val > 0 && (tx.input || '0x') !== '0x' ? batchSends(tx.input) : [];
+        if (W.has(f) && batch.length >= 2) M(f).push(`<b>split ${hype(val)} across ${batch.length} wallets in one tx</b> (bundle funding pattern)${txLink(tx.hash)}`);
+        else if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
-        // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): follow each recipient
-        if (W.has(f) && val > 0 && (tx.input || '0x') !== '0x') {
-          for (const x of batchSends(tx.input)) {
-            if (x.val >= FUND_MIN_HYPE && !W.has(x.to) && !INFRA.has(x.to)) funded.push({ f, to: x.to, val: x.val, hash: tx.hash, via: 'batch' });
-          }
+        for (const x of batch) {
+          if (x.val >= FUND_MIN_HYPE && !W.has(x.to) && !INFRA.has(x.to)) funded.push({ f, to: x.to, val: x.val, hash: tx.hash, via: 'batch' });
         }
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
-        if (W.has(to) && val >= WALLET_BIG_HYPE) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
+        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
     // fresh wallets funded by tracked ones: start tracking them (same group as the funder)
