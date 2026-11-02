@@ -479,11 +479,6 @@
   "group": "boxa6"
  },
  {
-  "address": "0xa450f6dbf9737495c9b723ec11a269f9cdf700bb",
-  "label": "ECAT top PnL (ely trader)",
-  "group": "smart"
- },
- {
   "address": "0x7aeb860272506ad5ce893a79369adbbc5a3fa0a4",
   "label": "ECAT 12x fresh (possibly informed)",
   "group": "smart"
@@ -511,16 +506,6 @@
  {
   "address": "0x787ae789038168f4b2885025e2153ec261093d43",
   "label": "ECAT early",
-  "group": "smart"
- },
- {
-  "address": "0xe57e10897e9c7f494ca946d4056395ed4b0b242b",
-  "label": "ely sniper e57e (EOS+ECAT)",
-  "group": "smart"
- },
- {
-  "address": "0x57f0a0aacf1a650c879a69c7f94f93ff348d700c",
-  "label": "ely sniper e57e alt",
   "group": "smart"
  },
  {
@@ -562,11 +547,6 @@
   "address": "0x780d292e298873e88e91dc85a0d3bc74f01d94c9",
   "label": "ECAT pre-launch bridger 780d",
   "group": "ecatdev"
- },
- {
-  "address": "0x18e24c7882cd2fe890e07bd57feaa79d79339e6b",
-  "label": "BOXA #6 group 18e2",
-  "group": "boxa6"
  },
  {
   "address": "0x90e21986e199b433b56b5e9e386dda39f8ddf912",
