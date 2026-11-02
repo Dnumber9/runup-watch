@@ -1,0 +1,22 @@
+name: gate-backtest
+
+# Scores the Ascend/Signal detector both ways: would it catch their real contracts, and how many
+# contracts already on Elysium would it have flagged. Run by hand from the Actions tab; it changes nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Backtest
+        run: node elysium-watch/gate.mjs --backtest
