@@ -71,7 +71,7 @@ textarea{width:100%;background:#0d0f13;border:1px solid var(--line);border-radiu
   <div id="tokcard" class="card hide">
     <div class="row" style="justify-content:space-between">
       <div><span id="sym" class="big"></span> <span id="route" class="small mut"></span></div>
-      <a id="chart" class="small" target="_blank" rel="noopener">BOXA</a>
+      <a id="chart" class="small" target="_blank" rel="noopener">Elyxa</a>
     </div>
     <div class="kv" style="margin-top:8px">
       <span>Price</span><span id="px" class="num">…</span>
@@ -389,7 +389,7 @@ async function loadToken(input) {
     rec.unshift({ a: addr, s: T.sym }); store.set('recent', rec.slice(0, 6)); renderRecent();
     $('#sym').textContent = T.sym;
     $('#route').textContent = route.kind === 'v4' ? `${route.name} · v4` : `StockiumSwap · v3`;
-    $('#chart').href = `https://boxa.club/asset?address=${addr}`;
+    $('#chart').href = `https://elyxa.trade/#/terminal/${addr}`;
     $('#tokcard').classList.remove('hide'); $('#buycard').classList.remove('hide');
     $('#buy').disabled = false;
     history.replaceState(null, '', `?t=${addr}${$('#amt').value ? `&a=${$('#amt').value}` : ''}`);
