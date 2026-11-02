@@ -966,3 +966,80 @@ if (process.argv[2] === '--selftest') {
   for (const m of msgs) out('---\n' + (typeof m === 'string' ? m : m.text));
   out('armed text preview:\n' + armedText(g));
 }
+
+// ── backtest: node elysium-watch/gate.mjs --backtest ────────────────────────────────────────────────
+// 1. Recall: each named Ascend/Signal contract is hidden from the references and scored against the rest.
+// 2. False alarms: every contract on Elysium that ever emitted an ownership, init, role or mint event is
+//    scored in chain order with the live rules (including learning common selectors), and every alert it
+//    would have sent is listed.
+if (process.argv[2] === '--backtest') {
+  const out = (...a) => console.log(...a);
+  const ELY = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club').split(',');
+  let ri = 0;
+  const call99901 = async (m, p) => { let e; for (let i = 0; i < 4; i++) { try { return await rpcAt(ELY[(ri++) % ELY.length], m, p, 20000); } catch (x) { e = x; if (/revert/i.test(x.message)) throw x; } } throw e; };
+  const hcall = (m, p) => rpcAt('https://rpc.hyperliquid.xyz/evm', m, p);
+  const tcall = (m, p) => rpcAt(TESTNET_RPC, m, p);
+  const state = {};
+  const g = init(state);
+  const ctx = { state, rpc: call99901, hrpc: hcall, call: call99901, msgs: [], known: new Set() };
+  let done = false;
+  for (let i = 0; i < 40 && !done; i++) done = await buildRefs(ctx, g, 200).catch(() => false);
+  const common = await commonSet(ctx, g);
+  out('references', JSON.stringify(refCounts(g)), 'complete:', done, '· common selectors', common.size);
+
+  out('\n== 1. Recall: would each real contract be caught from its other versions? ==');
+  for (const [chain, a, name] of NAMED) {
+    const key = chain + ':' + a, saved = g.refs[key];
+    if (!saved) { out(`  ?    ${name}: not loaded`); continue; }
+    // hide it, and anything with the identical build, then score it
+    const hidden = Object.entries(g.refs).filter(([k, r]) => k === key || r.k === saved.k);
+    for (const [k] of hidden) delete g.refs[k];
+    const v = evaluate(g, { sels: saved.s, skel: saved.k + 'x', size: saved.z }, common);
+    for (const [k, r] of hidden) g.refs[k] = r;
+    const tag = v.lvl === 2 ? 'ALERT' : v.lvl === 1 ? 'maybe' : 'MISS ';
+    out(`  ${tag} ${name} (${(saved.z / 1024).toFixed(1)} KB)${v.key ? ` → ${g.refs[v.key].n} ${Math.round(v.sc * 100)}% (${v.sh} shared)` : ''}${hidden.length > 1 ? ` · ${hidden.length - 1} identical builds hidden too` : ''}`);
+  }
+
+  out('\n== 2. False alarms: every Elysium contract since block 1, scored in order ==');
+  const head = Number(BigInt(await call99901('eth_blockNumber', [])));
+  const T_OWN = '0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0';
+  const T_INIT8 = '0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498';
+  const T_INIT64 = '0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2';
+  const T_ROLE = '0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d';
+  const Z = '0x' + '0'.repeat(64);
+  const queries = [[T_OWN, Z], [T_TRANSFER, Z], [T_INIT8], [T_INIT64], [T_ROLE], [T_INIT_V4]];
+  const first = new Map();
+  const wins = [];
+  for (let a = 1; a <= head; a += 2000) wins.push([a, Math.min(head, a + 1999)]);
+  await pmap(wins, 6, async ([a, b]) => {
+    for (const topics of queries) {
+      const logs = await call99901('eth_getLogs', [{ fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16), topics }]).catch(() => []);
+      for (const l of logs) {
+        const bn = parseInt(l.blockNumber, 16);
+        const add = (x, why) => { x = lc(x); if (isAddr(x) && (!first.has(x) || first.get(x).b > bn)) first.set(x, { b: bn, why, tx: l.transactionHash }); };
+        add(l.address, 'emitter');
+        if (topics[0] === T_INIT_V4) add('0x' + (words(l.data)[2] || '').slice(24), 'hook');
+      }
+    }
+  });
+  const list = [...first.entries()].sort((x, y) => x[1].b - y[1].b);
+  out(`  ${list.length} contracts found across ${head} blocks`);
+  const res = await pmap(list, 8, async ([a]) => { const rc = await realCode(call99901, a); return rc.code.length > 2 ? analyze(rc.code) : null; });
+  const levels = { 0: 0, 1: 0, 2: 0 }, small = { n: 0 }, seen = {};
+  const hits = [];
+  list.forEach(([a, info], i) => {
+    const an = res[i];
+    if (!an) return;
+    if (an.size < MIN_CODE) { small.n++; return; }
+    let v = seen[an.skel];
+    if (!v) {
+      v = evaluate(g, an, (() => { const c = new Set(common); for (const [x, n] of Object.entries(g.freq)) if (n >= FREQ_COMMON) c.add(x); c.skel = common.skel; return c; })());
+      seen[an.skel] = v;
+      if (v.lvl === 0) for (const s2 of new Set(an.sels)) g.freq[s2] = (g.freq[s2] || 0) + 1;
+    }
+    levels[v.lvl]++;
+    if (v.lvl) hits.push(`  ${v.lvl === 2 ? 'ALERT' : 'maybe'} ${a} (${(an.size / 1024).toFixed(1)} KB, block ${info.b}, ${info.why}) → ${g.refs[v.key].n} ${Math.round(v.sc * 100)}% (${v.sh} shared)`);
+  });
+  out(`  scored ${levels[0] + levels[1] + levels[2]} (plus ${small.n} under 1 KB): silent ${levels[0]} · possible ${levels[1]} · alert ${levels[2]}`);
+  for (const h of hits.slice(0, 40)) out(h);
+}
