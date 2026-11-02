@@ -14,11 +14,11 @@ import zlib from 'node:zlib';
 import { gate, gateDigest, gatePms } from './gate.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
-const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.pro/api/rpc')
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
-const BOXA = 'https://boxa.pro';      // BOXA's API (token index)
+const BOXA = 'https://boxa.club';     // BOXA's API (token index); boxa.pro is on MetaMask's phishing list
 const ELYXA = 'https://elyxa.trade'; // links in alerts (indexes every launchpad's trades and wallet PnL)
 
 const LOG_RANGE = 500;           // the chain got busy: small log windows, split further if a node times out
@@ -269,16 +269,35 @@ async function hrpc(method, params) {
 }
 
 // socials from BOXA's indexer (description + metadata JSON); best effort, never blocks an alert
+// /api/index/tokens covers BOXA v4 launches; BOXA v2 (v3 pool) launches only answer on /api/tokens
+async function boxaToken(t) {
+  const a = lc(t);
+  const j = await getJSON(`${BOXA}/api/index/tokens/${a}`);
+  if (j?.token) return j.token;
+  const k = await getJSON(`${BOXA}/api/tokens/${a}`);
+  if (!k?.token) return null;
+  const m = k.token.metadata || {};
+  const hs = (k.holders || []).filter((h) => !h.excluded);
+  const share = (h) => Number(h.sharePct) || 0;
+  const cr = hs.find((h) => lc(h.address) === lc(k.token.creator));
+  return {
+    ...k.token,
+    description: m.description, website: m.website, twitter: m.twitter, telegram: m.telegram,
+    top10Pct: hs.length ? hs.slice(0, 10).reduce((s, h) => s + share(h), 0) : null,
+    creatorPct: hs.length ? (cr ? share(cr) : 0) : null,
+  };
+}
+
 async function socials(t) {
-  const j = await getJSON(`${BOXA}/api/index/tokens/${t}`);
-  const tok = j?.token;
+  const tok = await boxaToken(t);
   const found = { x: null, tg: null, web: null };
   const take = (u) => {
     if (!u || typeof u !== 'string') return;
-    const s = u.trim();
+    let s = u.trim();
+    if (s && !/^https?:\/\//i.test(s) && /^(www\.)?(x\.com|twitter\.com|t\.me)\//i.test(s)) s = 'https://' + s; // BOXA stores some as bare t.me/…
     if (/x\.com\/|twitter\.com\//i.test(s)) found.x ||= s;
     else if (/t\.me\//i.test(s)) found.tg ||= s;
-    else if (/^https?:\/\//i.test(s) && !/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s) && !/b-cdn|ipfs|boxa\.pro/i.test(s)) found.web ||= s;
+    else if (/^https?:\/\//i.test(s) && !/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s) && !/b-cdn|ipfs|boxa\.(pro|club)/i.test(s)) found.web ||= s;
   };
   if (tok) {
     for (const u of String(tok.description || '').match(/https?:\/\/\S+|(?:x|twitter)\.com\/\S+|t\.me\/\S+/gi) || []) take(u.startsWith('http') ? u : 'https://' + u);
