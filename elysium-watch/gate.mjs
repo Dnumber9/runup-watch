@@ -292,13 +292,13 @@ function init(state) {
   g.q ||= [];
   g.depq ||= [];
   for (const [a, w] of Object.entries(g.codewatch)) if (/shown on status\./.test(w)) delete g.codewatch[a]; // old noise from Signal's keeper page
-  if ((g.v || 1) < 2) {
+  if ((g.v || 1) < 3) {
     for (const [a, w] of Object.entries(g.team)) if (/unconfirmed|deployer on Elysium/.test(w.label || '')) delete g.team[a];
     for (const [a, x] of Object.entries(state.auto || {})) if (x.from === 'gate' && /deployer/.test(x.label || '')) delete state.auto[a];
     g.found = {};
     g.sk = {};
     g.q = (g.q || []).filter((c) => c.why !== 'team');
-    g.v = 2;
+    g.v = 3;
   }
   for (const t of TEAM) if (!g.team[t.a]) g.team[t.a] = { label: t.label, fam: t.fam, testnet: !!t.testnet, contract: !!t.contract, woke: 0, n: null, b: null };
   return g;
@@ -397,16 +397,19 @@ function evaluate(g, an, common) {
     if (/dependency$/.test(r.n)) continue;
     const D = r.s.filter((s) => !common.has(s));
     if (D.length < MIN_REF) continue; // generic reference: nothing distinctive left to match on
-    if (r.k === an.skel) return { key, sc: 1, sh: D.length, same: true, lvl: 2 };
+    if (r.k === an.skel) { if (!r.x) return { key, sc: 1, sh: D.length, same: true, lvl: 2 }; extra = { key, sc: 1, sh: D.length, same: true }; continue; }
     let sh = 0;
     for (const s of D) if (cand.has(s)) sh++;
     const sc = sh / Math.max(D.length, cand.size);
     const cur = r.x ? extra : core;
     if (!cur || sc > cur.sc || (sc === cur.sc && sh > cur.sh)) { if (r.x) extra = { key, sc, sh }; else core = { key, sc, sh }; }
   }
+  // 🚨 needs one of THEIR named contracts (launchpad, router, hook, factory…). A match to the bulk testnet
+  // builds is only noted: their deployers also shipped stock code (PancakeSwap vaults, pool managers) that
+  // anyone can deploy, and the backtest showed those are the only false alarms.
   if (core && core.sc >= HIGH && core.sh >= MIN_SHARED_HIGH) return { ...core, lvl: 2 };
-  if (extra && extra.sc >= HIGH_EXTRA && extra.sh >= MIN_SHARED_HIGH) return { ...extra, lvl: 2 };
   if (core && core.sc >= POSSIBLE && core.sh >= MIN_SHARED) return { ...core, lvl: 1 };
+  if (extra && extra.sc >= HIGH_EXTRA && extra.sh >= MIN_SHARED_HIGH) return { ...extra, lvl: 1 };
   const best = [core, extra].filter(Boolean).sort((x, y) => y.sc - x.sc)[0];
   return best ? { ...best, lvl: 0 } : { lvl: 0 };
 }
@@ -622,6 +625,11 @@ async function report(ctx, g, c, rc, an, v, byTeam) {
   const linked = by && g.team[by] ? g.team[by] : null;
   const fam = r?.f || c.fam || linked?.fam || famOf(g, c.a) || 'Ascend/Signal';
   const hi = v.lvl === 2 || byTeam || c.why === 'watched';
+  if (!hi) { // weak or bulk-build matches: noted for the digest, never pinged
+    (g.notes ||= []).push({ t: now(), a: c.a, n: r?.n || '?', sc: Math.round((v.sc || 0) * 100), by: by || null });
+    g.notes = g.notes.slice(-30);
+    return;
+  }
   const key = byTeam || c.why === 'watched' ? 'hit:' + c.a : (hi ? 'hit:' : 'maybe:') + an.skel; // same code again = no new alert
   if (!once(g, key)) return;
   const how = { team: 'deployed by a team wallet', create: 'deployed directly', create2: 'deployed through a CREATE2 deployer', hook: `hook of a new pool on ${short(c.pm || '')}`, emitter: 'first seen emitting events', watched: `code appeared at a watched address (${c.note || ''})` }[c.why] || c.why;
@@ -895,7 +903,8 @@ export function gateDigest(state) {
   if (!g) return '';
   const c = refCounts(g);
   const awake = Object.values(g.team).filter((w) => w.woke).length;
-  return `🛡 Gate: ${c.Ascend} Ascend + ${c.Signal} Signal refs · ${Object.keys(g.team).length} team wallets (${awake} active) · ${Object.keys(g.found).length} found · ${webLine(g)}`;
+  const day = (g.notes || []).filter((x) => now() - x.t < 4 * 3600);
+  return `🛡 Gate: ${c.Ascend} Ascend + ${c.Signal} Signal refs · ${Object.keys(g.team).length} team wallets (${awake} active) · ${Object.keys(g.found).length} found${day.length ? ` · ${day.length} weak match${day.length > 1 ? 'es' : ''} noted (latest ${short(day[day.length - 1].a)} ~ ${esc(day[day.length - 1].n)} ${day[day.length - 1].sc}%)` : ''} · ${webLine(g)}`;
 }
 export const gatePms = (state) => state.gate?.pms || {};
 
