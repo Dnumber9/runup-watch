@@ -4,10 +4,12 @@
 // lives in .env there (chmod 600). Paste any Elysium token address into the trade bot to get a card with
 // Buy and Sell buttons. Alerts from the watcher carry ⚡ buttons that buy in one tap through this bot.
 //
-// Routes, tried in order:
-//   1. Launchpad pools on Uniswap v4 (eleos, BOXA, Kleos, plus any new PoolManager found by its Initialize
-//      event), traded through eleos's stateless v4 router. New launches work from their first block.
-//   2. KyberSwap's aggregator, for everything it indexes on Elysium (v3 DEXes, ElysPump v4, older pools).
+// Routes:
+//   1. Every Uniswap v4 pool on Elysium paired with native HYPE, on any pool manager (eleos, BOXA, Kleos,
+//      ElysPump, and any new launchpad the moment its first pool appears). The bot keeps its own live index
+//      of every pool (Initialize events, re-read every few seconds) and buys through eleos's stateless v4
+//      router on whichever pool gives the most tokens. New launches work from their first block.
+//   2. KyberSwap's aggregator, for everything else it indexes on Elysium (v3 DEXes, WHYPE pairs).
 //
 // Chat (only from OWNER_ID):
 //   paste a token or a link containing one   card with live price, market cap, your bag, buttons
@@ -66,6 +68,8 @@ const V4 = [
   { name: 'BOXA', pm: '0x06c63714fbf1f5753017123e2fcfdede4540b2c4', hook: '0xbcc1f22d137c1d98dfa5548e4d4261d7aee06acc', fee: 0, ts: 200 },
   { name: 'Kleos', pm: '0xb308b5df891c300a5f5a5b8fdbc30108ba842490', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc', fee: 0, ts: 200 },
 ];
+// names for pool managers we know; anything else shows as "v4 0x1234…abcd" and still trades
+const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -80,6 +84,8 @@ try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
 state.offset ||= 0;
 state.pos ||= {};      // token → { sym, hypeIn, hypeOut, tokIn, tokOut, t }
 state.routes ||= {};   // token → route
+state.pools ||= {};    // token → every native-HYPE v4 pool it has [{ pm, fee, ts, hook, b, id }]
+state.poolsBlock ||= 0; // last block the pool index has read
 state.slots ||= {};    // token → allowance mapping base slot (for sell quotes before approving)
 state.set ||= {};
 const cfg = () => ({
@@ -262,16 +268,54 @@ async function kyber(path, body) {
 const kyRoute = (tin, tout, amt) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tout}&amountIn=${amt}`);
 const kyBuild = (sum, slip) => kyber('/route/build', { routeSummary: sum, sender: me, recipient: me, slippageTolerance: Number(slip), deadline: deadline() });
 
+// ── live pool index: every v4 Initialize on Elysium, from any pool manager ─────────────────────────────
+const pmName = (pm) => PM_NAMES[pm] || 'v4 ' + short(pm);
+function addPool(l) {
+  if (lc(l.topics[2]) !== '0x' + word(ZERO)) return 0; // buys go in as native HYPE; WHYPE pairs go through KyberSwap
+  const t = lc('0x' + l.topics[3].slice(26)), d = strip(l.data), pm = lc(l.address);
+  const list = (state.pools[t] ||= []);
+  if (list.some((p) => p.id === lc(l.topics[1]))) return 0;
+  list.push({ pm, fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: '0x' + d.slice(152, 192), b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) });
+  delete state.routes[t]; // a new pool for a coin: pick the best one again next time
+  return 1;
+}
+let indexing = null;
+function indexPools() {
+  indexing ||= (async () => {
+    const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+    const wins = [];
+    for (let a = (state.poolsBlock || 0) + 1; a <= head; a += 2000) wins.push([a, Math.min(head, a + 1999)]);
+    let added = 0;
+    // in order, a few at a time, so the index never skips a range that failed to load
+    for (let i = 0; i < wins.length; i += 6) {
+      const batch = wins.slice(i, i + 6);
+      const res = await Promise.all(batch.map(([a, b]) => rpc('eth_getLogs', [{ fromBlock: hex(a), toBlock: hex(b), topics: [T_INIT] }], 4).catch(() => null)));
+      const ok = res.findIndex((r) => r === null) === -1 ? res : res.slice(0, res.findIndex((r) => r === null));
+      for (const logs of ok) for (const l of logs) added += addPool(l);
+      if (ok.length) state.poolsBlock = batch[ok.length - 1][1];
+      if (ok.length < batch.length) break;
+    }
+    if (added || wins.length) save();
+    return added;
+  })().finally(() => { indexing = null; });
+  return indexing;
+}
+const poolCount = () => Object.values(state.pools).reduce((n, l) => n + l.length, 0);
+
 async function findRoute(t, fresh = false) {
   if (!fresh && state.routes[t]) return state.routes[t];
   const probe = 10n ** 16n;
-  const ok = async (r) => { try { return (await v4QuoteBuy(r, t, probe)) > 0n ? r : null; } catch { return null; } };
-  const hits = (await Promise.all(V4.map((x) => ok({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts })))).filter(Boolean);
-  let route = hits[0] || null;
+  const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
+  if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
+  let cands = (state.pools[t] || []).slice(-8).map((p) => ({ kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook }));
+  if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
+  // every pool the coin has, best price wins (a coin can sit on several launchpads)
+  const good = (await Promise.all(cands.map(quote))).filter(Boolean).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
+  let route = good[0]?.r || null;
   if (!route) {
     try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
   }
-  if (!route) route = await scanV4(t, ok);
+  if (!route && !state.poolsBlock) route = await scanV4(t, async (r) => (await quote(r))?.r || null); // index not built yet
   if (route) { state.routes[t] = route; save(); }
   return route;
 }
@@ -328,7 +372,7 @@ const cardButtons = (t) => {
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
-  if (!r) return { text: `No route for <code>${t}</code>.\nNot a v4 launchpad pool, and KyberSwap does not know it (Obol launches are not wired in yet).` };
+  if (!r) return { text: `No route for <code>${t}</code>.\nNo native-HYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const [p, one, bal] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t)]);
   const spot = num(probe) / num(p, m.d);               // HYPE per token
@@ -362,13 +406,15 @@ async function buy(t, hypeAmt, replyTo) {
   if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
   const wei = toWei(String(hypeAmt));
-  const [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), hypeBal()]);
+  let [m, r, bal] = await Promise.all([tokenMeta(t), findRoute(t), hypeBal()]);
   if (!r) throw new Error('no route for this token');
   if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const msg = await say(`⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…`, null, replyTo);
   let tx, expect;
+  if (r.kind === 'v4') expect = await v4QuoteBuy(r, t, wei).catch(() => null);
+  if (r.kind === 'v4' && expect == null) { r = await findRoute(t, true); if (!r) throw new Error('no route for this token any more'); } // pool changed: pick again
   if (r.kind === 'v4') {
-    expect = await v4QuoteBuy(r, t, wei);
+    expect ??= await v4QuoteBuy(r, t, wei);
     tx = { to: ROUTER, value: wei, data: v4Buy(r, t, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
   } else {
     const k = await kyRoute(NATIVE, t, wei);
@@ -508,7 +554,7 @@ async function onMessage(msg) {
   const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
   if (cmd === '/start' || cmd === '/help') {
     const b = await hypeBal().catch(() => null);
-    return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}`);
+    return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} (up to block ${state.poolsBlock})`);
   }
   if (cmd === '/wallet') return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium. The key only lives on your VPS.`);
   if (cmd === '/bal') return say(await balances());
@@ -573,7 +619,12 @@ async function main() {
   const backlog = await tg('getUpdates', { offset: -1, timeout: 0 });
   if (backlog?.length) state.offset = backlog[backlog.length - 1].update_id + 1;
   const b = await hypeBal().catch(() => null);
-  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
+  // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
+  const first = !state.poolsBlock;
+  if (first) console.log('indexing every v4 pool on Elysium…');
+  await indexPools().catch((e) => console.error('index', e.message));
+  (async () => { for (;;) { await sleep(4000); await indexPools().catch(() => {}); } })();
+  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${new Set(Object.values(state.pools).flat().map((p) => p.pm)).size} pool managers, kept live.${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
   for (;;) {
     const ups = await tg('getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
     if (!ups) { await sleep(2000); continue; }
