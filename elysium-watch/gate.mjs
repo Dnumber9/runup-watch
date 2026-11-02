@@ -746,21 +746,25 @@ async function checkDocs(g, msgs) {
 
 async function checkCT(g, msgs, domain) {
   const st = ((g.web.ct ||= {})[domain] ||= {});
-  let names = null;
+  // [name, issued] pairs; crt.sh and certspotter disagree on what they have, so only freshly issued
+  // certificates count as news (a name merely missing from one source's earlier answer does not)
+  let certs = null;
   try {
     const r = await web(`https://crt.sh/?q=%25.${domain}&output=json`, { accept: 'application/json', ms: 30000 });
-    if (r.status === 200) names = JSON.parse(r.text).flatMap((x) => String(x.name_value).split('\n'));
+    if (r.status === 200) certs = JSON.parse(r.text).flatMap((x) => String(x.name_value).split('\n').map((n) => [n, Date.parse(x.not_before + 'Z')]));
   } catch {}
-  if (!names) {
+  if (!certs) {
     const r = await web(`https://api.certspotter.com/v1/issuances?domain=${domain}&include_subdomains=true&expand=dns_names`, { accept: 'application/json' });
     if (r.status !== 200) throw new Error('crt.sh and certspotter failed (' + r.status + ')');
-    names = JSON.parse(r.text).flatMap((x) => x.dns_names || []);
+    certs = JSON.parse(r.text).flatMap((x) => (x.dns_names || []).map((n) => [n, Date.parse(x.not_before)]));
   }
-  names = [...new Set(names.map((n) => lc(n).replace(/^\*\./, '')).filter((n) => n.endsWith(domain)))];
+  certs = certs.map(([n, t]) => [lc(n).replace(/^\*\./, ''), t]).filter(([n]) => n.endsWith(domain));
+  const names = [...new Set(certs.map(([n]) => n))];
   if (!st.names) { st.names = names; st.at = now(); return; }
-  const added = names.filter((n) => !st.names.includes(n));
-  if (added.length) {
-    msgs.push(`🔐 <b>New certificate for ${esc(domain)}</b>\nNew name${added.length > 1 ? 's' : ''}: ${added.slice(0, 10).map((n) => `<code>${esc(n)}</code>`).join(', ')}\nA new subdomain usually goes live within days.`);
+  const fresh = new Set(certs.filter(([, t]) => t > Date.now() - 3 * 86400 * 1000).map(([n]) => n));
+  const added = names.filter((n) => !st.names.includes(n) && fresh.has(n));
+  if (added.length && once(g, 'ct:' + added.sort().join(','))) {
+    msgs.push(`🔐 <b>New certificate for ${esc(domain)}</b>\nNewly issued for: ${added.slice(0, 10).map((n) => `<code>${esc(n)}</code>`).join(', ')}\nA new subdomain usually goes live within days.`);
     if (domain !== 'kinetiq.xyz' || /elysium|ascend|signal|bridge|explorer|rpc/.test(added.join(' '))) for (const n of added.slice(0, 5)) (g.web.extra ||= {})[n] = now();
   }
   st.names = [...new Set([...st.names, ...names])];
