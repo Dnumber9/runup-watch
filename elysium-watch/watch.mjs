@@ -168,24 +168,35 @@ async function getJSON(url, tries = 2) {
   return null;
 }
 
-// buy buttons on an alert. Elysium coins open the quick-buy page prefilled (you sign in Rabby);
-// HyperEVM curves still use the VPS router callbacks (b:h:<address>:<HYPE>)
+// buy buttons on an alert. With the VPS trade bot (TRADE_BOT_TOKEN) alerts come from that bot and a ⚡ tap
+// buys right away from its burner wallet (callback b:<token>:<tenths of HYPE>, c:<token> opens its card).
+// Without it, or if that bot cannot reach you, they open the quick-buy page prefilled (you sign in Rabby).
 const BUY_SIZES = (process.env.BUY_SIZES || '1,3,5').split(',').map((s) => s.trim()).filter(Boolean);
 const BUY_PAGE = process.env.BUY_PAGE || 'https://dnumber9.github.io/runup-watch/buy/';
-const buyButtons = (chain, addr) => BUY_SIZES.map((h) => (chain === 'e'
-  ? { text: `⚡ Buy ${h} HYPE`, url: `${BUY_PAGE}?t=${addr}&a=${h}` }
-  : { text: `Buy ${h} HYPE`, callback_data: `b:${chain}:${addr.slice(2)}:${h}` }));
+const TRADE_TOKEN = process.env.TRADE_BOT_TOKEN;
+const buyButtons = (chain, addr) => {
+  if (chain !== 'e') return [{ text: 'Open on Stockium', url: `https://stockium.fun/token/${addr}` }];
+  if (TRADE_TOKEN) return [...BUY_SIZES.map((h) => ({ text: `⚡ ${h}`, callback_data: `b:${addr.slice(2)}:${Math.round(Number(h) * 10)}` })), { text: '🔎', callback_data: `c:${addr.slice(2)}` }];
+  return BUY_SIZES.map((h) => ({ text: `⚡ Buy ${h} HYPE`, url: `${BUY_PAGE}?t=${addr}&a=${h}` }));
+};
+// the same buttons as links, for routes other than the trade bot (its callbacks only work there)
+const asLinks = (buttons) => buttons.map((b) => {
+  const m = String(b.callback_data || '').match(/^([bc]):([0-9a-f]{40})(?::(\d+))?$/);
+  if (!m) return b;
+  return { text: b.text, url: `${BUY_PAGE}?t=0x${m[2]}${m[3] ? `&a=${Number(m[3]) / 10}` : ''}` };
+});
 // BOXA's asset page only trades BOXA coins; everything else opens in the quick-buy page
 const coinLink = (state, t) => (state.tok[t]?.lp === BOXA_PM ? assetLink(t, 'open on BOXA') : `<a href="${BUY_PAGE}?t=${t}">open in quick buy</a>`);
 
-// alerts go through the command bot when it is set up (ALERT is set in main); the old bot is the fallback
-let ALERT = null;
+// alerts go through the trade bot when it is set up, else the command bot (both set in main); the old bot is the fallback
+let ALERT = null, TRADE = null;
 async function tg(msg) {
   const text = typeof msg === 'string' ? msg : msg.text;
-  const buttons = typeof msg === 'string' ? null : msg.buttons;
-  const routes = [ALERT, TG_TOKEN && TG_CHAT ? { token: TG_TOKEN, chat: TG_CHAT } : null].filter(Boolean);
-  if (!routes.length) { console.log('[telegram]\n' + text + (buttons ? '\n[' + buttons.map((b) => b.text).join('] [') + ']' : '') + '\n'); return; }
-  for (const { token, chat } of routes) {
+  const buttons0 = typeof msg === 'string' ? null : msg.buttons;
+  const routes = [TRADE, ALERT, TG_TOKEN && TG_CHAT ? { token: TG_TOKEN, chat: TG_CHAT } : null].filter(Boolean);
+  if (!routes.length) { console.log('[telegram]\n' + text + (buttons0 ? '\n[' + buttons0.map((b) => b.text).join('] [') + ']' : '') + '\n'); return; }
+  for (const { token, chat, trade } of routes) {
+    const buttons = buttons0 && !trade ? asLinks(buttons0) : buttons0;
     for (let i = 0; i < 3; i++) {
       const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
@@ -325,6 +336,7 @@ async function main() {
   try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
   const alertChat = state.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
   if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
+  if (TRADE_TOKEN && alertChat) TRADE = { token: TRADE_TOKEN, chat: alertChat, trade: true };
   for (const [a, x] of Object.entries(state.manual)) {
     W.set(a, x.label);
     if (x.group) G.set(a, x.group); else G.delete(a);
