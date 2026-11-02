@@ -380,6 +380,11 @@ async function main() {
   const px = await hypeUsd(state);
   const toUsd = (h) => (px ? h * px : null);
   const msgs = [];
+  // alert tally for the log: counts by kind and by where the wallet came from (no addresses or names, the log is public)
+  const repoSet = new Set(okW.map((w) => lc(w.address)));
+  const srcOf = (w) => (state.manual[w] ? 'manual' : repoSet.has(w) ? 'repo' : !state.auto[w] ? 'other' : state.auto[w].from === 'bridge' ? 'bridger' : state.auto[w].from === 'cielo' ? 'cielo' : 'alt');
+  const tally = {};
+  const bump = (k, n = 1) => { tally[k] = (tally[k] || 0) + n; };
 
   // 1. new pools: launches on known launchpads, and unknown PoolManagers
   const launchTxs = [];
@@ -579,6 +584,7 @@ async function main() {
       state.auto[a] = { label, group: 'cielo', from: 'cielo', t: now() };
       W.set(a, label);
       G.set(a, 'cielo');
+      bump('new/cielo');
       msgs.push(`🛬 <b>${esc(S.get(a))}</b> from your Cielo list is on Elysium\n${walletLink(a)} ${txt}\nNow tracking it.`);
     }
   }
@@ -607,6 +613,7 @@ async function main() {
       const label = `bridger ${Math.round(x.val)} ${x.to.slice(2, 6)}`;
       state.auto[x.to] = { label, group: null, from: 'bridge', t: now(), hype: x.val };
       W.set(x.to, label);
+      bump('new/bridger');
       msgs.push(
         `🌉 <b>Fresh wallet bridged in ${hype(x.val)}</b>${px ? ` (${usd(x.val * px)})` : ''} from HyperEVM\n` +
         `${walletLink(x.to)} · ${n} txs so far${txLink(x.hash)}\n` +
@@ -688,6 +695,7 @@ async function main() {
         state.auto[x.to] = { label, group, from: x.f, t: now(), hype: x.val };
         W.set(x.to, label);
         if (group) G.set(x.to, group);
+        bump('new/alt');
         msgs.push(
           `🧬 <b>${esc(W.get(x.f))}</b> funded a fresh wallet\n` +
           `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''}${x.via ? ' (split in one batch tx)' : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
@@ -720,6 +728,11 @@ async function main() {
       for (let i = list.length - 1; i >= 0; i--) {
         list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
       }
+      const src = srcOf(w);
+      bump('wallet/' + src);
+      const trades = list.filter((x) => /^(bought|sold|launched)/.test(x)).length;
+      bump('trade/' + src, trades);
+      bump('xfer/' + src, list.length - trades);
       const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
       // ⚡ buttons for the coin it just bought or launched (one tap through the trade bot when it is set up)
       msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
@@ -829,7 +842,14 @@ async function main() {
   state.runs++;
   fs.writeFileSync(STATE, JSON.stringify(state));
   for (const m of msgs) await tg(m);
-  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued`);
+  const tallied = Object.entries(tally).filter(([k]) => /^(wallet|new)\//.test(k)).reduce((s, [, v]) => s + v, 0);
+  if (msgs.length > tallied) bump('other', msgs.length - tallied);
+  const autoBy = {};
+  for (const x of Object.values(state.auto)) { const k = x.from === 'bridge' || x.from === 'cielo' ? x.from : 'alt'; autoBy[k] = (autoBy[k] || 0) + 1; }
+  const kinds = Object.entries(tally).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
+  const heads = {};
+  for (const m of msgs) { const h = [...String(typeof m === 'string' ? m : m.text || '').trim()][0] || '?'; heads[h] = (heads[h] || 0) + 1; }
+  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'}`);
 }
 
 // ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────
