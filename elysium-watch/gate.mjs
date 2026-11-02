@@ -316,7 +316,7 @@ async function buildRefs(ctx, g, budget) {
       if (rc.code.length <= 2) { g.refTry[key] = (g.refTry[key] || 0) + 1; continue; }
       const an = analyze(rc.code);
       addRef(g, chain, a, name, fam, an, false);
-      for (const c of an.consts.slice(0, 25)) g.depq.push([chain, c, `${name} dependency`, fam]);
+      // (contracts its code points at used to be added as references too; they are shared infrastructure, so no longer)
     } catch { g.refTry[key] = (g.refTry[key] || 0) + 1; }
   }
   // 2. dependencies (pool managers, implementations, oracles…): stricter matching, they are often generic
@@ -384,6 +384,9 @@ function evaluate(g, an, common) {
   let core = null, extra = null;
   for (const [key, r] of Object.entries(g.refs)) {
     if (common.skel?.has(r.k)) continue;
+    // contracts their code merely points at (a PancakeSwap Infinity vault, a pool manager, Permit2…) are
+    // shared infrastructure anyone can deploy: never evidence on their own
+    if (/dependency$/.test(r.n)) continue;
     const D = r.s.filter((s) => !common.has(s));
     if (D.length < MIN_REF) continue; // generic reference: nothing distinctive left to match on
     if (r.k === an.skel) return { key, sc: 1, sh: D.length, same: true, lvl: 2 };
