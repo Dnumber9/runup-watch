@@ -10,7 +10,8 @@
  },
  {
   "address": "0x1b4f03245543d6e2be4e2779d8c6be993df512e5",
-  "label": "sonog? alt (ely early)"
+  "label": "sonog? alt (ely early)",
+  "group": "boxa6"
  },
  {
   "address": "0xb6a30fd5ed09dadd85ff5d6c0c704273053f6bc3",
@@ -266,7 +267,7 @@
  {
   "address": "0x55ba70051fd74edcb97166ee5461165239fc147e",
   "label": "BOXA #6 early",
-  "group": "smart"
+  "group": "boxa6"
  },
  {
   "address": "0xb5a84bfd780645d7341b77302f608ecb7b49f99f",
@@ -465,17 +466,17 @@
  {
   "address": "0xf45832d5ad62a06a2a5d9b26e1b932cfd26341b3",
   "label": "BOXA #6 cluster (ECAT early)",
-  "group": "smart"
+  "group": "boxa6"
  },
  {
   "address": "0x991e645cbba882b705fe7441c48d58d17b2a0c0e",
   "label": "BOXA #6 cluster (ECAT early)",
-  "group": "smart"
+  "group": "boxa6"
  },
  {
   "address": "0x356db8cdc3746922928f0905e3f3f13b927d4335",
   "label": "BOXA #6 cluster (ECAT early)",
-  "group": "smart"
+  "group": "boxa6"
  },
  {
   "address": "0xa450f6dbf9737495c9b723ec11a269f9cdf700bb",
@@ -531,5 +532,50 @@
   "address": "0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28",
   "label": "ely sniper d8ba (EOS +15s)",
   "group": "smart"
+ },
+ {
+  "address": "0x6d4d946e395c1fe3c4e7702b58dd1c34968746ac",
+  "label": "ECAT creator",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0x1d4a46f80dc06e77e2f2d4a87921057655962f7c",
+  "label": "ECAT creator twin 1d4a (same 3.822 bridge)",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0x65c2276fb9117fdf0bec92d2d9c30191e76312d8",
+  "label": "ECAT creator alt 65c2 (holds moved supply)",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0x84114e9c3a626fd544c1cac4b83380e8411d136c",
+  "label": "ECAT creator alt 8411 (holds moved supply)",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0xdf7b9351049d8355f0e2b1dc12651a469e1f8355",
+  "label": "ECAT pre-launch bridger df7b (+23 on ECAT)",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0x780d292e298873e88e91dc85a0d3bc74f01d94c9",
+  "label": "ECAT pre-launch bridger 780d",
+  "group": "ecatdev"
+ },
+ {
+  "address": "0x18e24c7882cd2fe890e07bd57feaa79d79339e6b",
+  "label": "BOXA #6 group 18e2",
+  "group": "boxa6"
+ },
+ {
+  "address": "0x90e21986e199b433b56b5e9e386dda39f8ddf912",
+  "label": "BOXA #6 group 90e2 (buys from HyperEVM)",
+  "group": "boxa6"
+ },
+ {
+  "address": "0xca40e925dc43a0ecde6c8b1a2709c170ec501060",
+  "label": "BOXA #6 funder ca40",
+  "group": "boxa6"
  }
 ]
