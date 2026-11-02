@@ -274,6 +274,7 @@ function init(state) {
   for (const k of ['refs', 'refTry', 'seen', 'sk', 'freq', 'found', 'pms', 'team', 'tn', 'codewatch', 'web', 'next', 'alerted', 'hyper']) g[k] ||= {};
   g.q ||= [];
   g.depq ||= [];
+  for (const [a, w] of Object.entries(g.codewatch)) if (/shown on status\./.test(w)) delete g.codewatch[a]; // old noise from Signal's keeper page
   for (const t of TEAM) if (!g.team[t.a]) g.team[t.a] = { label: t.label, fam: t.fam, testnet: !!t.testnet, contract: !!t.contract, woke: 0, n: null, b: null };
   return g;
 }
@@ -613,8 +614,8 @@ async function webChecks(ctx, g, msgs, t0) {
   const jobs = [];
   if (due(g, 'w:sigapp', 180)) jobs.push(['sigapp', () => checkSignalApp(ctx, g, msgs)]);
   if (due(g, 'w:sigely', 180)) jobs.push(['sigely', () => checkSignalEly(g, msgs)]);
-  if (due(g, 'w:ascend', 180)) jobs.push(['ascend', () => checkSite(g, msgs, 'ascend', 'https://ascendlaunch.xyz/', 'Ascend')]);
-  for (const s of Object.keys(g.web.extra || {})) if (due(g, 'w:site:' + s, 300)) jobs.push(['site:' + s, () => checkSite(g, msgs, 'site:' + s, 'https://' + s + '/', s)]);
+  if (due(g, 'w:ascend', 180)) jobs.push(['ascend', () => checkSite(ctx, g, msgs, 'ascend', 'https://ascendlaunch.xyz/', 'Ascend')]);
+  for (const s of Object.keys(g.web.extra || {})) if (due(g, 'w:site:' + s, 300)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', s)]);
   if (due(g, 'w:docs', 600)) jobs.push(['docs', () => checkDocs(g, msgs)]);
   const ctIdx = Math.floor(now() / 300) % CT_DOMAINS.length;
   if (due(g, 'w:ct' + ctIdx, 900)) jobs.push(['ct:' + CT_DOMAINS[ctIdx], () => checkCT(g, msgs, CT_DOMAINS[ctIdx])]);
@@ -680,7 +681,7 @@ async function checkSignalEly(g, msgs) {
   st.sig = sig;
 }
 
-async function checkSite(g, msgs, key, url, label) {
+async function checkSite(ctx, g, msgs, key, url, label) {
   const st = (g.web[key] ||= {});
   const page = await web(url);
   if (blocked(page)) throw new Error(`blocked from GitHub's servers (HTTP ${page.status})`);
@@ -697,22 +698,30 @@ async function checkSite(g, msgs, key, url, label) {
   for (const u of Object.keys(cache)) if (!scripts.includes(u)) delete cache[u];
   const addrs = [...new Set([...addrsIn(page.text), ...scripts.flatMap((u) => cache[u]?.a || [])])];
   const chain = /\b99901\b|0x1863d/i.test(page.text) || scripts.some((u) => cache[u]?.c);
-  const now1 = { s: page.status, title, gated, addrs, chain, scripts: scripts.map((u) => new URL(u).pathname) };
+  // visible text only (pages embed live coin data whose names can say anything)
+  const visible = page.text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
+  const ely = /\belysium\b/i.test(visible);
+  const now1 = { s: page.status, title, gated, addrs, chain, ely, scripts: scripts.map((u) => new URL(u).pathname) };
   if (!st.base) { st.base = now1; return; }
   const b = st.base, notes = [];
   if (now1.s !== b.s) notes.push(`status ${b.s} → ${now1.s}`);
   if (now1.title !== b.title) notes.push(`title "${esc(b.title)}" → "${esc(now1.title)}"`);
   if (b.gated && !now1.gated && now1.s === 200) notes.push('the access gate is gone');
-  const newA = now1.addrs.filter((a) => !b.addrs.includes(a));
-  if (newA.length) notes.push(`new addresses:\n${newA.slice(0, 8).map((a) => `• <code>${a}</code>`).join('\n')}`);
+  // new addresses only count when they are contracts on Elysium (status pages and app feeds list HyperEVM coins all day)
+  const cand = now1.addrs.filter((a) => !b.addrs.includes(a)).slice(0, 40);
+  const codes = await pmap(cand, 6, (a) => ctx.rpc('eth_getCode', [a, 'latest']));
+  const newA = cand.filter((a, i) => codes[i] && codes[i].length > 2);
+  if (newA.length) notes.push(`new Elysium contract addresses:\n${newA.slice(0, 8).map((a) => `• <code>${a}</code>`).join('\n')}`);
+  // Ascend's own site showing an address before anything is deployed there: watch it for code
+  if (key === 'ascend') for (const a of cand.filter((a) => !newA.includes(a))) g.codewatch[a] = 'address shown on Ascend\'s site';
+  if (now1.ely && !b.ely) notes.push('the page now mentions Elysium');
   if (now1.chain && !b.chain) notes.push('chain id 99901 appears in its code');
   const newS = now1.scripts.filter((p) => !b.scripts.includes(p));
   if (newS.length && !notes.length && newS.some((p) => !/_next\/static\/chunks\//.test(p))) notes.push(`new scripts: ${newS.slice(0, 4).map(esc).join(', ')}`);
   if (notes.length && once(g, key + ':' + JSON.stringify(notes).slice(0, 200))) {
     msgs.push(`🌐 <b>${esc(label)} site changed</b> (${esc(url)})\n${notes.join('\n')}`);
-    for (const a of newA) g.codewatch[a] = `address shown on ${label}'s site`;
   }
-  st.base = { ...now1, addrs: [...new Set([...b.addrs, ...now1.addrs])], scripts: [...new Set([...b.scripts, ...now1.scripts])].slice(-200) };
+  st.base = { ...now1, addrs: [...new Set([...b.addrs, ...now1.addrs])].slice(-3000), scripts: [...new Set([...b.scripts, ...now1.scripts])].slice(-200) };
 }
 
 async function checkDocs(g, msgs) {
@@ -908,7 +917,7 @@ if (process.argv[2] === '--selftest') {
   } catch (e) { out('recent scan error', e.message); }
   // off-chain sources, each one call
   const msgs = [];
-  for (const [n, fn] of [['signal app', () => checkSignalApp(ctx, g, msgs)], ['signal elysium page', () => checkSignalEly(g, msgs)], ['ascend site', () => checkSite(g, msgs, 'ascend', 'https://ascendlaunch.xyz/', 'Ascend')], ['kinetiq docs', () => checkDocs(g, msgs)], ['ct ascendlaunch.xyz', () => checkCT(g, msgs, 'ascendlaunch.xyz')], ['ct signal.family', () => checkCT(g, msgs, 'signal.family')], ['registry', () => checkRegistry(g, msgs)], ['x AscendLaunch', () => checkX(g, msgs, 'AscendLaunch')], ['x SignalFam', () => checkX(g, msgs, 'SignalFam')]]) {
+  for (const [n, fn] of [['signal app', () => checkSignalApp(ctx, g, msgs)], ['signal elysium page', () => checkSignalEly(g, msgs)], ['ascend site', () => checkSite(ctx, g, msgs, 'ascend', 'https://ascendlaunch.xyz/', 'Ascend')], ['kinetiq docs', () => checkDocs(g, msgs)], ['ct ascendlaunch.xyz', () => checkCT(g, msgs, 'ascendlaunch.xyz')], ['ct signal.family', () => checkCT(g, msgs, 'signal.family')], ['registry', () => checkRegistry(g, msgs)], ['x AscendLaunch', () => checkX(g, msgs, 'AscendLaunch')], ['x SignalFam', () => checkX(g, msgs, 'SignalFam')]]) {
     const t = Date.now();
     try { await fn(); out('OK  ', n, `${Date.now() - t} ms`); } catch (e) { out('FAIL', n, e.message); }
   }
