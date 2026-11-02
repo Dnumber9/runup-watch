@@ -86,6 +86,12 @@ const V4 = [
   { name: 'Kleos', pm: '0xb308b5df891c300a5f5a5b8fdbc30108ba842490', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc', fee: 0, ts: 200 },
 ];
 // names for pool managers we know; anything else shows as "v4 0x1234…abcd" and still trades
+// ElysPump pools paired with ElysPump's own wrapped HYPE instead of native HYPE (QUOTED and others) go through this
+// public router: it takes native HYPE in and pays native HYPE out, wrapping inside the same transaction, so a buy
+// or sell there is still one transaction
+const WROUTER = '0x822c686fc480ae8204260fbd46c524a4a30cbdf8';
+const ELYSPUMP_PM = '0x5fb015a49f5b35073f9ce01c2adb287a75f89600';
+const WRAPPED = new Set(['0x5ab377328592c03b5e7adb09254adb043f91fa11']); // the WHYPE that router wraps into
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -294,10 +300,23 @@ const usd = (h, px) => {
 const v4Buy = (r, t, minOut, to, dl) => enc('c727282f', r.pm, ZERO, t, r.fee, r.ts, r.hook, minOut, to, dl);
 const v4Sell = (r, t, amt, minOut, to, dl) => enc('a7fee01b', r.pm, ZERO, t, r.fee, r.ts, r.hook, amt, minOut, to, dl);
 const deadline = () => Math.floor(Date.now() / 1000) + 600;
+// wrapped pools: swap(path, amountIn, minOut, recipient, unwrapOut, deadline), path = [(currency0, currency1, fee,
+// tickSpacing, hooks, zeroForOne)]; amountIn equals the HYPE sent on a buy, unwrapOut pays native HYPE on a sell
+const wSwap = (r, t, buy, amt, minOut, to, dl) => {
+  const [c0, c1] = r.qFirst ? [r.q, t] : [t, r.q];
+  return enc('0ee97731', 192, amt, minOut, to, buy ? 0 : 1, dl, 1, c0, c1, r.fee, r.ts, r.hook, buy === r.qFirst ? 1 : 0);
+};
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4';
+const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : ROUTER);
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const routeOf = (p) => (p.q
+  ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
+  : { kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
-  const data = v4Buy(r, t, 0, SIM, 2 ** 31 - 1);
-  return u256(await ethCall(ROUTER, data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
+  const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
+  return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
 }
 // allowance(me, ROUTER) lives at keccak(spender, keccak(owner, base)); find base once so sells can be quoted before approving
 async function allowanceSlot(t, spender) {
@@ -311,9 +330,9 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
-  const data = v4Sell(r, t, amt, 0, me, 2 ** 31 - 1);
+  const data = sellData(r, t, amt, 0, me, 2 ** 31 - 1);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
-  return u256(await ethCall(ROUTER, data, { from: me }, ov, true));
+  return u256(await ethCall(routerOf(r), data, { from: me }, ov, true));
 }
 async function kyber(path, body) {
   const r = await fetch(KYBER + path, { method: body ? 'POST' : 'GET', headers: { 'x-client-id': KYBER_ID, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) }).then((x) => x.json());
@@ -328,12 +347,25 @@ const pmName = (pm) => PM_NAMES[pm] || 'v4 ' + short(pm);
 const knownPms = new Set();   // every pool manager that has ever had a pool (a new one = a new launchpad)
 const fresh = [];             // pools seen live (after the first full index), for snipes
 let live = false;
-function addPool(l) {
-  if (lc(l.topics[2]) !== '0x' + word(ZERO)) return 0; // buys go in as native HYPE; WHYPE pairs go through KyberSwap
-  const t = lc('0x' + l.topics[3].slice(26)), d = strip(l.data), pm = lc(l.address);
-  const list = (state.pools[t] ||= []);
-  if (list.some((p) => p.id === lc(l.topics[1]))) return 0;
+// a pool we can trade: native HYPE on any pool manager, or ElysPump's WHYPE on ElysPump (through WROUTER).
+// Other WHYPE pairs go through KyberSwap.
+function parseInit(l) {
+  const c0 = lc('0x' + l.topics[2].slice(26)), c1 = lc('0x' + l.topics[3].slice(26)), pm = lc(l.address), d = strip(l.data);
+  let t, q = null;
+  if (c0 === ZERO) t = c1;
+  else if (pm === ELYSPUMP_PM && WRAPPED.has(c0)) { t = c1; q = c0; }
+  else if (pm === ELYSPUMP_PM && WRAPPED.has(c1)) { t = c0; q = c1; }
+  else return null;
   const p = { pm, fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: '0x' + d.slice(152, 192), b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) };
+  if (q) { p.q = q; p.qFirst = q === c0; }
+  return { t, p };
+}
+function addPool(l) {
+  const x = parseInit(l);
+  if (!x) return 0;
+  const { t, p } = x, pm = p.pm;
+  const list = (state.pools[t] ||= []);
+  if (list.some((y) => y.id === p.id)) return 0;
   list.push(p);
   delete state.routes[t]; // a new pool for a coin: pick the best one again next time
   if (live) fresh.push({ t, ...p, tx: lc(l.transactionHash || ''), newPm: !knownPms.has(pm) });
@@ -370,7 +402,7 @@ async function findRoute(t, fresh = false) {
   const probe = 10n ** 16n;
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
-  let cands = (state.pools[t] || []).slice(-8).map((p) => ({ kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook }));
+  let cands = (state.pools[t] || []).slice(-8).map(routeOf);
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
   const good = (await Promise.all(cands.map(quote))).filter(Boolean).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
@@ -389,11 +421,14 @@ async function scanV4(t, ok) {
     const jobs = [];
     for (let k = 0; k < 4; k++) {
       const to = end - k * 2000, from = to - 1999;
-      jobs.push(rpc('eth_getLogs', [{ fromBlock: hex(Math.max(0, from)), toBlock: hex(to), topics: [T_INIT, null, '0x' + word(ZERO), '0x' + word(t)] }]).catch(() => []));
+      for (const topics of [[T_INIT, null, '0x' + word(ZERO), '0x' + word(t)], [T_INIT, null, null, '0x' + word(t)], [T_INIT, null, '0x' + word(t)]]) {
+        jobs.push(rpc('eth_getLogs', [{ fromBlock: hex(Math.max(0, from)), toBlock: hex(to), topics }]).catch(() => []));
+      }
     }
     for (const l of (await Promise.all(jobs)).flat()) {
-      const d = strip(l.data);
-      const r = await ok({ kind: 'v4', name: 'v4 ' + short(lc(l.address)), pm: lc(l.address), hook: '0x' + d.slice(152, 192), fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))) });
+      const x = parseInit(l);
+      if (!x || x.t !== t) continue;
+      const r = await ok(routeOf(x.p));
       if (r) return r;
     }
   }
@@ -406,10 +441,11 @@ async function scanV4(t, ok) {
 // Reverts with 1 if the buy failed, 2 if balanceOf failed, 3 if the sell failed.
 const RT_CODE = '0x36156100c3576040358060a060003760006000826000346000355af1156100a2576370a0823160e01b6000523060045260206000602460006020355afa156100ad5760005163095ea7b360e01b60005260003560045280602452600060006044600060006020355af15047606035808460a00161010037826080356101000152600060008261010060006000355af1156100b85750470360205260005260406000f35b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b00';
 async function sellCheck(r, t, wei) {
-  if (r.kind !== 'v4') return { ok: null, note: 'sell check skipped (KyberSwap route)' };
-  const buyData = v4Buy(r, t, 0, SIM, 2 ** 31 - 1), sellData = v4Sell(r, t, 0, 0, SIM, 2 ** 31 - 1);
+  if (!isPool(r)) return { ok: null, note: 'sell check skipped (KyberSwap route)' };
+  const bd = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1), sd = sellData(r, t, 0, 0, SIM, 2 ** 31 - 1);
   const len = (h) => (h.length - 2) / 2;
-  const data = '0x' + word(ROUTER) + word(t) + word(len(buyData)) + word(len(sellData)) + word(196) + strip(buyData) + strip(sellData);
+  // where the helper writes the bag into the sell's amount: v4Sell's 7th argument, the wrapped router's 2nd
+  const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(r.kind === 'wv4' ? 36 : 196) + strip(bd) + strip(sd);
   const big = hex(wei + 10n ** 21n);
   try {
     const res = await ethCall(SIM, data, { from: me, value: hex(wei) }, { [SIM]: { code: RT_CODE, balance: big }, [me]: { balance: big } });
@@ -424,14 +460,14 @@ async function sellCheck(r, t, wei) {
 }
 // tokens out for `wei` HYPE, on whatever route the token uses
 async function quoteBuy(r, t, wei) {
-  if (r.kind === 'v4') return v4QuoteBuy(r, t, wei);
+  if (isPool(r)) return v4QuoteBuy(r, t, wei);
   return BigInt((await kyRoute(NATIVE, t, wei)).routeSummary.amountOut);
 }
 // HYPE out for selling `amt` tokens now
 async function quoteSellOut(r, t, amt) {
-  if (r.kind !== 'v4') return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
-  const allowed = u256(await ethCall(t, enc('dd62ed3e', me, ROUTER)));
-  return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, ROUTER));
+  if (!isPool(r)) return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
+  const allowed = u256(await ethCall(t, enc('dd62ed3e', me, routerOf(r))));
+  return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, routerOf(r)));
 }
 const PROBE = 10n ** 16n;
 // HYPE per token right now
@@ -480,7 +516,7 @@ const cardButtons = (t) => {
   return [
     cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })),
     [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${h}:${p}` })).concat([{ text: '🔄', callback_data: `r:${h}` }]),
-    [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🎯 Limit', callback_data: `m:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }],
+    [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🎯 Limit', callback_data: `m:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }, { text: '📤 Send', callback_data: `g:${h}` }],
   ];
 };
 
@@ -494,7 +530,7 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
-  if (!r) return { text: `No route for <code>${t}</code>.\nNo native-HYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
+  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
   const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t, me, true), sellCheck(r, t, 10n ** 17n), devInfo]);
@@ -512,7 +548,7 @@ async function cardText(t) {
   }
   const os = state.orders[t] || [];
   const text =
-    `<b>${esc(m.sym)}</b> · ${r.kind === 'v4' ? `${esc(r.name)} v4` : 'via KyberSwap'}\n` +
+    `<b>${esc(m.sym)}</b> · ${isPool(r) ? `${esc(r.name)} v4` : 'via KyberSwap'}\n` +
     `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
     (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
     (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}${entry && sup && px ? ` · entry MC $${fmt(entry * sup * px)}` : ''}\n` : '') +
@@ -547,7 +583,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
   const wei = toWei(String(hypeAmt));
   const known = opts.route || state.routes[t];
-  const scP = known?.kind === 'v4' ? sellCheck(known, t, wei) : null; // started right away when the route is known
+  const scP = isPool(known) ? sellCheck(known, t, wei) : null; // started right away when the route is known
   let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
@@ -555,7 +591,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
   // or lose too much on the round trip, and its buy leg is the quote for this exact size.
   let sc = { note: '' }, expect = null;
-  if (r.kind === 'v4') {
+  if (isPool(r)) {
     sc = await (scP && r === known ? scP : sellCheck(r, t, wei));
     if (cfg().check && !force && sc.ok === false) {
       J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
@@ -570,12 +606,12 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
         if (opts.route) throw new Error('no route for this token yet'); // a snipe retries
         r = await findRoute(t, true); // the pool changed: pick again
         if (!r) throw new Error('no route for this token any more');
-        if (r.kind === 'v4') expect = await v4QuoteBuy(r, t, wei);
+        if (isPool(r)) expect = await v4QuoteBuy(r, t, wei);
       }
     }
   }
   let tx;
-  if (r.kind === 'v4') tx = { to: ROUTER, value: wei, data: v4Buy(r, t, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+  if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
   else {
     const k = await kyRoute(NATIVE, t, wei);
     const b = await kyBuild(k.routeSummary, slip);
@@ -614,7 +650,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
   // after the buy: approve so every sell is one transaction, note the creator's bag for the dev guard (when on),
   // and add the auto-sell preset (when set)
-  if (cfg().preapprove && r.kind === 'v4') preApprove(t).catch((e) => console.error('preapprove', e.message));
+  if (cfg().preapprove && isPool(r)) preApprove(t, routerOf(r)).catch((e) => console.error('preapprove', e.message));
   if (cfg().devsell > 0) devOf(t).then(async (d) => { if (d?.w) { d.peak = num(await balOf(t, d.w), m.d); save(); } }).catch(() => {});
   let autoLine = '';
   try {
@@ -628,11 +664,11 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
 }
 
 // approve the router for good right after a buy (the wallet is a burner), so a sell is one transaction
-async function preApprove(t) {
+async function preApprove(t, spender = ROUTER) {
   if (approving.has(t)) return;
-  if ((await allowanceOf(t)) >= MAX256 >> 1n) return;
+  if ((await allowanceOf(t, spender)) >= MAX256 >> 1n) return;
   approving.add(t);
-  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', ROUTER, MAX256), gas: 120000 })); }
+  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, MAX256), gas: 120000 })); }
   catch (e) { approving.delete(t); throw e; }
 }
 
@@ -647,9 +683,11 @@ async function sell(t, pct, replyTo, opts = {}) {
   const p0 = state.pos[t], r0 = state.routes[t];
   const cached = p0?.balW ? BigInt(p0.balW) : null;
   const guess = opts.amt == null && cached > 0n ? (cached * BigInt(Math.min(100, Math.max(1, Math.round(pct))))) / 100n : null;
-  const qGuess = r0?.kind === 'v4' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
-  const [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t).catch(() => 0n)]);
+  const qGuess = isPool(r0) && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
+  let [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t, routerOf(r0)).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
+  const rtr = routerOf(r);
+  if (isPool(r) && rtr !== routerOf(r0)) allowed = await allowanceOf(t, rtr).catch(() => 0n);
   cacheBal(t, bal);
   let amt;
   if (opts.amt != null) { amt = opts.amt > bal ? bal : opts.amt; pct = bal > 0n ? Number((amt * 1000n) / bal) / 10 : 0; }
@@ -657,19 +695,19 @@ async function sell(t, pct, replyTo, opts = {}) {
   if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
   const head = opts.why ? `${opts.icon || '🎯'} ${opts.why}\n` : '';
   const msgP = say(`${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
-  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && spender === ROUTER ? MAX256 : amt), gas: 120000 });
+  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && (spender === ROUTER || spender === WROUTER) ? MAX256 : amt), gas: 120000 });
   let txs, expect;
   try {
-    if (r.kind === 'v4') {
-      const swap = (out) => ({ to: ROUTER, data: v4Sell(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
+    if (isPool(r)) {
+      const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
       if (allowed >= amt) {
         expect = (r === r0 && amt === guess && (await qGuess)) || (await v4QuoteSell(r, t, amt, null));
         txs = [swap(expect)];
       } else {
-        const slot = await allowanceSlot(t, ROUTER);
+        const slot = await allowanceSlot(t, rtr);
         if (!slot) {
           // unusual token storage: approve first, then quote for real
-          const ah = await serial(() => sendRaw(approveTx(ROUTER)));
+          const ah = await serial(() => sendRaw(approveTx(rtr)));
           await edit(await msgP, `${head}⏳ Approving ${esc(m.sym)} before selling · ${txLink(ah)}`);
           const arc = await receipt(ah);
           if (!arc || arc.status !== '0x1') throw new Error('approval failed or never confirmed');
@@ -678,7 +716,7 @@ async function sell(t, pct, replyTo, opts = {}) {
         } else {
           expect = await v4QuoteSell(r, t, amt, slot);
           // the approval sent after the buy goes first (lower nonce), so the sell needs no second one
-          txs = approving.has(t) ? [swap(expect)] : [approveTx(ROUTER), swap(expect)];
+          txs = approving.has(t) ? [swap(expect)] : [approveTx(rtr), swap(expect)];
         }
       }
     } else {
@@ -836,7 +874,7 @@ async function guardCoin(t) {
   if (!state.orders[t]?.length && !every(t + ':g', 6000)) return; // guards only: every 6 s; coins with orders every 2 s
   const r = await findRoute(t);
   if (!r) return;
-  if (r.kind !== 'v4' && !every(t + ':ky', 15000)) return; // KyberSwap's API: every 15 s is plenty
+  if (!isPool(r) && !every(t + ':ky', 15000)) return; // KyberSwap's API: every 15 s is plenty
   const m = await tokenMeta(t);
   const px = await priceOf(t, r);
   if (!px) return;
@@ -889,7 +927,7 @@ async function guardCoin(t) {
     }
   }
   // rug guard: only coins that passed the sell check at entry, so a failure now is a real change
-  if (c.rug && p.scOk && r.kind === 'v4' && every(t + ':rug', 20000)) {
+  if (c.rug && p.scOk && isPool(r) && every(t + ':rug', 20000)) {
     const sc = await sellCheck(r, t, 5n * 10n ** 16n);
     const jump = sc.loss != null && sc.loss * 100 > Math.max(c.tax, (p.sc0 || 0) * 100 + 15);
     if (sc.blocked || jump) {
@@ -923,7 +961,7 @@ async function snipeBuy(f, s) {
   // a coin that already trades elsewhere is bought on its best pool, not blindly on the new one (anyone can open a
   // thin, mispriced pool for any token)
   const others = (state.pools[f.t] || []).some((p) => p.id !== f.id);
-  const route = others ? undefined : { kind: 'v4', name: pmName(f.pm), pm: f.pm, fee: f.fee, ts: f.ts, hook: f.hook };
+  const route = others ? undefined : routeOf(f);
   const label = `🎯 Snipe: ${s.k === 'token' ? 'pool opened' : s.k === 'dev' ? `${short(s.w)} launched a coin` : `first coins on new pool manager ${short(f.pm)}`}`;
   const t0 = Date.now();
   for (let i = 0; ; i++) {
@@ -942,7 +980,7 @@ function snipeText(s) {
 }
 
 // copy trading: Transfer logs to and from the copied wallets, every second
-const NOCOPY = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81', '0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65']); // WHYPE, USDC
+const NOCOPY = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81', '0x5ab377328592c03b5e7adb09254adb043f91fa11', '0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65']); // WHYPEs, USDC
 let copyBlock = 0;
 const copySeen = new Set(); // sell logs already mirrored
 async function copyTick() {
@@ -1203,9 +1241,51 @@ async function withdraw(to, amtStr) {
   track(hash, (rc) => edit(msg, `${rc.status === '0x1' ? '✅ Sent' : '❌ Failed to send'} ${fmtH(num(value))} to <code>${to}</code> · ${txLink(hash)}`), () => edit(msg, `⌛ Withdrawal not confirmed after 2 h · ${txLink(hash)}`));
 }
 
+// ── token transfers: part or all of a bag to another wallet, after a confirmation tap ─────────────────
+const sendAsk = {}; // message id of a card's 📤 Send question → token
+// how much of the bag: "all", "50%", or a token amount
+async function sendAmount(t, a) {
+  const [m, bal] = await Promise.all([tokenMeta(t), balOf(t, me, true)]);
+  a = lc(String(a || '')).replace(/,/g, '');
+  let amt = null;
+  if (a === 'all' || a === 'max') amt = bal;
+  else if (/^\d*\.?\d+%$/.test(a)) { const pc = Number(a.slice(0, -1)); if (pc > 0 && pc <= 100) amt = (bal * BigInt(Math.round(pc * 100))) / 10000n; }
+  else amt = toWei(a, m.d);
+  return { m, bal, amt };
+}
+async function askSend(t, to, a, replyTo) {
+  if (!t || !to || !a) return say('Usage: /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt;\nOr tap 📤 Send on a coin card.', null, replyTo);
+  if (to === me) return say('That is the bot wallet itself.', null, replyTo);
+  if (to === t || to === ZERO) return say('That address is the token contract or the zero address; tokens sent there are lost.', null, replyTo);
+  const { m, bal, amt } = await sendAmount(t, a);
+  if (!amt || amt <= 0n) return say(`Amount not understood. Use a number of ${esc(m.sym)}, a percent like 50%, or all.`, null, replyTo);
+  if (bal === 0n) return say(`You hold no ${esc(m.sym)} in the bot wallet.`, null, replyTo);
+  if (amt > bal) return say(`You hold ${fmt(num(bal, m.d))} ${esc(m.sym)}, less than that.`, null, replyTo);
+  const id = Math.random().toString(36).slice(2, 10);
+  pending[id] = { kind: 'tok', t, to, amt: amt.toString() };
+  return say(`Send <b>${fmt(num(amt, m.d))} ${esc(m.sym)}</b> (${((num(amt, m.d) / num(bal, m.d)) * 100).toFixed(0)}% of the bag) to <code>${to}</code>?\nA transfer is not a sell: no HYPE comes back.`, [[{ text: '✅ Send', callback_data: `v:${id}` }, { text: 'Cancel', callback_data: `x:${id}` }]], replyTo);
+}
+async function sendToken(t, to, amt) {
+  const [m, bal] = await Promise.all([tokenMeta(t), balOf(t, me, true)]);
+  if (amt > bal) throw new Error(`the bot wallet holds only ${fmt(num(bal, m.d))} ${m.sym} now`);
+  const hash = await serial(() => sendRaw({ to: t, data: enc('a9059cbb', to, amt), gas: 150000 }));
+  const what = `${fmt(num(amt, m.d))} <b>${esc(m.sym)}</b> to <code>${to}</code>`;
+  const msg = await say(`⏳ Sending ${what} · ${txLink(hash)}`);
+  track(hash, async (rc) => {
+    if (rc.status !== '0x1') return edit(msg, `❌ Transfer of ${what} ${rc.status === 'dropped' ? 'was dropped by the network; nothing sent' : 'reverted'} · ${txLink(hash)}`);
+    const left = await balOf(t, me, true).catch(() => bal - amt);
+    const p = state.pos[t];
+    if (p) { p.sent = (p.sent || 0) + num(amt, m.d); if (left === 0n) { p.open = false; dropSellOrders(t); } }
+    cacheBal(t, left);
+    J({ side: 'send', coin: t, sym: m.sym, tok: num(amt, m.d), to, hash });
+    save(); refreshPin();
+    return edit(msg, `✅ Sent ${what} · ${fmt(num(left, m.d))} ${esc(m.sym)} left in the bot wallet · ${txLink(hash)}`);
+  }, () => edit(msg, `⌛ Transfer of ${what} not confirmed after 2 h · ${txLink(hash)}`));
+}
+
 const HELP =
   `<b>ely-router</b>\n` +
-  `Paste a token address (or a link with one) for a card: ⚡ buy, sell 25/50/100%, 💰 initials, 🎯 limit.\n` +
+  `Paste a token address (or a link with one) for a card: ⚡ buy, sell 25/50/100%, 💰 initials, 🎯 limit, 📤 send.\n` +
   `/pos · open bags with one-tap sells · /pin · re-pin the open trades panel at the bottom (/set pin off to stop)\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;coin&gt; &lt;percent&gt; · /initials &lt;coin&gt;\n` +
   `&lt;coin&gt; = address, the symbol of a coin you hold, or its 8-character code\n\n` +
@@ -1215,7 +1295,7 @@ const HELP =
   `/orders · see and cancel\n\n` +
   `/bal · /pnl · /stats 7d · /journal · /export · /report · /wallet\n` +
   `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
-  `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /nonce if a transaction is stuck\n\n` +
+  `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
@@ -1376,6 +1456,14 @@ async function onMessage(msg) {
   const [cmd0, ...args] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
   const reply = msg.message_id;
+  // an answer to a card's 📤 Send question: address and amount, in any order
+  const sendFor = sendAsk[msg.reply_to_message?.message_id];
+  if (sendFor && !text.startsWith('/')) {
+    const to = addrIn(text);
+    const a = text.replace(/0x[0-9a-fA-F]{40}/g, ' ').trim().split(/\s+/)[0];
+    if (!to || !a) return say('Reply again with the address and the amount, for example <code>0xabc… 50%</code> or <code>0xabc… all</code>.', null, reply);
+    return askSend(sendFor, to, a, reply);
+  }
   // an answer to a card's 🎯 Limit question
   const asked = limitAsk[msg.reply_to_message?.message_id];
   if (asked && !text.startsWith('/')) {
@@ -1503,6 +1591,12 @@ async function onMessage(msg) {
     state.copy[w] = { name, hype: h, at: Date.now() }; save();
     return say(`👥 Copying <b>${esc(name)}</b> <code>${w}</code>: ${h} HYPE on the first buy of each coin they make from now on${cfg().copysells ? ', and their sells mirrored by the same share' : ''}. The sell check and your max still apply; at most ${cfg().copymax} copy buys a day. This list stays on your VPS.`, [[{ text: '✖ Stop', callback_data: `y:${w.slice(2)}` }]]);
   }
+  if (cmd === '/send') {
+    const t = coinArg(args[0]), rest = args.slice(1);
+    const to = addrIn(rest.join(' ')), a = rest.find((x) => !/0x[0-9a-fA-F]{40}/.test(x));
+    if (args[0] && !t) return say(`No coin matches <code>${esc(args[0])}</code>. Use its address, its symbol if you traded it, or its code.`);
+    return askSend(t, to, a);
+  }
   if (cmd === '/withdraw') {
     const to = addrIn(args[0]); const a = lc(args[1] || '');
     if (!to || !(a === 'all' || toWei(a))) return say('Usage: /withdraw 0xYOURWALLET 5  (or all)');
@@ -1572,7 +1666,15 @@ async function onCallback(q) {
   if (kind === 'y' && t) { delete state.copy[t]; save(); await ack('Stopped copying'); const v = copyView(); return edit(q.message, v.text, v.rows); }
   if (kind === 'r' && t) { await ack('Refreshing…'); delete state.routes[t]; return showCard(t, q.message); }
   if (kind === 'c' && t) { await ack('Loading…'); return showCard(t); }
-  if (kind === 'w' && pending[a]) { const p = pending[a]; delete pending[a]; await ack('Sending…'); return withdraw(p.to, p.a); }
+  if (kind === 'w' && pending[a] && !pending[a].kind) { const p = pending[a]; delete pending[a]; await ack('Sending…'); return withdraw(p.to, p.a); }
+  if (kind === 'v' && pending[a]?.kind === 'tok') { const p = pending[a]; delete pending[a]; await ack('Sending…'); return sendToken(p.t, p.to, BigInt(p.amt)); }
+  if (kind === 'g' && t) {
+    await ack('');
+    const sym = esc(await symOf(t));
+    const q2 = await tg('sendMessage', { chat_id: OWNER, parse_mode: 'HTML', text: `📤 Send <b>${sym}</b> to another wallet: reply to this message with the address and how much\n<code>0xabc… all</code> · <code>0xabc… 50%</code> · <code>0xabc… 12500</code>\nYou confirm with one more tap before anything moves.`, reply_markup: { force_reply: true, input_field_placeholder: '0x… 50%' } });
+    if (q2?.message_id) { sendAsk[q2.message_id] = t; const ks = Object.keys(sendAsk); if (ks.length > 50) delete sendAsk[ks[0]]; }
+    return;
+  }
   if (kind === 'x') { delete pending[a]; await ack('Cancelled'); return edit(q.message, 'Cancelled.'); }
   return ack('');
 }
@@ -1587,6 +1689,7 @@ async function main() {
     { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
     { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all' }, { command: 'journal', description: 'Last 15 trades' },
     { command: 'set', description: 'slip, max, sizes and more' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
+    { command: 'send', description: '/send <coin> <amount|50%|all> <address>: move tokens' },
     { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
     { command: 'help', description: 'Every command' },
   ] });
@@ -1598,6 +1701,8 @@ async function main() {
   await Promise.all([resyncNonce().catch(() => {}), gasPrice().catch(() => {})]);
   setInterval(() => fetchGas().catch(() => {}), 25000);
   // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
+  // ElysPump WHYPE pools were skipped by older versions: read the chain once more for them (known pools are kept)
+  if (!state.wrapIdx) { state.poolsBlock = 0; state.wrapIdx = 1; save(); }
   const first = !state.poolsBlock;
   if (first) console.log('indexing every v4 pool on Elysium…');
   await indexPools().catch((e) => console.error('index', e.message));
