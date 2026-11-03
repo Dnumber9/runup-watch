@@ -598,9 +598,10 @@ async function cardText(t) {
     `<code>${t}</code>`;
   return { text, rows: cardButtons(t) };
 }
-async function showCard(t, m) {
+async function showCard(t, m, note = '') {
   const c = await cardText(t);
-  return m ? edit(m, c.text, c.rows) : say(c.text, c.rows);
+  const text = note ? `${note}\n\n${c.text}` : c.text;
+  return m ? edit(m, text, c.rows) : say(text, c.rows);
 }
 
 // ── trades ─────────────────────────────────────────────────────────────────────────────────────────
@@ -1665,8 +1666,10 @@ async function onCallback(q) {
     // an old alert: show today's price first instead of buying blind
     const age = Math.floor(Date.now() / 1000) - (q.message?.date || 0);
     if (kind === 'b' && cfg().stale > 0 && age > cfg().stale * 60) {
-      await ack(`This is ${age >= 3600 ? (age / 3600).toFixed(1) + ' h' : Math.round(age / 60) + ' min'} old. Showing the current price.`);
-      return showCard(t);
+      const old = age >= 3600 ? (age / 3600).toFixed(1) + ' h' : Math.round(age / 60) + ' min';
+      await ack(`Not bought: alert is ${old} old`);
+      // said in the chat, not only in the toast, so a skipped tap never looks like a buy
+      return showCard(t, null, `⏸ <b>Not bought.</b> That alert is ${old} old (stale limit ${cfg().stale} min, /set stale). Price now below; tap a buy on this card to buy.`);
     }
     const h = Number(b) / 10;
     ack(`Buying ${h} HYPE…`); // the toast goes out alongside the trade, not before it
