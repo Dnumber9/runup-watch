@@ -557,5 +557,10 @@
   "address": "0xca40e925dc43a0ecde6c8b1a2709c170ec501060",
   "label": "BOXA #6 funder ca40",
   "group": "boxa6"
+ },
+ {
+  "address": "0x3fe20d0256660b3a739cea305f0c3e96fad1e006",
+  "label": "PZERO dev (POOL ZERO launchpad owner)",
+  "group": "pzerodev"
  }
 ]
