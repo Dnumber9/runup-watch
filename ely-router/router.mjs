@@ -102,6 +102,12 @@ const V3DEX = [
   { name: 'Kleos v3', factory: '0x809ff79945fffbf9b8df33bb3b62872ceb2efaf1', router: '0x03c291d55cc178b8fc3e20607125b8f6e9d12687', whype: '0x0269031ace34a7821e9d9980d087c35ce7c19eef' },
 ];
 const V3FEES = [10000, 3000, 500, 100];
+// bonding-curve launchpads that trade coins before they reach a pool: buy(token, amountIn, minOut, deadline) payable,
+// sell(token, amountIn, minOut, deadline) paying native HYPE, and two views that quote either side. buy() returns
+// nothing, so quotes come from the views.
+const CURVES = [
+  { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c' }, // VEINS
+];
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -332,21 +338,24 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3';
-const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' ? r.router : ROUTER);
-const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router)]);
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve';
+const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
+const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve)]);
+const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
+// curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'curve' ? enc(curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'curve' ? enc(curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
-const sellQuoteData = (r, t, amt) => (r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
+const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeLabel = (r) => (r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
+  if (r.kind === 'curve') return u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
   return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
 }
@@ -362,6 +371,7 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
+  if (r.kind === 'curve') return u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
   return u256(await ethCall(routerOf(r), data, { from: me }, ov, true));
@@ -436,7 +446,7 @@ async function findRoute(t, fresh = false) {
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   let cands = (state.pools[t] || []).slice(-8).map(routeOf);
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
-  cands = cands.concat(await v3Pools(t));
+  cands = cands.concat(await v3Pools(t), await curvePools(t));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
   const good = (await Promise.all(cands.map(quote))).filter(Boolean).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
   let route = good[0]?.r || null;
@@ -456,6 +466,14 @@ async function v3Pools(t) {
       if (pool !== ZERO) out.push({ kind: 'v3', name: x.name, router: x.router, whype: x.whype, fee, pool });
     } catch {}
   })));
+  return out;
+}
+// bonding curves still trading the coin: their buy quote answers above zero
+async function curvePools(t) {
+  const out = [];
+  await Promise.all(CURVES.map(async (x) => {
+    try { if (u256(await ethCall(x.curve, enc(x.qBuy, t, 10n ** 16n))) > 0n) out.push({ kind: 'curve', name: x.name, router: x.curve }); } catch {}
+  }));
   return out;
 }
 // a pool on a PoolManager we have never seen: find its Initialize event (recent blocks first)
@@ -573,7 +591,7 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
-  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, and KyberSwap does not know it.` };
+  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
   const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t, me, true), sellCheck(r, t, 10n ** 17n), devInfo]);
