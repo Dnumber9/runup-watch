@@ -4,9 +4,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/Dnumber9/runup-watch/main/ely-router/setup.sh -o setup.sh && bash setup.sh
 #
 # Run the same command again later to update the bot. Your .env (bot token, burner key) is kept.
+#
+# A second, separate bot on the same machine (someone else's bot token, Telegram id and burner wallet):
+#   ELY_DIR=$HOME/ely-router-sam ELY_NAME=ely-router-sam bash setup.sh
+# Each copy keeps its own .env and state.json in its own folder; use the same two variables when updating it.
 set -euo pipefail
 
-DIR="$HOME/ely-router"
+DIR="${ELY_DIR:-$HOME/ely-router}"
+NAME="${ELY_NAME:-ely-router}"
 RAW="https://raw.githubusercontent.com/Dnumber9/runup-watch/main/ely-router"
 
 echo "== Node.js"
@@ -43,9 +48,9 @@ node router.mjs --new-wallet
 
 echo "== Keep it running"
 if ! command -v pm2 >/dev/null 2>&1; then sudo npm install -g pm2 --no-fund --no-audit --loglevel=error; fi
-if pm2 describe ely-router >/dev/null 2>&1; then pm2 restart ely-router --update-env; else pm2 start router.mjs --name ely-router --time; fi
+if pm2 describe "$NAME" >/dev/null 2>&1; then pm2 restart "$NAME" --update-env; else pm2 start router.mjs --name "$NAME" --time; fi
 pm2 save
 sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$USER" --hp "$HOME" >/dev/null
 echo
 echo "Done. Send HYPE on Elysium to the wallet address above, then open your trade bot in Telegram and send /start."
-echo "Logs: pm2 logs ely-router    Restart: pm2 restart ely-router"
+echo "Logs: pm2 logs $NAME    Restart: pm2 restart $NAME"
