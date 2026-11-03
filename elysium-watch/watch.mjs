@@ -92,6 +92,7 @@ const T_INIT_V4 = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838
 const STATE = new URL('./state.json', import.meta.url);
 const WALLETS = new URL('./wallets.json', import.meta.url);
 const MUTED = new URL('./muted.json', import.meta.url); // wallets silenced for good (bundlers); their auto-found alts go quiet with them
+const MUTED_COINS = new URL('./muted_coins.json', import.meta.url); // coins never alerted: contract addresses, or symbols (every coin with that ticker)
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 
@@ -431,7 +432,7 @@ async function main() {
   const logs = await getLogs({}, from, head);
   const px = await hypeUsd(state);
   const toUsd = (h) => (px ? h * px : null);
-  const msgs = [];
+  let msgs = [];
   // alert tally for the log: counts by kind and by where the wallet came from (no addresses or names, the log is public)
   const repoSet = new Set(okW.map((w) => lc(w.address)));
   const srcOf = (w) => (state.manual[w] ? 'manual' : repoSet.has(w) ? 'repo' : !state.auto[w] ? 'other' : state.auto[w].from === 'bridge' ? 'bridger' : state.auto[w].from === 'cielo' ? 'cielo' : 'alt');
@@ -915,6 +916,10 @@ async function main() {
   state.block = head;
   state.runs++;
   fs.writeFileSync(STATE, JSON.stringify(state));
+  const cm = coinMutes(state);
+  const before = msgs.length;
+  msgs = dropMutedCoins(msgs, cm);
+  if (before > msgs.length) bump('muted coin', before - msgs.length);
   for (const m of msgs) await tg(m);
   const tallied = Object.entries(tally).filter(([k]) => /^(wallet|new)\//.test(k)).reduce((s, [, v]) => s + v, 0);
   if (msgs.length > tallied) bump('other', msgs.length - tallied);
@@ -1060,6 +1065,55 @@ async function stockium(state, W, G, msgs, px) {
   for (const [c, rec] of Object.entries(H.curves)) if ((rec.born || H.started) < now() - 3 * 86400 && !touched.has(c)) delete H.curves[c];
 }
 
+// ── muted coins: never alerted, from muted_coins.json (repo) and /mutecoin (Telegram) ──────────────
+// A key is a contract address (that coin only) or a symbol (every coin with that ticker, e.g. all the BLOBs).
+// /unmutecoin also overrides a key listed in the repo file.
+function coinMutes(state) {
+  state.mutedCoins ||= {};
+  state.unmutedCoins ||= {};
+  let repo = [];
+  try { repo = JSON.parse(fs.readFileSync(MUTED_COINS, 'utf8')); } catch {}
+  const keys = new Set([...repo.map((x) => coinKey(x?.coin || x)), ...Object.keys(state.mutedCoins)].filter(Boolean));
+  for (const k of Object.keys(state.unmutedCoins)) keys.delete(k);
+  const addrs = new Set(), syms = new Set();
+  for (const k of keys) (/^0x[0-9a-f]{40}$/.test(k) ? addrs : syms).add(k);
+  return { addrs, syms, repo: new Set(repo.map((x) => coinKey(x?.coin || x)).filter(Boolean)) };
+}
+// address → lowercase; symbol → upper case without a leading $
+function coinKey(x) {
+  const s = String(x || '').trim();
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) return s.toLowerCase();
+  const sym = s.replace(/^\$/, '').toUpperCase();
+  return sym && sym.length <= 20 && !/\s/.test(sym) ? sym : null;
+}
+// Drops alerts about muted coins. A wallet alert (👛) loses only the lines about the muted coin and goes out if
+// anything else is left; every other alert is about one coin, so it goes entirely.
+function dropMutedCoins(msgs, cm) {
+  if (!cm.addrs.size && !cm.syms.size) return msgs;
+  const symTags = [...cm.syms].map((s) => `<b>${esc(s).toLowerCase()}</b>`);
+  const hit = (s) => {
+    const l = String(s || '').toLowerCase();
+    for (const a of cm.addrs) if (l.includes(a) || l.includes(a.slice(2))) return true;
+    return symTags.some((t) => l.includes(t));
+  };
+  const out = [];
+  for (const m of msgs) {
+    const text = typeof m === 'string' ? m : m.text || '';
+    const btnHit = typeof m === 'object' && m.buttons ? hit(JSON.stringify(m.buttons)) : false;
+    if (text.startsWith('👛')) {
+      const [head, ...lines] = text.split('\n');
+      const keep = lines.filter((x) => !hit(x));
+      if (!keep.length || keep.every((x) => /^…and \d+ more$/.test(x))) continue;
+      const t2 = [head, ...keep].join('\n');
+      out.push(typeof m === 'string' ? t2 : btnHit ? t2 : { ...m, text: t2 });
+      continue;
+    }
+    if (hit(text) || btnHit) continue;
+    out.push(m);
+  }
+  return out;
+}
+
 // ── Telegram commands on the separate command bot (WATCH_BOT_TOKEN), checked once per scan ─────────
 // /add <address> [label] [group]   /remove <address>   /list   /export   /help
 // Only your own chat is obeyed (TELEGRAM_CHAT_ID). If that id is a group, the first person to message
@@ -1129,6 +1183,27 @@ function runCommand(state, W, text) {
     return (gone.length ? `🗑 Stopped tracking ${gone.length}:\n${gone.slice(0, 60).join('\n')}${gone.length > 60 ? `\n…and ${gone.length - 60} more` : ''}` : '') +
       (missing.length ? `${gone.length ? '\n\n' : ''}Not tracked: ${missing.length}` : '');
   }
+  if (cmd === '/mutecoin' || cmd === '/unmutecoin') {
+    // one or many: /mutecoin BLOB 0xabc… $FOO
+    const keys = [...new Set(rest.map(coinKey).filter(Boolean))];
+    if (!keys.length) return `Usage: ${cmd} 0x… or SYMBOL (several in one message is fine)\nA symbol mutes every coin with that ticker; an address mutes that coin only.`;
+    state.mutedCoins ||= {};
+    state.unmutedCoins ||= {};
+    const name = (k) => (/^0x/.test(k) ? `${state.meta?.[k]?.s ? `<b>${esc(state.meta[k].s)}</b> ` : ''}<code>${k}</code>` : `<b>${esc(k)}</b> (every coin with this ticker)`);
+    if (cmd === '/mutecoin') {
+      for (const k of keys) { state.mutedCoins[k] = now(); delete state.unmutedCoins[k]; }
+      return `🔇 No more alerts for:\n${keys.map(name).join('\n')}\n\nUndo with /unmutecoin. /mutedcoins lists them.`;
+    }
+    const repo = coinMutes(state).repo;
+    for (const k of keys) { delete state.mutedCoins[k]; if (repo.has(k)) state.unmutedCoins[k] = now(); }
+    return `🔔 Alerts back on for:\n${keys.map(name).join('\n')}`;
+  }
+  if (cmd === '/mutedcoins') {
+    const cm = coinMutes(state);
+    const all = [...cm.syms].map((k) => `• <b>${esc(k)}</b> (ticker)${cm.repo.has(k) ? ' · repo list' : ''}`)
+      .concat([...cm.addrs].map((k) => `• ${state.meta?.[k]?.s ? `<b>${esc(state.meta[k].s)}</b> ` : ''}<code>${k}</code>${cm.repo.has(k) ? ' · repo list' : ''}`));
+    return all.length ? `🔇 Muted coins (${all.length})\n${all.join('\n')}\n\n/unmutecoin to bring one back.` : 'No muted coins. /mutecoin SYMBOL or /mutecoin 0x… to add one.';
+  }
   if (cmd === '/list') {
     const by = {};
     for (const [a, x] of Object.entries(state.manual)) (by[x.group || 'no group'] ||= []).push(`• ${esc(x.label)} <code>${a}</code>`);
@@ -1140,7 +1215,7 @@ function runCommand(state, W, text) {
     const rows = Object.entries(state.manual).map(([a, x]) => JSON.stringify({ address: a, label: x.label, ...(x.group ? { group: x.group } : {}) }));
     return rows.length ? `<code>${esc(rows.join(',\n'))}</code>` : 'Nothing added from Telegram yet.';
   }
-  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/export  (backup in wallets.json format)';
+  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/export  (backup in wallets.json format)\n/mutecoin SYMBOL or 0x…  (no more alerts for that coin)\n/unmutecoin SYMBOL or 0x…\n/mutedcoins';
 }
 
 // Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
