@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { gate, gateDigest, gatePms } from './gate.mjs';
+import { zeroWatch } from './zero.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
 const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
@@ -826,6 +827,9 @@ async function main() {
   try {
     await gate({ state, logs, blocks, from, head, rpc, getLogs, hrpc, msgs, known: new Set(Object.keys(LAUNCHPADS)), buttons: (t) => buyButtons('e', t) });
   } catch (e) { console.log('gate failed:', e.message); }
+
+  // 4e. LayerZero's Zero being wired ahead of its Nov 30 launch (zero.mjs keeps its own timers)
+  try { await zeroWatch({ state, msgs }); } catch (e) { console.log('zero watch failed:', e.message); }
 
   // 5. the official mainnet RPC opening up (one ping, ever)
   if (!state.official && now() - (state.officialCheckedAt || 0) > 600) {
