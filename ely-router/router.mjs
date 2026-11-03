@@ -109,6 +109,12 @@ const CURVES = [
   { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c' }, // VEINS
 ];
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump'], ['0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', 'Uniswap']]);
+// launchpads that sit on someone else's pool manager, named by their hook
+const HOOK_NAMES = { '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'Flaunch' }; // Flaunch fork on the official Uniswap v4
+// pools added by hand: always in the pool index, even when the live index is behind
+const PINNED = [
+  { t: '0x0f79931689af199e7cf868ed1107bba2c83c68f7', pm: '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', fee: 0, ts: 60, hook: '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc', b: 279485, id: '0x7b182abb748bae25e2c73abd8b4cf3157d8d35a47e4b36d1ee5565ade94c3c27' }, // VOLTA
+];
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -125,6 +131,10 @@ state.pos ||= {};      // token → { sym, hypeIn, hypeOut, tokIn, tokOut, t }
 state.routes ||= {};   // token → route
 state.pools ||= {};    // token → every native-HYPE v4 pool it has [{ pm, fee, ts, hook, b, id }]
 state.poolsBlock ||= 0; // last block the pool index has read
+for (const { t, ...p } of PINNED) {
+  const l = (state.pools[t] ||= []);
+  if (!l.some((y) => y.id === p.id)) { l.push(p); delete state.routes?.[t]; }
+}
 state.slots ||= {};    // token → allowance mapping base slot (for sell quotes before approving)
 state.set ||= {};
 state.orders ||= {};   // token → [{ id, k: tp|sl|trail|lbuy, x, drop, pct, base, peak, hype, mc, dir, auto, at, exp }]
@@ -352,7 +362,7 @@ const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; ret
 const routeLabel = (r) => (r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
-  : { kind: 'v4', name: pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
+  : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
   if (r.kind === 'curve') return u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
@@ -453,7 +463,8 @@ async function findRoute(t, fresh = false) {
   if (!route) {
     try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
   }
-  if (!route && !state.poolsBlock) route = await scanV4(t, async (r) => (await quote(r))?.r || null); // index not built yet
+  // the index is not built yet, or is behind: look for the coin's pool on chain directly
+  if (!route) route = await scanV4(t, async (r) => (await quote(r))?.r || null);
   if (route) { state.routes[t] = route; save(); }
   return route;
 }
