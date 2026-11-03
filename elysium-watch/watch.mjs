@@ -74,6 +74,7 @@ const T_INIT_V4 = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838
 
 const STATE = new URL('./state.json', import.meta.url);
 const WALLETS = new URL('./wallets.json', import.meta.url);
+const MUTED = new URL('./muted.json', import.meta.url); // wallets silenced for good (bundlers); their auto-found alts go quiet with them
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 
@@ -357,6 +358,12 @@ async function main() {
   // wallets added or removed from Telegram (/add, /remove) through the command bot
   state.manual ||= {};
   state.muted ||= {};
+  try {
+    for (const x of JSON.parse(fs.readFileSync(MUTED, 'utf8'))) {
+      const a = lc(x?.address || x);
+      if (/^0x[0-9a-f]{40}$/.test(a) && !state.manual[a]) state.muted[a] ||= now();
+    }
+  } catch {}
   try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
   const alertChat = state.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
   if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
@@ -364,6 +371,11 @@ async function main() {
   for (const [a, x] of Object.entries(state.manual)) {
     W.set(a, x.label);
     if (x.group) G.set(a, x.group); else G.delete(a);
+  }
+  // a muted wallet takes the alts it funded with it (alt of alt too), unless one was added back with /add
+  for (let more = true; more;) {
+    more = false;
+    for (const [a, x] of Object.entries(state.auto)) if (!state.muted[a] && !state.manual[a] && state.muted[x.from]) { state.muted[a] = now(); more = true; }
   }
   for (const a of Object.keys(state.muted)) { W.delete(a); G.delete(a); }
 
@@ -764,15 +776,24 @@ async function main() {
   // 4c. Stockium curves on HyperEVM: tracked wallets trading them, tracked devs launching, early traction
   try { await stockium(state, W, G, msgs, px); } catch (e) { console.log('stockium scan failed:', e.message); }
 
-  // 4b. group buys: 2+ wallets of one group (or 3+ tracked wallets of any group) into the same coin within the window
+  // 4b. group buys: 2+ wallets of one group (or 3+ tracked wallets of any group) into the same coin within the window.
+  // One owner, one count: a wallet and the alts it funded are one buyer, so a bundler's 15 alts are 1, not 15.
+  const rootOf = (w) => {
+    let r = w;
+    for (let i = 0; i < 8; i++) { const f = state.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = f; }
+    return r;
+  };
   for (const [k, list] of Object.entries(state.gbuys)) {
-    const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60);
+    const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60 && !state.muted[x.w]);
     if (!recent.length) { delete state.gbuys[k]; continue; }
     state.gbuys[k] = recent.slice(-50);
     const [g, t] = k.split('|');
     const byW = {};
     for (const x of recent) byW[x.w] = (byW[x.w] || 0) + x.h;
-    const n = Object.keys(byW).length;
+    const fam = {};
+    for (const [w, h] of Object.entries(byW)) { const r = rootOf(w); (fam[r] ||= { ws: [], h: 0 }); fam[r].ws.push(w); fam[r].h += h; }
+    const n = Object.keys(fam).length;      // distinct owners
+    const nW = Object.keys(byW).length;     // wallets
     if (n < (g === '*' ? ANY_MIN_WALLETS : GROUP_MIN_WALLETS)) continue;
     const key = 'g:' + k;
     const prevN = state.alerted[key]?.n || 0;
@@ -787,9 +808,15 @@ async function main() {
     const rec = onCurve ? null : state.tok[t];
     const mcH = onCurve ? cv?.mc : rec?.price && meta.supply ? rec.price * meta.supply : null;
     msgs.push(
-      `🎯 <b>${g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
+      `🎯 <b>${g === '*' ? `${n} tracked ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}` : `${esc(g)} group, ${n} ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
       `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
-      Object.entries(byW).map(([w, h]) => `• ${walletLink(w, esc(W.get(w) || short(w)))}${h > 0 ? ` ${hype(h)}` : ''}`).join('\n') +
+      Object.entries(fam).map(([r, f]) => {
+        const name = esc(W.get(r) || state.auto[r]?.label || short(r));
+        const amt = f.h > 0 ? ` ${hype(f.h)}` : '';
+        if (f.ws.length === 1) return `• ${walletLink(f.ws[0], esc(W.get(f.ws[0]) || short(f.ws[0])))}${amt}`;
+        const alts = f.ws.filter((w) => w !== r).length;
+        return f.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
+      }).join('\n') +
       (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${coinLink(state, t)}`)
     );
     msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
