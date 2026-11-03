@@ -135,7 +135,7 @@ state.dev ||= {};      // token → { w: creator, peak: tokens }
 const cfg = () => ({
   slip: BigInt(state.set.slip ?? process.env.SLIPPAGE_BPS ?? 1500),
   max: Number(state.set.max ?? process.env.MAX_BUY_HYPE ?? 5),
-  sizes: (state.set.sizes ?? process.env.BUY_SIZES ?? '0.5,1,2,5').split(',').map((s) => s.trim()).filter(Boolean),
+  sizes: (state.set.sizes ?? process.env.BUY_SIZES ?? '1,2,3,5').split(',').map((s) => s.trim()).filter(Boolean),
   tax: Number(state.set.tax ?? process.env.MAX_TAX_PCT ?? 25),     // refuse when buying and selling straight back loses more than this %
   check: (state.set.check ?? process.env.SELL_CHECK ?? 'on') !== 'off',
   stale: Number(state.set.stale ?? process.env.STALE_MIN ?? 5),   // ⚡ taps on alerts older than this many minutes show the card first
@@ -1356,7 +1356,7 @@ const HELP =
   `/limit sell &lt;coin&gt; 50 100k · /limit sell &lt;coin&gt; 100 below 3k · /limit sell &lt;coin&gt; 50 2x\n` +
   `/orders · see and cancel\n\n` +
   `/bal · /pnl · /stats 7d · /journal · /export · /report · /wallet\n` +
-  `/set slip 15 · /set max 5 · /set sizes 0.5,1,2,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
+  `/set slip 15 · /set max 5 · /set sizes 1,2,3,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on`;
 
@@ -1563,7 +1563,7 @@ async function onMessage(msg) {
     else if (k === 'preapprove' && /^(on|off)$/.test(lv)) state.set.preapprove = lv;
     else if (k === 'copymax' && Number(v) >= 0) state.set.copymax = Number(v);
     else if (k === 'pin' && /^(on|off)$/.test(lv)) { state.set.pin = lv; if (lv === 'off' && state.pin?.id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: state.pin.id }); state.pin = {}; } }
-    else return say('Usage: /set slip 15 · max 5 · sizes 0.5,1,2,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · preapprove on|off · copymax 10 · pin on|off');
+    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · preapprove on|off · copymax 10 · pin on|off');
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
