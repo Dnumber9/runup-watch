@@ -65,7 +65,23 @@ const LAUNCHPADS = {
 };
 const BOXA_PM = '0x06c63714fbf1f5753017123e2fcfdede4540b2c4';
 const LP_NAMES = Object.values(LAUNCHPADS).map((x) => x.name).join(', ');
-const WHYPE = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81']);
+const WHYPE = new Set([
+  '0x0269031ace34a7821e9d9980d087c35ce7c19eef', // Kleos v3
+  '0xba876237b0f021a6c6d852d6c26e107997cc5e81', // Uniswap, BOXA v2, StockiumSwap
+  '0x5ab377328592c03b5e7adb09254adb043f91fa11', // ElysPump v4 wrapped HYPE (1:1)
+  '0x9f041fad8323d7c5bf8f928aade05b610df34b64', // bonding curve 0xfee8
+]);
+const isHype = (a) => a === ZERO || WHYPE.has(a);
+// v4 pool → { t: coin, q: quote token, inv: 1 when the quote is currency1 }. Native HYPE and WHYPE pools are
+// HYPE-quoted. A pool between two tokens (Kleos coins paired with BLOB) is quoted in the side that already has a
+// HYPE price, so its trades are valued through that token instead of being read as HYPE.
+function poolEntry(state, pm, c0, c1, b) {
+  let q = c0, t = c1;
+  if (isHype(c0)) { q = c0; t = c1; }
+  else if (isHype(c1)) { q = c1; t = c0; }
+  else if (!state.tok[c0]?.price && state.tok[c1]?.price) { q = c1; t = c0; }
+  return { t, q, inv: q === c1 ? 1 : 0, lp: pm, b };
+}
 const INFRA = new Set([ZERO, DEAD, ...WHYPE, ...Object.keys(LAUNCHPADS), '0x000000000022d473030f116ddee9f6b43ac78ba3']);
 
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -181,12 +197,12 @@ const BUY_PAGE = process.env.BUY_PAGE || 'https://dnumber9.github.io/runup-watch
 const TRADE_TOKEN = process.env.TRADE_BOT_TOKEN;
 const buyButtons = (chain, addr) => {
   if (chain !== 'e') return [{ text: 'Open on Stockium', url: `https://stockium.fun/token/${addr}` }];
-  if (TRADE_TOKEN) return [...BUY_SIZES.map((h) => ({ text: `⚡ ${h}`, callback_data: `b:${addr.slice(2)}:${Math.round(Number(h) * 10)}` })), { text: '🔎', callback_data: `c:${addr.slice(2)}` }];
+  if (TRADE_TOKEN) return [...BUY_SIZES.map((h) => ({ text: `⚡ ${h}`, callback_data: `b:${addr.slice(2)}:${Math.round(Number(h) * 10)}` })), { text: '⚡ X', callback_data: `k:${addr.slice(2)}` }, { text: '🔎', callback_data: `c:${addr.slice(2)}` }];
   return BUY_SIZES.map((h) => ({ text: `⚡ Buy ${h} HYPE`, url: `${BUY_PAGE}?t=${addr}&a=${h}` }));
 };
 // the same buttons as links, for routes other than the trade bot (its callbacks only work there)
 const asLinks = (buttons) => buttons.map((b) => {
-  const m = String(b.callback_data || '').match(/^([bc]):([0-9a-f]{40})(?::(\d+))?$/);
+  const m = String(b.callback_data || '').match(/^([bck]):([0-9a-f]{40})(?::(\d+))?$/);
   if (!m) return b;
   return { text: b.text, url: `${BUY_PAGE}?t=0x${m[2]}${m[3] ? `&a=${Number(m[3]) / 10}` : ''}` };
 });
@@ -381,16 +397,19 @@ async function main() {
   for (const a of Object.keys(state.muted)) { W.delete(a); G.delete(a); }
 
   let head = parseInt(await rpc('eth_blockNumber', []), 16);
-  // pool id → coin map: on first run read every pool ever created on the known launchpads
-  if (!Object.keys(state.pools).length) {
+  // pool id → coin map: on first run read every pool ever created on the known launchpads.
+  // v2 of the map also records each pool's quote side, so it is rebuilt once from the start.
+  if (state.poolsV !== 2 || !Object.keys(state.pools).length) {
+    const pools = {};
     for (const pm of Object.keys(LAUNCHPADS)) {
       const logs = await getLogs({ address: pm, topics: [T_INIT_V4] }, 0, head);
       for (const l of logs) {
-        const c0 = lc(topicAddr(l.topics[2]));
-        const c1 = lc(topicAddr(l.topics[3]));
-        state.pools[lc(l.topics[1])] = { t: c0 === ZERO ? c1 : c0, lp: pm, b: parseInt(l.blockNumber, 16) };
+        pools[lc(l.topics[1])] = poolEntry(state, pm, lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
       }
     }
+    // pools from unknown PoolManagers seen live are kept (they are re-read from their own Initialize events)
+    for (const [id, p] of Object.entries(state.pools)) if (!pools[id] && !LAUNCHPADS[p.lp]) pools[id] = p;
+    state.pools = pools; state.poolsV = 2; // only once the whole index is in (a failed tick retries)
     console.log('pools indexed', Object.keys(state.pools).length);
   }
 
@@ -424,16 +443,14 @@ async function main() {
   for (const l of logs) {
     if (l.topics[0] !== T_INIT_V4) continue;
     const pm = lc(l.address);
-    const c0 = lc(topicAddr(l.topics[2]));
-    const c1 = lc(topicAddr(l.topics[3]));
-    const coin = c0 === ZERO || WHYPE.has(c0) ? c1 : c0;
+    const entry = poolEntry(state, pm, lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
+    const coin = entry.t;
+    state.pools[lc(l.topics[1])] = entry;
     if (!LAUNCHPADS[pm]) {
       const u = (state.unknownPm[pm] ||= { n: 0, first: now(), alerted: 0 });
       u.n++;
-      state.pools[lc(l.topics[1])] = { t: coin, lp: pm, b: parseInt(l.blockNumber, 16) };
       continue;
     }
-    state.pools[lc(l.topics[1])] = { t: coin, lp: pm, b: parseInt(l.blockNumber, 16) };
     if (!state.tok[coin]) {
       const b = parseInt(l.blockNumber, 16);
       const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
@@ -467,16 +484,20 @@ async function main() {
       const p = state.pools[lc(l.topics[1])];
       if (!p) continue;
       const w = words(l.data);
-      const a0 = Number(int256(w[0])) / 1e18; // HYPE delta for the swapper: negative = paid HYPE = buy
+      const qd = Number(int256(p.inv ? w[1] : w[0])) / 1e18; // quote delta for the swapper: negative = paid = buy
+      // a pool quoted in another token (a Kleos coin paired with BLOB) is valued through that token's HYPE price;
+      // only HYPE-quoted swaps count as HYPE paid in the tx (a HYPE → BLOB → coin route then counts its HYPE once)
+      const hypeQ = isHype(p.q ?? ZERO);
+      const qPx = hypeQ ? 1 : state.tok[p.q]?.price || 0;
       const sqrt = BigInt('0x' + w[2]);
       const r = R(p.t);
       r.lp = p.lp;
-      const h = Math.abs(a0);
+      const h = Math.abs(qd) * qPx;
       r.vol += h; r.swaps++;
-      if (a0 < 0) { r.buyVol += h; r.buys++; txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h; }
-      if (sqrt > 0n) {
-        const ratio = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18; // coin per HYPE
-        if (ratio > 0) r.price = 1 / ratio;                                // HYPE per coin
+      if (qd < 0) { r.buyVol += h; r.buys++; if (hypeQ) txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h; }
+      if (sqrt > 0n && qPx > 0) {
+        const ratio = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18; // currency1 per currency0
+        if (ratio > 0) r.price = (p.inv ? ratio : 1 / ratio) * qPx;        // HYPE per coin
       }
     } else if (l.topics[0] === T_SWAP_V3) {
       const pool = lc(l.address);
