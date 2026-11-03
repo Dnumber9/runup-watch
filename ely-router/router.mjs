@@ -108,7 +108,7 @@ const V3FEES = [10000, 3000, 500, 100];
 const CURVES = [
   { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c' }, // VEINS
 ];
-const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
+const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump'], ['0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', 'Uniswap']]);
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -385,7 +385,7 @@ const kyRoute = (tin, tout, amt) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tou
 const kyBuild = (sum, slip) => kyber('/route/build', { routeSummary: sum, sender: me, recipient: me, slippageTolerance: Number(slip), deadline: deadline() });
 
 // ── live pool index: every v4 Initialize on Elysium, from any pool manager ─────────────────────────────
-const pmName = (pm) => PM_NAMES[pm] || 'v4 ' + short(pm);
+const pmName = (pm) => PM_NAMES[pm] || short(pm);
 const knownPms = new Set();   // every pool manager that has ever had a pool (a new one = a new launchpad)
 const fresh = [];             // pools seen live (after the first full index), for snipes
 let live = false;
@@ -575,7 +575,7 @@ const edit = (m, text, rows) => (m ? tg('editMessageText', { chat_id: OWNER, mes
 const cardButtons = (t) => {
   const h = t.slice(2);
   return [
-    cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })),
+    [...cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })), { text: '⚡ X', callback_data: `k:${h}` }],
     [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${h}:${p}` })).concat([{ text: '🔄', callback_data: `r:${h}` }]),
     [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🎯 Limit', callback_data: `m:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }, { text: '📤 Send', callback_data: `g:${h}` }],
   ];
@@ -1347,7 +1347,7 @@ async function sendToken(t, to, amt) {
 
 const HELP =
   `<b>ely-router</b>\n` +
-  `Paste a token address (or a link with one) for a card: ⚡ buy, sell 25/50/100%, 💰 initials, 🎯 limit, 📤 send.\n` +
+  `Paste a token address (or a link with one) for a card: ⚡ buy (⚡ X asks for any amount), sell 25/50/100%, 💰 initials, 🎯 limit, 📤 send.\n` +
   `/pos · open bags with one-tap sells · /pin · re-pin the open trades panel at the bottom (/set pin off to stop)\n` +
   `/buy &lt;token&gt; &lt;HYPE&gt; · /sell &lt;coin&gt; &lt;percent&gt; · /initials &lt;coin&gt;\n` +
   `&lt;coin&gt; = address, the symbol of a coin you hold, or its 8-character code\n\n` +
@@ -1411,6 +1411,7 @@ const LIMIT_HELP = 'Limit orders, triggered by market cap in $ (checked every 2 
   '/limit sell &lt;coin&gt; 50 2x · sell 50% at 2× your entry\n' +
   'Add 12h or 7d at the end for an expiry (buys default to 3 days, sells to none). Or tap 🎯 Limit on a card and reply.';
 const limitAsk = {}; // message id of a card's 🎯 Limit question → token
+const buyAsk = {};   // message id of a ⚡ X question (custom amount) → { t, src }
 // "1 20k", "1 below 20k", "50 at 100k 12h", "50% 2x" → { side, a, dir, mc | x, exp }
 function parseLimit(side, ws) {
   ws = ws.filter(Boolean);
@@ -1518,6 +1519,14 @@ async function onMessage(msg) {
   const [cmd0, ...args] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
   const reply = msg.message_id;
+  // an answer to a ⚡ X question: how much HYPE to buy
+  const xFor = buyAsk[msg.reply_to_message?.message_id];
+  if (xFor && !text.startsWith('/')) {
+    const h = Number(text.replace(/hype/i, '').replace(',', '.').trim());
+    if (!(h > 0)) return say('Reply with just the HYPE amount, for example <code>2.5</code>.', null, reply);
+    delete buyAsk[msg.reply_to_message.message_id]; // one answer, one buy
+    return buy(xFor.t, h, reply, false, xFor.src);
+  }
   // an answer to a card's 📤 Send question: address and amount, in any order
   const sendFor = sendAsk[msg.reply_to_message?.message_id];
   if (sendFor && !text.startsWith('/')) {
@@ -1553,7 +1562,7 @@ async function onMessage(msg) {
     const lv = lc(v || '');
     if (k === 'slip' && Number(v) > 0 && Number(v) <= 50) state.set.slip = Math.round(Number(v) * 100);
     else if (k === 'max' && Number(v) > 0) state.set.max = Number(v);
-    else if (k === 'sizes' && /^[\d.,]+$/.test(v || '')) state.set.sizes = v;
+    else if (k === 'sizes' && args.slice(1).join(',').split(/[\s,]+/).some((x) => Number(x) > 0)) state.set.sizes = args.slice(1).join(',').split(/[\s,]+/).filter((x) => Number(x) > 0).slice(0, 6).join(','); // "1,2,3,5" or "1 2 3 5"
     else if (k === 'tax' && Number(v) > 0 && Number(v) <= 100) state.set.tax = Number(v);
     else if (k === 'check' && /^(on|off)$/.test(lv)) state.set.check = lv;
     else if (k === 'stale' && Number(v) >= 0) state.set.stale = Number(v);
@@ -1695,6 +1704,16 @@ async function onCallback(q) {
     const h = Number(b) / 10;
     ack(`Buying ${h} HYPE…`); // the toast goes out alongside the trade, not before it
     return buy(t, h, reply, kind === 'f', kind === 'f' ? 'override' : srcOf(q.message?.text || ''));
+  }
+  if (kind === 'k' && t) {
+    // ⚡ X: ask for the amount; the reply buys (same sell check and max as the fixed buttons)
+    await ack('');
+    const sym = esc(await symOf(t));
+    const age = Math.floor(Date.now() / 1000) - (q.message?.date || 0);
+    const old = cfg().stale > 0 && age > cfg().stale * 60 ? `\nThat alert is ${age >= 3600 ? (age / 3600).toFixed(1) + ' h' : Math.round(age / 60) + ' min'} old; the price may have moved.` : '';
+    const q2 = await tg('sendMessage', { chat_id: OWNER, parse_mode: 'HTML', text: `⚡ How much HYPE of <b>${sym}</b>? Reply with the amount (max ${cfg().max}).${old}`, reply_markup: { force_reply: true, input_field_placeholder: '2.5' } });
+    if (q2?.message_id) { buyAsk[q2.message_id] = { t, src: srcOf(q.message?.text || '') }; const ks = Object.keys(buyAsk); if (ks.length > 50) delete buyAsk[ks[0]]; }
+    return;
   }
   if (kind === 's' && t) {
     const key = `${reply}:${q.data}`;
