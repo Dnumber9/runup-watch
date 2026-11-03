@@ -92,12 +92,14 @@ const V4 = [
 const WROUTER = '0x822c686fc480ae8204260fbd46c524a4a30cbdf8';
 const ELYSPUMP_PM = '0x5fb015a49f5b35073f9ce01c2adb287a75f89600';
 const WRAPPED = new Set(['0x5ab377328592c03b5e7adb09254adb043f91fa11']); // the WHYPE that router wraps into
-// Uniswap v3 forks paired with WHYPE (BOXA v2 launches, StockiumSwap graduates): their SwapRouter takes native HYPE
-// in and wraps it, and a sell is swap + unwrap in one multicall, so both stay one transaction
+// Uniswap v3 forks paired with WHYPE (BOXA v2 launches, StockiumSwap graduates, Kleos v3 launches): their SwapRouter
+// takes native HYPE in and wraps it, and a sell is swap + unwrap in one multicall, so both stay one transaction.
+// Each fork names its own WHYPE (the one its router's WETH9() returns).
 const V3WHYPE = '0xba876237b0f021a6c6d852d6c26e107997cc5e81';
 const V3DEX = [
-  { name: 'BOXA v2', factory: '0xd5a7c10820446c58868a204b8979b8cc9cb2a1a3', router: '0x03c820b17f17ea86449f6cf700788c97511566c4' },
-  { name: 'StockiumSwap', factory: '0x4f66184a9ffabb7f7071d590c2c48dedf41676f4', router: '0xf7d8d5f9b9125b3d29c5778df5e54c1bbe77f224' },
+  { name: 'BOXA v2', factory: '0xd5a7c10820446c58868a204b8979b8cc9cb2a1a3', router: '0x03c820b17f17ea86449f6cf700788c97511566c4', whype: V3WHYPE },
+  { name: 'StockiumSwap', factory: '0x4f66184a9ffabb7f7071d590c2c48dedf41676f4', router: '0xf7d8d5f9b9125b3d29c5778df5e54c1bbe77f224', whype: V3WHYPE },
+  { name: 'Kleos v3', factory: '0x809ff79945fffbf9b8df33bb3b62872ceb2efaf1', router: '0x03c291d55cc178b8fc3e20607125b8f6e9d12687', whype: '0x0269031ace34a7821e9d9980d087c35ce7c19eef' },
 ];
 const V3FEES = [10000, 3000, 500, 100];
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump']]);
@@ -327,15 +329,16 @@ const encBytesArray = (sel, items) => {
 };
 // v3 SwapRouter: exactInputSingle(tokenIn, tokenOut, fee, recipient, deadline, amountIn, minOut, priceLimit); a sell
 // swaps into WHYPE held by the router, then unwrapWETH9(minOut, recipient) pays native HYPE
-const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', V3WHYPE, t, r.fee, to, dl, wei, minOut, 0);
-const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, V3WHYPE, r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
+const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
+const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
+const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
 const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3';
 const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router)]);
 const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
 const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
-const sellQuoteData = (r, t, amt) => (r.kind === 'v3' ? enc('414bf389', t, V3WHYPE, r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
+const sellQuoteData = (r, t, amt) => (r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
 const routeLabel = (r) => (r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
@@ -449,8 +452,8 @@ async function v3Pools(t) {
   const out = [];
   await Promise.all(V3DEX.flatMap((x) => V3FEES.map(async (fee) => {
     try {
-      const pool = '0x' + strip(await ethCall(x.factory, enc('1698ee82', t, V3WHYPE, fee), {}, undefined, true)).slice(24);
-      if (pool !== ZERO) out.push({ kind: 'v3', name: x.name, router: x.router, fee, pool });
+      const pool = '0x' + strip(await ethCall(x.factory, enc('1698ee82', t, x.whype, fee), {}, undefined, true)).slice(24);
+      if (pool !== ZERO) out.push({ kind: 'v3', name: x.name, router: x.router, whype: x.whype, fee, pool });
     } catch {}
   })));
   return out;
