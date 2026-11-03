@@ -682,6 +682,16 @@ async function main() {
     const moves = {};
     const M = (w) => (moves[w] ||= []);
     const lastBuy = {}; // wallet → the coin it bought or launched last in this scan (gets the ⚡ buttons)
+    // contract calls sent by tracked wallets: HYPE paid into a router (v3/v2 forks, aggregators) with a token arriving
+    // in the same tx is a buy, and a token leaving through a router call is a sell; the HYPE payment itself is then
+    // not reported again as "sent"
+    const paidIn = {}, routerCall = {}, boughtTx = new Set();
+    for (const blk of blocks) for (const tx of blk.transactions || []) {
+      if (!tx.to || (tx.input || '0x') === '0x' || !W.has(lc(tx.from))) continue;
+      routerCall[tx.hash] = lc(tx.to);
+      const v = Number(BigInt(tx.value || '0x0')) / 1e18;
+      if (v > 0) paidIn[tx.hash] = v;
+    }
     // token transfers in/out (swaps show up here as tokens arriving from / leaving a pool)
     for (const l of logs) {
       if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
@@ -694,18 +704,21 @@ async function main() {
       const amt = Number(BigInt(l.data)) / 10 ** meta.d;
       const price = state.tok[t]?.price;
       const val = price ? amt * price : null;
-      const valTxt = val != null ? ` (~${px ? usd(val * px) : hype(val)})` : '';
+      const paidH = txBuy[l.transactionHash] || paidIn[l.transactionHash] || null;
+      const shown = val ?? (W.has(to) ? paidH : null);
+      const valTxt = shown != null ? ` (~${px ? usd(shown * px) : hype(shown)})` : '';
       // dust filter: skip moves known to be worth under DUST_USD (unpriced moves still show)
       const usdOf = (h) => (h == null ? null : px ? h * px : h * 50);
-      const dustIn = (usdOf(txBuy[l.transactionHash] || val) ?? Infinity) < DUST_USD;
+      const dustIn = (usdOf(paidH || val) ?? Infinity) < DUST_USD;
       const dustOut = (usdOf(val) ?? Infinity) < DUST_USD;
       if (W.has(to) && !dustIn) {
-        const kind = poolOut.has(f) || txBuy[l.transactionHash] ? 'bought' : f === ZERO ? 'minted' : 'received';
+        const kind = poolOut.has(f) || txBuy[l.transactionHash] || (paidIn[l.transactionHash] && f !== ZERO) ? 'bought' : f === ZERO ? 'minted' : 'received';
+        if (kind === 'bought') boughtTx.add(l.transactionHash);
         // plain token transfers (received, minted) are not pinged, only buys
         if (kind === 'bought') M(to).push(`bought ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
           lastBuy[to] = t;
-          const paid = txBuy[l.transactionHash] || val || 0;
+          const paid = paidH || val || 0;
           for (const g of [G.get(to), '*'].filter(Boolean)) {
             const k = g + '|' + t;
             (state.gbuys[k] ||= []).push({ w: to, t: now(), h: paid });
@@ -713,7 +726,9 @@ async function main() {
         }
       }
       if (W.has(f) && !dustOut) {
-        const kind = poolOut.has(to) ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
+        // a token leaving through a call to some other contract (a router), not to another tracked wallet, is a sell
+        const viaRouter = routerCall[l.transactionHash] && routerCall[l.transactionHash] !== t && !W.has(to) && to !== ZERO && to !== DEAD;
+        const kind = poolOut.has(to) || viaRouter ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
         // plain token transfers (sent, burned) are not pinged, only sells
         if (kind === 'sold') M(f).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
       }
@@ -729,7 +744,7 @@ async function main() {
         // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): one line for the split, then follow each recipient
         const batch = W.has(f) && val > 0 && (tx.input || '0x') !== '0x' ? batchSends(tx.input) : [];
         if (W.has(f) && batch.length >= 2) M(f).push(`<b>split ${hype(val)} across ${batch.length} wallets in one tx</b> (bundle funding pattern)${txLink(tx.hash)}`);
-        else if (W.has(f) && val >= WALLET_MIN_HYPE && to) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
+        else if (W.has(f) && val >= WALLET_MIN_HYPE && to && !boughtTx.has(tx.hash)) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
         for (const x of batch) {
           if (x.val >= FUND_MIN_HYPE && !W.has(x.to) && !INFRA.has(x.to)) funded.push({ f, to: x.to, val: x.val, hash: tx.hash, via: 'batch' });
