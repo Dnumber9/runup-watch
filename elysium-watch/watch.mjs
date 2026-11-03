@@ -176,7 +176,7 @@ async function getJSON(url, tries = 2) {
 // buy buttons on an alert. With the VPS trade bot (TRADE_BOT_TOKEN) alerts come from that bot and a ⚡ tap
 // buys right away from its burner wallet (callback b:<token>:<tenths of HYPE>, c:<token> opens its card).
 // Without it, or if that bot cannot reach you, they open the quick-buy page prefilled (you sign in Rabby).
-const BUY_SIZES = (process.env.BUY_SIZES || '1,3,5').split(',').map((s) => s.trim()).filter(Boolean);
+const BUY_SIZES = (process.env.BUY_SIZES || '1,2,3,5').split(',').map((s) => s.trim()).filter(Boolean);
 const BUY_PAGE = process.env.BUY_PAGE || 'https://dnumber9.github.io/runup-watch/buy/';
 const TRADE_TOKEN = process.env.TRADE_BOT_TOKEN;
 const buyButtons = (chain, addr) => {
