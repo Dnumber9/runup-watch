@@ -116,6 +116,12 @@ const PINNED = [
   { t: '0x0f79931689af199e7cf868ed1107bba2c83c68f7', pm: '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', fee: 0, ts: 60, hook: '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc', b: 279485, id: '0x7b182abb748bae25e2c73abd8b4cf3157d8d35a47e4b36d1ee5565ade94c3c27' }, // VOLTA
 ];
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
+// Ascend's launchpad runs a modified Uniswap v4 (its testnet build): Initialize(id, currency0, currency1) with data
+// (hooks, fee, extra, sqrtPrice, tick), a 6-field PoolKey, a wrapped quote token paid through Permit2 and its own
+// Universal Router. Its pools are indexed here so the bot knows the moment a coin lists on Ascend, but they cannot be
+// traded through ROUTER: that needs an Ascend route once its mainnet contracts are known.
+const T_INIT_ASCEND = '0x426cc62fe6a33a40ba2788c2c87a9c34ee4582b95bc9fa5a7bb7ae70b750b99c';
+const ASCEND_QUOTES = new Set(String(process.env.ASCEND_QUOTES || '').toLowerCase().split(',').filter(Boolean)); // its quote token(s) on mainnet, once known
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
@@ -360,7 +366,7 @@ const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell,
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
 const routeLabel = (r) => (r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
-const routeOf = (p) => (p.q
+const routeOf = (p) => (p.kind === 'ascend' ? { kind: 'ascend', name: 'Ascend', pm: p.pm, hook: p.hook, q: p.q } : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
@@ -404,6 +410,13 @@ let live = false;
 function parseInit(l) {
   const c0 = lc('0x' + l.topics[2].slice(26)), c1 = lc('0x' + l.topics[3].slice(26)), pm = lc(l.address), d = strip(l.data);
   let t, q = null;
+  if (l.topics[0] === T_INIT_ASCEND) {
+    // the quote is whichever side is a known Ascend quote; unknown yet, the side with the lower address is assumed
+    const qIs0 = ASCEND_QUOTES.size ? ASCEND_QUOTES.has(c0) : true;
+    if (ASCEND_QUOTES.size && !ASCEND_QUOTES.has(c0) && !ASCEND_QUOTES.has(c1)) return null;
+    t = qIs0 ? c1 : c0;
+    return { t, p: { pm, kind: 'ascend', fee: Number(BigInt('0x' + d.slice(0, 64 * 2).slice(64))), ts: 0, hook: '0x' + d.slice(24, 64), q: qIs0 ? c0 : c1, qFirst: qIs0, b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) } };
+  }
   if (c0 === ZERO) t = c1;
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c0)) { t = c1; q = c0; }
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c1)) { t = c0; q = c1; }
@@ -436,7 +449,7 @@ function indexPools() {
     // in order, a few at a time, so the index never skips a range that failed to load
     for (let i = 0; i < wins.length; i += 6) {
       const batch = wins.slice(i, i + 6);
-      const res = await Promise.all(batch.map(([a, b]) => rpc('eth_getLogs', [{ fromBlock: hex(a), toBlock: hex(b), topics: [T_INIT] }], 4).catch(() => null)));
+      const res = await Promise.all(batch.map(([a, b]) => rpc('eth_getLogs', [{ fromBlock: hex(a), toBlock: hex(b), topics: [[T_INIT, T_INIT_ASCEND]] }], 4).catch(() => null)));
       const ok = res.findIndex((r) => r === null) === -1 ? res : res.slice(0, res.findIndex((r) => r === null));
       for (const logs of ok) for (const l of logs) added += addPool(l);
       if (ok.length) state.poolsBlock = batch[ok.length - 1][1];
@@ -454,7 +467,7 @@ async function findRoute(t, fresh = false) {
   const probe = 10n ** 16n;
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
-  let cands = (state.pools[t] || []).slice(-8).map(routeOf);
+  let cands = (state.pools[t] || []).filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf);
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
   cands = cands.concat(await v3Pools(t), await curvePools(t));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
@@ -555,7 +568,7 @@ async function devOf(t) {
   if (d && d.w !== undefined) return d;
   const p = (state.pools[t] || [])[0];
   if (!p) return null;
-  const logs = await rpc('eth_getLogs', [{ fromBlock: hex(p.b), toBlock: hex(p.b), address: p.pm, topics: [T_INIT, p.id] }]);
+  const logs = await rpc('eth_getLogs', [{ fromBlock: hex(p.b), toBlock: hex(p.b), address: p.pm, topics: [p.kind === 'ascend' ? T_INIT_ASCEND : T_INIT, p.id] }]);
   const tx = logs[0] ? await rpc('eth_getTransactionByHash', [logs[0].transactionHash]) : null;
   state.dev[t] = { w: tx?.from ? lc(tx.from) : null, peak: 0 };
   save();
@@ -602,6 +615,7 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
+  if (!r && (state.pools[t] || []).some((p) => p.kind === 'ascend')) return { text: `<b>${esc(m.s || short(t))}</b> trades on <b>Ascend</b>, which this bot cannot route yet: Ascend runs its own modified v4 with a wrapped quote and its own router.\nBuy it on app.ascendlaunch.xyz for now.\n<code>${t}</code>` };
   if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
