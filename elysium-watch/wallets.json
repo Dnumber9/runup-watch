@@ -567,5 +567,145 @@
   "address": "0x8f8952ce273546d8db48586e20aa884adcb95945",
   "label": "sniper 8f89 (paid by PZERO dev)",
   "group": "pzerodev"
+ },
+ {
+  "address": "0x774b4990c4ecb618fcceabf5376ca6c0a7a99a3a",
+  "label": "EOS team 1.59% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x7cdb8572afc6454b7dab2b483a67eedfa00bbfff",
+  "label": "EOS team 1.74% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x75421ddf13bb02cae6628548d281760c6b27aba5",
+  "label": "EOS team 1.89% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xf6dc334868726eb945583f9aec19688de755d94c",
+  "label": "EOS team 1.72% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x6ffb2717c572350203e27a459795c790ddc7425e",
+  "label": "EOS team 1.57% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xadba39b0f8f59586d19f22055515d844e15a72c8",
+  "label": "EOS team 1.71% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x732338dca8340426ec2b2f2ac8dbbc0afb0c98f9",
+  "label": "EOS team 1.59% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xbae4f358907d3380fe55603f735e1ed25ec3deff",
+  "label": "EOS team 1.88% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x0de87f28d9528d0ad59c7b69b9ad35995d20ac43",
+  "label": "EOS team 1.72% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x08149b9428e262b6d9df926d01f3f352007edab6",
+  "label": "EOS team 1.63% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x690e0b6ea3b4507cdc0996b03f57cceaf913c254",
+  "label": "EOS team 1.93% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xb8faf332026521a4b6fb97b260b8d3036a46cf7f",
+  "label": "EOS team 1.75% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xb5df8838bdaaecb4424c17090978d803bcdbbe8f",
+  "label": "EOS team 1.70% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x55a94b2fab39058f1f53298443e1f5093521c9dc",
+  "label": "EOS team 1.53% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x4e06812bddf026fad176347d1cfa1d0ca59bddfe",
+  "label": "EOS team 1.91% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xb1cda80835bf2a907ec5891a49c2679ffae5061a",
+  "label": "EOS team 1.74% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x957e3d40234d20d1d68055a4a316e589433081b2",
+  "label": "EOS team 1.88% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0xa9fe01228aaa431d935284c49286fce5c3241ee4",
+  "label": "EOS team 1.59% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x1847c5868743815935ac94531875c78e3f09142c",
+  "label": "EOS team 1.77% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x567c0ae14c7f73ab7272c518d912a25d95e002d4",
+  "label": "EOS team 1.81% (launch bundle, untouched)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x20fda6d8aab9761a6d7249e6d444631987c38032",
+  "label": "EOS creator + buyback wallet (team tax)",
+  "group": "eosteam"
+ },
+ {
+  "address": "0x9eba08aac4842e6dc75f451e9234844b03a738d4",
+  "label": "EOS sniper cluster 0.97% (same block +8s)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0x4cc2448a5f700820527f95a51d12b5855f11d124",
+  "label": "EOS sniper cluster 0.94% (same block +8s)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0xdc437203981af1abec74980a9e811dded130ceb5",
+  "label": "EOS sniper cluster 0.91% (same block +8s)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0x6d2fd593653db301d4203b32aa16f614f6821e82",
+  "label": "EOS sniper cluster 0.88% (same block +8s)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0x2a679097830cc7ac6e8db6ab140aedd5e9d0b491",
+  "label": "EOS whale 2.22% (early buyer, claims pot)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0x21ce5124b67f859a8abaabb71c8b852cdaf4fde0",
+  "label": "EOS whale 2.14% (one 21M buy Nov 3)",
+  "group": "eosholder"
+ },
+ {
+  "address": "0x2133bab6d9272e1a71b0dd67096635bcce7a4132",
+  "label": "EOS whale 1.24% (bridged same min as EOS team wallet)",
+  "group": "eosholder"
  }
 ]

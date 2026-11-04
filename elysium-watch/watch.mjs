@@ -48,6 +48,9 @@ const DUST_USD = Number(process.env.DUST_USD || 5); // token moves worth less th
 const GROUP_WINDOW_MIN = 30;
 const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
 const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
+// exit watch: groups that are a team or a cluster you hold against. Their moves come as one 🚨 alert per group with
+// what the whole group still holds, and a coin they send to a fresh wallet is followed (the hop before a sell)
+const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
@@ -688,6 +691,9 @@ async function main() {
     // in the same tx is a buy, and a token leaving through a router call is a sell; the HYPE payment itself is then
     // not reported again as "sent"
     const paidIn = {}, routerCall = {}, boughtTx = new Set();
+    // exit watch tallies: group → coin → amounts sold / moved out, and coins sent to plain wallets (followed below)
+    const exitOf = (w) => (EXIT_GROUPS.has(String(G.get(w) || '').toLowerCase()) ? G.get(w) : null);
+    const exitAgg = {}, hops = [], exitRows = {};
     // txs with a swap in them (v2, v3, v4 pools, a curve sell, or WHYPE unwrapped): a token leaving there was sold
     const SWAPS = new Set([T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, T_SOLD, T_WITHDRAW]);
     const swapTx = new Set(logs.filter((l) => SWAPS.has(l.topics[0])).map((l) => l.transactionHash));
@@ -747,6 +753,13 @@ async function main() {
           const c = await isContract(to);
           if (c) M(f).push(`moved ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} into a contract ${where} (no swap: LP, lock, bridge or vault) · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
           else M(f).push(`sent ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} to wallet ${where} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+          if (c === false && exitOf(f) && !W.has(to)) hops.push({ f, to, t, hash: l.transactionHash });
+        }
+        const eg = exitOf(f);
+        if (eg && kind !== 'burned' && !(W.has(to) && exitOf(to) === eg)) {
+          const a = ((exitAgg[eg] ||= {})[t] ||= { sold: 0, soldV: 0, moved: 0, ws: new Set() });
+          if (kind === 'sold') { a.sold += amt; a.soldV += val || 0; } else a.moved += amt;
+          a.ws.add(f);
         }
       }
     }
@@ -792,6 +805,21 @@ async function main() {
         );
       } catch {}
     }
+    // exit watch: a coin sent from a watched group to a fresh plain wallet is the usual hop before a sell, so follow that wallet
+    for (const x of hops.slice(0, 20)) {
+      if (W.has(x.to) || Object.keys(state.auto).length >= AUTO_MAX) continue;
+      try {
+        const n = parseInt(await rpc('eth_getTransactionCount', [x.to, 'latest']), 16);
+        if (n > FRESH_MAX_NONCE) continue;
+        const group = G.get(x.f);
+        const label = `${W.get(x.f).replace(/\s*\(.*\)$/, '')} hop ${x.to.slice(2, 6)}`;
+        state.auto[x.to] = { label, group, from: x.f, t: now(), coin: x.t };
+        W.set(x.to, label);
+        G.set(x.to, group);
+        bump('new/hop');
+        M(x.f).push(`↳ now following ${walletLink(x.to)} as <b>${esc(label)}</b> (fresh wallet, ${n} txs, its next move is the tell)`);
+      } catch {}
+    }
     for (const { coin, tx: lt } of launchTxs) {
       const c = state.tok[coin]?.creator;
       if (c && W.has(c)) {
@@ -802,7 +830,7 @@ async function main() {
     }
     // what each wallet still holds of the coins it moved (last placeholder per wallet+coin gets the line)
     const held = {};
-    for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 25)) {
+    for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 40)) {
       const [, w, t] = k.slice(1, -1).split(':');
       try {
         const meta = await tokenMeta(state, t);
@@ -822,9 +850,44 @@ async function main() {
       const trades = list.filter((x) => /^(bought|sold|launched)/.test(x)).length;
       bump('trade/' + src, trades);
       bump('xfer/' + src, list.length - trades);
+      // exit-watch groups go out together below, one alert per group
+      const eg = exitOf(w);
+      if (eg) { (exitRows[eg] ||= []).push({ w, list }); continue; }
       const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
       // ⚡ buttons for the coin it just bought or launched (one tap through the trade bot when it is set up)
       msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
+    }
+    // exit watch: one alert per group, headed by what it sold or moved out and what the whole group still holds
+    for (const [g, items] of Object.entries(exitRows)) {
+      const members = [...G].filter(([, x]) => x === g).map(([a]) => a);
+      const head = [];
+      for (const [t, a] of Object.entries(exitAgg[g] || {})) {
+        const meta = await tokenMeta(state, t);
+        let left = null;
+        try {
+          const bals = await Promise.all(members.map((m) => rpc('eth_call', [{ to: t, data: '0x70a08231' + m.slice(2).padStart(64, '0') }, 'latest']).catch(() => null)));
+          left = bals.reduce((s, b) => s + (b && b !== '0x' ? Number(BigInt(b)) / 10 ** meta.d : 0), 0);
+        } catch {}
+        const pct = (x) => (meta.supply ? ` (${(x / meta.supply * 100).toFixed(2)}% of supply)` : '');
+        const price = state.tok[t]?.price;
+        const v = (h) => (h ? ` ~${px ? usd(h * px) : hype(h)}` : '');
+        const did = [
+          a.sold ? `sold ${fmtAmt(a.sold)}${pct(a.sold)}${v(a.soldV)}` : '',
+          a.moved ? `moved ${fmtAmt(a.moved)}${pct(a.moved)} out to other wallets or contracts` : '',
+        ].filter(Boolean).join(', ');
+        head.push(`<b>${esc(meta.s)}</b> · ${a.ws.size} wallet${a.ws.size > 1 ? 's' : ''} ${did}` +
+          (left != null ? `\n${esc(g)} still holds <b>${fmtAmt(left)}${pct(left)}</b>${v(price ? left * price : 0)}` : '') + ` · ${assetLink(t, 'chart')}`);
+      }
+      const selling = Object.values(exitAgg[g] || {}).some((a) => a.sold > 0);
+      const icon = selling ? '🚨' : '👀';
+      let cur = `${icon} <b>${esc(g)} ${selling ? 'selling' : 'moving'}</b> · ${items.length} of ${members.length} wallets` + (head.length ? '\n' + head.join('\n') : '');
+      for (const { w, list } of items) {
+        const block = `\n\n👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 6).map((x) => '• ' + x).join('\n') + (list.length > 6 ? `\n…and ${list.length - 6} more` : '');
+        if (cur.length + block.length > 3800) { msgs.push(cur); cur = `${icon} <b>${esc(g)}</b> (continued)`; }
+        cur += block;
+      }
+      msgs.push(cur);
+      bump('exit/' + g);
     }
   }
 
