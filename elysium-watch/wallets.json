@@ -931,5 +931,173 @@
  {
   "address": "0x83538b6e4294f994e9ae2683f198221ca125a492",
   "label": "ogant"
+ },
+ {
+  "address": "0xe2a0cc663acfe5d7a9cb82a743383297597a8ff3",
+  "label": "HFUN + SCHIZO dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x0af55b1b965a31d1650c2b898b2482ccca2c210a",
+  "label": "WOULD dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x41eb5839e19d64a91241ad1fb5015b34ef89c29b",
+  "label": "PUP dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xea09dee22e4a666bf36c2d70f24340f2214bd1d9",
+  "label": "VAPOR dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x0b1f6d23200b98ce2da99b78159ff605dd46b0f3",
+  "label": "MON dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x3b967acc542d908b6494bd5d556c866faf67ca83",
+  "label": "LIQD dev (LiquidLaunch, HyperCore + HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xba2588f2048f32dd422eea00904bf6cb368a5895",
+  "label": "FARM dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x2141b251b1081627bf749adc07df50f87bb3e59e",
+  "label": "APU dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xa2648c83c50096876ef3a5ab97dee3ad71523488",
+  "label": "PIP dev (HyperCore + HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x8138ef3a4776b9a451552a1f45afdb804b3db878",
+  "label": "LAUNCH dev (Hyperlauncher, HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x48a43adc33f28fd2d3d4f1ba78578011f1c5a821",
+  "label": "CATBAL dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x81196517de1d77ebc8a1951c3ea1a103e732479c",
+  "label": "JEFF dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x7a6b0470423b93a69b2d9766e29ca25df8a3627f",
+  "label": "BUDDY dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x9f4225955f564e98911d93c0cbaaab66bd4e2780",
+  "label": "FLY dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x150bc16e716bfebce9e8de9c8da876d2ede4e006",
+  "label": "RUB dev (HyperCore + HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x715f374dfad19ff6c5646774c6da38c9bcebd938",
+  "label": "BEATS dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x214edb25b63ffe3602489cbee99a7ef656adb173",
+  "label": "LQNA dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xc070ba7de1bfa9054b4a095bb0099c9a931f867f",
+  "label": "DEPIN dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x32f1370ba42f25460faae3ffa58082fc582bfb5a",
+  "label": "YEETI dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xd3042dd32cc3ce05d45ee185714bc8fed59593f6",
+  "label": "RAGE dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x53821607b55b6a105a29f6fcfb1d62937a6c846a",
+  "label": "H dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xf1571e686e644342193d4fdb22d711eaa79da0c7",
+  "label": "JOFF dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xd96ef3425a584cbd2b1de2ad72dbef91848075ad",
+  "label": "PSTR dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x964dd12f16868fcd3c80857b71ff4ab2581e1bce",
+  "label": "HWAVE dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xb5a83a80f641be14e49a9969cbc14af191bcc6dc",
+  "label": "BUDDY dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x42acdecf36de62bc467c9950f9d5c042e9118a3b",
+  "label": "LILLY dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x439a567dd748fead41d370c0617ffa4a49ee48bc",
+  "label": "ALT dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x95b999c3edca478ad7d268b629745ec7178f21dc",
+  "label": "PERPME dev (HyperEVM)",
+  "group": "dev",
+  "watch": "launch"
  }
 ]
