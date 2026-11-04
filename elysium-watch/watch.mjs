@@ -85,7 +85,9 @@ function poolEntry(state, pm, c0, c1, b) {
   else if (!state.tok[c0]?.price && state.tok[c1]?.price) { q = c1; t = c0; }
   return { t, q, inv: q === c1 ? 1 : 0, lp: pm, b };
 }
-const INFRA = new Set([ZERO, DEAD, ...WHYPE, ...Object.keys(LAUNCHPADS), '0x000000000022d473030f116ddee9f6b43ac78ba3']);
+// trading-bot fee wallets (they take 1% of buys made through Multicall3): never followed as anyone's alt
+const FEE_WALLETS = ['0x4e496d24aa8fe7e026163c481df726e9dc70b433', '0x058bc86a8262670f97e3dbcb3da789f452b2bf91'];
+const INFRA = new Set([ZERO, DEAD, ...WHYPE, ...Object.keys(LAUNCHPADS), '0x000000000022d473030f116ddee9f6b43ac78ba3', ...FEE_WALLETS]);
 
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const T_SWAP_V3 = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
@@ -371,9 +373,14 @@ async function main() {
   const okW = wallets.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.address));
   const W = new Map(okW.map((w) => [lc(w.address), w.label || short(w.address)]));
   const G = new Map(okW.filter((w) => w.group).map((w) => [lc(w.address), String(w.group)]));
+  // dev wallets watched for launches only (wallets.json "watch": "launch", "coins": the runners they made): a new coin,
+  // a contract deploy, a bundle split, HYPE bridged in or 25+ HYPE moved, and sells of their own coins. Their routine
+  // trading stays quiet; their group still counts toward group buys.
+  const DEVW = new Map(okW.filter((w) => w.watch === 'launch').map((w) => [lc(w.address), new Set((w.coins || []).map(lc))]));
   // wallets the watcher found on its own (fresh wallets funded by tracked ones) live in state
   state.auto ||= {};
   state.gbuys ||= {};
+  for (const a of FEE_WALLETS) delete state.auto[a]; // followed by mistake as an alt before the bot-fee pattern was known
   for (const [a, x] of Object.entries(state.auto)) {
     if (!W.has(a)) W.set(a, x.label);
     if (x.group && !G.has(a)) G.set(a, x.group);
@@ -773,6 +780,7 @@ async function main() {
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
         // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): one line for the split, then follow each recipient
         const batch = W.has(f) && val > 0 && (tx.input || '0x') !== '0x' ? batchSends(tx.input) : [];
+        if (batch.calls) batch.length = 0; // a swap with a bot's fee beside it: a buy, shown from its token logs
         if (W.has(f) && batch.length >= 2) M(f).push(`<b>split ${hype(val)} across ${batch.length} wallets in one tx</b> (bundle funding pattern)${txLink(tx.hash)}`);
         else if (W.has(f) && val >= WALLET_MIN_HYPE && to && !boughtTx.has(tx.hash)) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
@@ -838,6 +846,16 @@ async function main() {
         const price = state.tok[t]?.price;
         held[k] = holdLine(bal, meta, price ? bal * price : null, px);
       } catch { held[k] = ''; }
+    }
+    for (const [w, own] of DEVW) {
+      if (!moves[w]) continue;
+      moves[w] = moves[w].filter((x) => {
+        if (/^(launched|deployed a contract|<b>split|🌉)/.test(x)) return true;
+        const big = /^(?:sent|received) ([\d.]+)(K?) HYPE/.exec(x);
+        if (big) return Number(big[1]) * (big[2] ? 1000 : 1) >= 25;
+        const t = /^sold .*?#\/terminal\/(0x[0-9a-fA-F]{40})/.exec(x)?.[1];
+        return !!t && (own.has(lc(t)) || lc(state.tok[lc(t)]?.creator || state.tok[t]?.creator || '') === w);
+      });
     }
     for (const [w, list] of Object.entries(moves)) {
       if (!list.length) continue;
@@ -1327,9 +1345,12 @@ function loadCielo() {
   return m;
 }
 
-// decode native-HYPE batch sends: Multicall3 aggregate3Value((address,bool,uint256,bytes)[]) and disperseEther(address[],uint256[])
+// decode native-HYPE batch sends: Multicall3 aggregate3Value((address,bool,uint256,bytes)[]) and disperseEther(address[],uint256[]).
+// An entry with calldata is a contract call, not a send: trading bots buy through Multicall3 as [1% fee to their fee
+// wallet, the rest into a swap router], which is a buy with a fee, not a wallet split. out.calls counts those entries.
 function batchSends(input) {
   const out = [];
+  out.calls = 0;
   try {
     const sel = input.slice(0, 10).toLowerCase();
     const d = input.slice(10);
@@ -1341,6 +1362,7 @@ function batchSends(input) {
       for (let k = 0; k < Math.min(n, 50); k++) {
         const at = base + 1 + num(base + 1 + k) / 32;
         const v = Number(BigInt('0x' + w(at + 2))) / 1e18;
+        if (num(at + num(at + 3) / 32) > 0) { out.calls++; continue; } // calldata: a call into a contract
         if (v > 0) out.push({ to: '0x' + w(at).slice(24), val: v });
       }
     } else if (sel === '0xe63d38ed') {

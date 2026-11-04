@@ -136,7 +136,7 @@
  },
  {
   "address": "0xc17658dfaa089eef0fbc79fe6876040caf61aca7",
-  "label": "hewd clstr funder c176",
+  "label": "hewd clstr funder c176 (e/acc dev)",
   "group": "hewd"
  },
  {
@@ -707,5 +707,225 @@
   "address": "0x2133bab6d9272e1a71b0dd67096635bcce7a4132",
   "label": "EOS whale 1.24% (bridged same min as EOS team wallet)",
   "group": "eosholder"
+ },
+ {
+  "address": "0x698f965a2e3d4f0a4887a2036b611f1efa8af853",
+  "label": "BLOB dev (ElysPump)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x9a9815af521149e8d982791703a31bca2f95f534"
+  ]
+ },
+ {
+  "address": "0x9aa03c534565ef4d41fba4dd054b86f00249fdbb",
+  "label": "STOCKIUM pool creator on Elysium",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x1e0cc793904f7d33fc632e97fe23b81a00a762a3"
+  ]
+ },
+ {
+  "address": "0x8d921df870f967e88d1cdfd06d435c158c1aa88e",
+  "label": "VOLTA dev (Flaunch fork)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x0f79931689af199e7cf868ed1107bba2c83c68f7"
+  ]
+ },
+ {
+  "address": "0x892e4ec4e6ede01e2159eccbcdd409d8df8d68d5",
+  "label": "ELYSP + AK dev (ElysPump team)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x7a7ae0e715867fc3b0055192624982017328c60b",
+   "0xcceeedb7f7f6fb96451789900bc73937f43d9b6f"
+  ]
+ },
+ {
+  "address": "0xd55d2c5fd28e6494594fe70e3c5a4a57000ae716",
+  "label": "RONS dev",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x44d13223e2024c6f3f957d5c9ab98f8a550061f3"
+  ]
+ },
+ {
+  "address": "0x206e52b4b2ef813a1b34793091c9b87761e775f4",
+  "label": "HOMER dev (Kleos)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x365be4728d0ee2140e8b75a05c5dcf6b7d76399a"
+  ]
+ },
+ {
+  "address": "0xb4be2d2c74877baaf5b23e7145a811d47bcd1a36",
+  "label": "ELYSX dev (BOXA)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x3b3004c1ff88b9245193af9c1cf3bceb42623f5a"
+  ]
+ },
+ {
+  "address": "0x3c4746cbe3a1c07163d9c838190295390f412bb9",
+  "label": "HELIOS dev (Obol)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x792aa7771e4e1bd58f84631c915ae98aef45277e"
+  ]
+ },
+ {
+  "address": "0x69985dcf6b96ccb8a6ab70ff47d4e0a86afbd79e",
+  "label": "AGORA dev (Kleos)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4"
+  ]
+ },
+ {
+  "address": "0x0f947d68be1e219cd4b310a94cb5267d3c5ff439",
+  "label": "PERPME dev",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x11aed7f6b23bb9ccb2bbf9e39e67ddf7f4210999"
+  ]
+ },
+ {
+  "address": "0x6fb19b4ad9858240c00c709bb30fc9898b88c78a",
+  "label": "SENDU dev (Kleos)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x392ea0144a622773eaee0fa59141f058ad39eef3"
+  ]
+ },
+ {
+  "address": "0x01c1925509fadbe8f32d87a4a12e30f26c99ecdc",
+  "label": "ELYCAT dev (BOXA)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x991b79dfe66a57d19e90755f1850a07b50e614f5"
+  ]
+ },
+ {
+  "address": "0x05dd1c5b5c6c47e26bde3a253a18c4827c95cb7a",
+  "label": "ELYSIAN deployer (made the token)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x298622170fab26db27bd8e29d13c429bfd819eb4"
+  ]
+ },
+ {
+  "address": "0x0eb904f5d2cba4fd6425097e091bd5dd109c87fd",
+  "label": "ELYSIAN launcher (opened the BOXA pool)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x298622170fab26db27bd8e29d13c429bfd819eb4"
+  ]
+ },
+ {
+  "address": "0x78e3a21209a35fd6bd101eb9ea0f44d00ece2f88",
+  "label": "ECAT dev (ElysPump)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x949a66ac7d58ec0a64b1414a9471f1083143fdab"
+  ]
+ },
+ {
+  "address": "0x5e6407e738e9b43db7ed792e92ec44fc8d894205",
+  "label": "HIPS dev",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0xb40b9f481c1cc95b246cbbc2b7e9fc41f16f1cd1"
+  ]
+ },
+ {
+  "address": "0xbc4a11a09a9898568e28533ef537adeb489900a6",
+  "label": "BLOB copy dev (BOXA)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x9d9a6161cb7399f7a73f47f8195c9c3ad6911c76"
+  ]
+ },
+ {
+  "address": "0x88182152a7205ecf701dab19f48dc9c9124c5b4b",
+  "label": "ELYXA dev (Elyxa team)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0xbd61e339a53fe9a27b8dba6dfdb63f443cbec077"
+  ]
+ },
+ {
+  "address": "0x8bee16ca4cf9f544653e3aabfe0b1ac309d91da4",
+  "label": "KNUTS dev (Kleos)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0xdfa5397cb2d0c2d21ed654d49e7a5f6e0c18e9ed"
+  ]
+ },
+ {
+  "address": "0x8cf89095b9ec1b20533b211fb54961e031b795a2",
+  "label": "CLEO dev (Kleos)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0xa9e18f454cf4f28b0922ffa80e1004dac0643f30"
+  ]
+ },
+ {
+  "address": "0xd1cc71f8745c7a6ebf18880663080bb53d3a41b6",
+  "label": "CHORD dev (BOXA)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": [
+   "0x6bd503be90d07dd4d917f885c007afee6e53b403"
+  ]
+ },
+ {
+  "address": "0x98ca70fc622e6534de2f1ce51f4be5b0273442b9",
+  "label": "PERPME dev funder (via contract)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x462c0f79a01c6942539ac30e655462c1856db9ee",
+  "label": "SENDU dev funder (split funding)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xc66e8ca806441057abf0e044158d0e92693e57fa",
+  "label": "ELYCAT dev funder",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xb4df893e946b36d8f3f45b6a6ec091d1703f7956",
+  "label": "CLEO dev funder",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x6cb63b62b81b67c2042f079d164838075b37cba2",
+  "label": "RONS dev funder",
+  "group": "dev",
+  "watch": "launch"
  }
 ]
