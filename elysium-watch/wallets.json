@@ -933,6 +933,14 @@
   "label": "ogant"
  },
  {
+  "address": "0x9ef6235e897be705dc28c57e37be1a1c8f9f6523",
+  "label": "0xley"
+ },
+ {
+  "address": "0x0a5fa28dba255210ad3a1319263638eb36ccb249",
+  "label": "0xley alt"
+ },
+ {
   "address": "0xe2a0cc663acfe5d7a9cb82a743383297597a8ff3",
   "label": "HFUN + SCHIZO dev (HyperCore)",
   "group": "dev",
