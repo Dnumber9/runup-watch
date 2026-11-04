@@ -88,6 +88,8 @@ const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df5
 const T_SWAP_V3 = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
 const T_SWAP_V4 = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
 const T_INIT_V4 = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
+const T_SWAP_V2 = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+const T_WITHDRAW = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65'; // WHYPE unwrapped to HYPE
 
 const STATE = new URL('./state.json', import.meta.url);
 const WALLETS = new URL('./wallets.json', import.meta.url);
@@ -686,6 +688,15 @@ async function main() {
     // in the same tx is a buy, and a token leaving through a router call is a sell; the HYPE payment itself is then
     // not reported again as "sent"
     const paidIn = {}, routerCall = {}, boughtTx = new Set();
+    // txs with a swap in them (v2, v3, v4 pools, a curve sell, or WHYPE unwrapped): a token leaving there was sold
+    const SWAPS = new Set([T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, T_SOLD, T_WITHDRAW]);
+    const swapTx = new Set(logs.filter((l) => SWAPS.has(l.topics[0])).map((l) => l.transactionHash));
+    // recipient is a contract or a plain wallet (asked once per address per scan)
+    const codeCache = {};
+    const isContract = async (a) => {
+      if (!(a in codeCache)) { try { const c = await rpc('eth_getCode', [a, 'latest']); codeCache[a] = !!c && c !== '0x'; } catch { codeCache[a] = null; } }
+      return codeCache[a];
+    };
     for (const blk of blocks) for (const tx of blk.transactions || []) {
       if (!tx.to || (tx.input || '0x') === '0x' || !W.has(lc(tx.from))) continue;
       routerCall[tx.hash] = lc(tx.to);
@@ -726,11 +737,17 @@ async function main() {
         }
       }
       if (W.has(f) && !dustOut) {
-        // a token leaving through a call to some other contract (a router), not to another tracked wallet, is a sell
-        const viaRouter = routerCall[l.transactionHash] && routerCall[l.transactionHash] !== t && !W.has(to) && to !== ZERO && to !== DEAD;
+        // sold: into a pool, or through a router call in a tx that has a swap. Otherwise, by where it went:
+        // into a contract (LP, locker, bridge, vault) or to a plain wallet (often a dev moving supply to an alt)
+        const viaRouter = routerCall[l.transactionHash] && routerCall[l.transactionHash] !== t && swapTx.has(l.transactionHash) && !W.has(to) && to !== ZERO && to !== DEAD;
         const kind = poolOut.has(to) || viaRouter ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
-        // plain token transfers (sent, burned) are not pinged, only sells
+        const where = W.has(to) ? `${walletLink(to)} (${esc(W.get(to))})` : walletLink(to);
         if (kind === 'sold') M(f).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+        else if (kind === 'sent') {
+          const c = await isContract(to);
+          if (c) M(f).push(`moved ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} into a contract ${where} (no swap: LP, lock, bridge or vault) · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+          else M(f).push(`sent ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} to wallet ${where} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+        }
       }
     }
     // native HYPE moves, deploys and launches: read every block with its transactions
