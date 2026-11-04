@@ -927,5 +927,9 @@
   "label": "RONS dev funder",
   "group": "dev",
   "watch": "launch"
+ },
+ {
+  "address": "0x83538b6e4294f994e9ae2683f198221ca125a492",
+  "label": "ogant"
  }
 ]
