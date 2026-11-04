@@ -361,23 +361,24 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend';
-const routerOf = (r) => (r?.kind === 'ascend' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni';
+const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'curve' ? enc(curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'curve' ? enc(curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'curve' ? enc(curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'curve' ? enc(curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
-const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.q
+const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
+  if (r.kind === 'uni') return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
   if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
   if (r.kind === 'curve') return u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
@@ -395,6 +396,7 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
+  if (r.kind === 'uni') return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
   if (r.kind === 'curve') return u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
@@ -432,6 +434,51 @@ const ascSwapParam = (r, t, zfo, amt, minOut) => word(32) + [...ascKey(r, t), zf
 // buy: the quote in (native HYPE from msg.value, or pulled through Permit2), the coin out to the sender
 const ascBuyData = (r, t, qAmt, minOut, dl) => urExecute('10', [infiSwap('060c0f', [ascSwapParam(r, t, r.qFirst, qAmt, minOut), word(r.q) + word(qAmt), word(t) + word(minOut)])], dl);
 const ascSellData = (r, t, amt, minOut, dl, settleMax = amt) => urExecute('10', [infiSwap('060c0f', [ascSwapParam(r, t, !r.qFirst, amt, minOut), word(t) + word(settleMax), word(r.q) + word(minOut)])], dl);
+
+// ── Uniswap v4 pools paired with a token instead of native HYPE (kind 'uni') ───────────────────────────
+// Launchpads on the official Uniswap v4 (pool manager UNI_PM) pair coins with WHYPE or with a token such as KNTQ.
+// They trade through Uniswap's Universal Router, still one transaction with native HYPE in and out:
+//   wrap: WHYPE pools. Buy = WRAP_ETH into the router, swap, settle the WHYPE from the router, take the coin.
+//         Sell = swap, settle the coin (pulled through Permit2), take WHYPE to the router, UNWRAP_WETH to the wallet.
+//   hop:  token pools (KNTQ). Buy = HYPE → token on a native pool of the same manager, then token → coin (the second
+//         swap spends the whole credit of the first), settle HYPE, take the coin. Sell is the mirror.
+// Its swap struct has one more word than Uniswap's original (read off a live KNTQ buy): poolKey, zeroForOne,
+// amountIn, amountOutMinimum, a per-hop price limit (0 = none), hookData.
+const UNI_PM = '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1';
+const UNI_UR = lc(process.env.UNI_ROUTER || '0x1b341fdd55d56f8e08409a2c25ddfad93eb03c1a');
+const UNI_WETH = '0xba876237b0f021a6c6d852d6c26e107997cc5e81'; // the WETH9 inside that router
+const KNTQ = '0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0';
+const HOP_QUOTES = new Set([KNTQ, ...String(process.env.HOP_QUOTES || '').toLowerCase().split(',').filter(Boolean)]);
+// native pools for the first leg, used until the index has them (fees in millionths: KNTQ's are 5%, 10%, 20%)
+const HOP_LEGS = { [KNTQ]: [{ fee: 50000, ts: 60, hook: ZERO }, { fee: 100000, ts: 60, hook: ZERO }, { fee: 200000, ts: 60, hook: ZERO }] };
+const uniSingle = (key, zfo, amt, minOut) => word(32) + [...key, zfo ? 1 : 0, amt, minOut, 0, 320].map(word).join('') + word(0);
+const uniKey = (r, t) => [...(r.qFirst ? [r.q, t] : [t, r.q]), r.fee, r.ts, r.hook];
+const legKey = (r) => [ZERO, r.q, r.h.fee, r.h.ts, r.h.hook];
+function uniBuyData(r, t, wei, minOut, dl) {
+  if (r.mode === 'wrap') return urExecute('0b10', [word(2) + word(wei), infiSwap('060b0f', [uniSingle(uniKey(r, t), r.qFirst, wei, minOut), word(r.q) + word(wei) + word(0), word(t) + word(minOut)])], dl);
+  return urExecute('10', [infiSwap('06060c0f', [uniSingle(legKey(r), true, wei, 0), uniSingle(uniKey(r, t), r.qFirst, 0, minOut), word(ZERO) + word(wei), word(t) + word(minOut)])], dl);
+}
+function uniSellData(r, t, amt, minOut, dl, settleMax = amt) {
+  if (r.mode === 'wrap') return urExecute('100c', [infiSwap('060c0e', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), word(t) + word(settleMax), word(r.q) + word(2) + word(0)]), word(1) + word(minOut)], dl);
+  return urExecute('10', [infiSwap('06060c0f', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), uniSingle(legKey(r), false, 0, minOut), word(t) + word(settleMax), word(ZERO) + word(minOut)])], dl);
+}
+const urBuyData = (r, t, qAmt, minOut, dl) => (r.kind === 'uni' ? uniBuyData(r, t, qAmt, minOut, dl) : ascBuyData(r, t, qAmt, minOut, dl));
+const urSellData = (r, t, amt, minOut, dl, settleMax = amt) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl, settleMax) : ascSellData(r, t, amt, minOut, dl, settleMax));
+const uniLegs = (r) => {
+  const seen = new Set(), out = [];
+  for (const x of [...(state.pools[r.q] || []).filter((p) => p.pm === r.pm && !p.q && !p.uni && p.kind !== 'ascend'), ...(HOP_LEGS[r.q] || [])]) {
+    const k = `${x.fee}:${x.ts}:${x.hook}`;
+    if (!seen.has(k)) { seen.add(k); out.push({ fee: x.fee, ts: x.ts, hook: x.hook }); }
+  }
+  return out.sort((a, b) => a.fee - b.fee); // cheapest first: the default leg when there is no time to quote them all
+};
+const uniRoute = (p, h) => {
+  const r = { kind: 'uni', mode: p.uni, name: p.uni === 'wrap' ? 'Uniswap WHYPE' : `Uniswap via ${p.q === KNTQ ? 'KNTQ' : meta[p.q]?.sym || short(p.q)}`, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, ur: UNI_UR };
+  if (p.uni === 'hop') r.h = h || uniLegs(r)[0] || null;
+  return r;
+};
+// every first leg of a hop route, so the best one can be picked by quote
+const uniExpand = (r) => (r.kind === 'uni' && r.mode === 'hop' ? uniLegs(r).map((h) => ({ ...r, h })) : [r]);
 // Simulation helper (hand-assembled, only ever placed at SIM through a state override). Calldata words: router,
 // coin, buyLen, sellLen, amount offset in sellData, quote (0 = native), Permit2, flags (1: approve the quote
 // before buying, 2: proceeds are native), then buyData and sellData. It approves through Permit2 itself, buys,
@@ -471,12 +518,12 @@ async function simSlot(t, hint) {
 // buy and/or sell through the helper, as of now or as of `time` (a block-time override, for the seconds after launch)
 async function ascSim(r, t, { qAmt = 0n, sellAmt = 0n, buy = true, sell = true, time = null } = {}) {
   if (!r.ur) throw new Error('Ascend router not known yet');
-  const native = r.q === ZERO;
-  const bd = buy ? strip(ascBuyData(r, t, qAmt, 0n, 2 ** 31 - 1)) : '';
-  const sd = sell ? strip(ascSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256)) : '';
+  const native = r.q === ZERO || r.kind === 'uni'; // uni routes take and pay native HYPE whatever the pair
+  const bd = buy ? strip(urBuyData(r, t, qAmt, 0n, 2 ** 31 - 1)) : '';
+  const sd = sell ? strip(urSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256)) : '';
   const off = sell ? sd.indexOf(word(ASC_MARK)) / 2 : 0;
   const flags = (buy && !native ? 1 : 0) | (native ? 2 : 0);
-  const data = '0x' + [r.ur, t, bd.length / 2, sd.length / 2, off, r.q, PERMIT2, flags].map(word).join('') + bd + sd;
+  const data = '0x' + [r.ur, t, bd.length / 2, sd.length / 2, off, native ? ZERO : r.q, PERMIT2, flags].map(word).join('') + bd + sd;
   const ov = { [SIM]: { code: ASC_CODE, balance: hex((buy && native ? qAmt : 0n) + 10n ** 22n) } };
   if (buy && !native) {
     const s = await simSlot(r.q);
@@ -537,10 +584,11 @@ async function ascQuoteBuy(r, t, wei) { return (await ascSim(r, t, { qAmt: await
 async function ascQuoteSell(r, t, amt) { return weiOfQ(r.q, (await ascSim(r, t, { buy: false, sellAmt: amt })).back); }
 async function ascSellCheck(r, t, wei, time) {
   try {
-    const qAmt = await qOfWei(r.q, wei);
+    const uni = r.kind === 'uni'; // native in and out: no quote-token conversion
+    const qAmt = uni ? wei : await qOfWei(r.q, wei);
     const { got, back } = await ascSim(r, t, { qAmt, time });
     const loss = 1 - num(back) / num(qAmt);
-    return { ok: got > 0n && back > 0n && loss * 100 <= cfg().tax, got, back: await weiOfQ(r.q, back), loss, note: `sell check: round trip ${(loss * 100).toFixed(1)}%` };
+    return { ok: got > 0n && back > 0n && loss * 100 <= cfg().tax, got, back: uni ? back : await weiOfQ(r.q, back), loss, note: `sell check: round trip ${(loss * 100).toFixed(1)}%` };
   } catch (e) {
     const code = String(e.data || '').slice(-2);
     if (code === '03') return { ok: false, blocked: true, note: 'cannot be sold back (honeypot or sells blocked)' };
@@ -752,12 +800,17 @@ function parseInit(l) {
     if (q) { p.q = q; p.qFirst = q === c0; }
     return { t: q ? (q === c0 ? c1 : c0) : null, p };
   }
+  let uni = null;
   if (c0 === ZERO) t = c1;
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c0)) { t = c1; q = c0; }
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c1)) { t = c0; q = c1; }
+  // official Uniswap v4: WHYPE pairs and token pairs (KNTQ…) through Uniswap's Universal Router
+  else if (pm === UNI_PM && (c0 === UNI_WETH || c1 === UNI_WETH)) { q = UNI_WETH; t = c0 === q ? c1 : c0; uni = 'wrap'; }
+  else if (pm === UNI_PM && (HOP_QUOTES.has(c0) || HOP_QUOTES.has(c1))) { q = HOP_QUOTES.has(c1) ? c1 : c0; t = q === c0 ? c1 : c0; uni = 'hop'; }
   else return null;
   const p = { pm, fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: '0x' + d.slice(152, 192), b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) };
   if (q) { p.q = q; p.qFirst = q === c0; }
+  if (uni) p.uni = uni;
   return { t, p };
 }
 function addPool(l) {
@@ -804,7 +857,7 @@ async function findRoute(t, fresh = false) {
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   const pools = state.pools[t] || [];
-  let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf);
+  let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf).flatMap(uniExpand);
   for (const p of pools.filter((x) => x.kind === 'ascend').slice(-2)) { const ar = await ascRouteOf(p).catch(() => null); if (ar) cands.push(ar); }
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
   cands = cands.concat(await v3Pools(t), await curvePools(t));
@@ -866,7 +919,7 @@ async function scanV4(t, ok) {
 const RT_CODE = '0x36156100c3576040358060a060003760006000826000346000355af1156100a2576370a0823160e01b6000523060045260206000602460006020355afa156100ad5760005163095ea7b360e01b60005260003560045280602452600060006044600060006020355af15047606035808460a00161010037826080356101000152600060008261010060006000355af1156100b85750470360205260005260406000f35b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b00';
 async function sellCheck(r, t, wei) {
   if (!isPool(r)) return { ok: null, note: 'sell check skipped (KyberSwap route)' };
-  if (r.kind === 'ascend') return ascSellCheck(r, t, wei);
+  if (r.kind === 'ascend' || r.kind === 'uni') return ascSellCheck(r, t, wei); // Permit2 routers: the helper approves through Permit2
   const bd = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1), sd = sellData(r, t, 0, 0, SIM, 2 ** 31 - 1);
   const len = (h) => (h.length - 2) / 2;
   const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(amtOffset(r, t)) + strip(bd) + strip(sd);
@@ -891,6 +944,7 @@ async function quoteBuy(r, t, wei) {
 async function quoteSellOut(r, t, amt) {
   if (!isPool(r)) return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
+  if (r.kind === 'uni') return v4QuoteSell(r, t, amt);
   const allowed = u256(await ethCall(t, enc('dd62ed3e', me, routerOf(r))));
   return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, routerOf(r)));
 }
@@ -1054,7 +1108,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   }
   let tx;
   if (ascTxs) tx = ascTxs[ascTxs.length - 1];
-  else if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+  else if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: r.kind === 'uni' ? 1500000 : 600000 };
   else {
     const k = await kyRoute(NATIVE, t, wei);
     const b = await kyBuild(k.routeSummary, slip);
@@ -1096,7 +1150,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
   // after the buy: approve so every sell is one transaction, note the creator's bag for the dev guard (when on),
   // and add the auto-sell preset (when set)
-  if (cfg().preapprove && r.kind === 'ascend') ascPreApprove(t, r).catch((e) => console.error('preapprove', e.message));
+  if (cfg().preapprove && (r.kind === 'ascend' || r.kind === 'uni')) ascPreApprove(t, r).catch((e) => console.error('preapprove', e.message));
   else if (cfg().preapprove && isPool(r)) preApprove(t, routerOf(r)).catch((e) => console.error('preapprove', e.message));
   if (cfg().devsell > 0) devOf(t).then(async (d) => { if (d?.w) { d.peak = num(await balOf(t, d.w), m.d); save(); } }).catch(() => {});
   let autoLine = '';
@@ -1130,7 +1184,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   const p0 = state.pos[t], r0 = state.routes[t];
   const cached = p0?.balW ? BigInt(p0.balW) : null;
   const guess = opts.amt == null && cached > 0n ? (cached * BigInt(Math.min(100, Math.max(1, Math.round(pct))))) / 100n : null;
-  const qGuess = isPool(r0) && r0.kind !== 'ascend' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
+  const qGuess = isPool(r0) && r0.kind !== 'ascend' && r0.kind !== 'uni' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
   let [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t, routerOf(r0)).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   const rtr = routerOf(r);
@@ -1145,14 +1199,15 @@ async function sell(t, pct, replyTo, opts = {}) {
   const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 120000 });
   let txs, expect;
   try {
-    if (r.kind === 'ascend') {
-      r.ur ||= await ascRouterFor(r.pm);
+    if (r.kind === 'ascend' || r.kind === 'uni') {
+      const uni = r.kind === 'uni'; // pays native HYPE (unwrapped or swapped back inside the router)
+      if (!uni) r.ur ||= await ascRouterFor(r.pm);
       if (!r.ur) throw new Error('Ascend router not known yet: /ascend router 0x…');
       const backQ = (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
-      expect = await weiOfQ(r.q, backQ);
+      expect = uni ? backQ : await weiOfQ(r.q, backQ);
       const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
-      txs = [...ap, { to: r.ur, data: ascSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: 900000 }];
-      if (r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
+      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: uni ? 1500000 : 900000 }];
+      if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
     } else if (isPool(r)) {
       const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
       if (allowed >= amt) {
@@ -2213,6 +2268,8 @@ async function main() {
   // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
   // ElysPump WHYPE pools were skipped by older versions: read the chain once more for them (known pools are kept)
   if (!state.wrapIdx) { state.poolsBlock = 0; state.wrapIdx = 1; save(); }
+  // Uniswap WHYPE and KNTQ pools were skipped before: read the blocks since the first ones again (seen pools are skipped)
+  if (!state.uniIdx) { state.poolsBlock = Math.min(state.poolsBlock || 0, 370000); state.uniIdx = 1; for (const t of Object.keys(state.routes)) if (!state.routes[t]) delete state.routes[t]; save(); }
   const first = !state.poolsBlock;
   if (first) console.log('indexing every v4 pool on Elysium…');
   await indexPools().catch((e) => console.error('index', e.message));
