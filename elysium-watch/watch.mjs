@@ -13,7 +13,6 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { gate, gateDigest, gatePms } from './gate.mjs';
 import { zeroWatch } from './zero.mjs';
-import { hyperWatch } from './hyper.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
 const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
@@ -60,6 +59,8 @@ const AUTO_MAX = 300;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const DEAD = '0x000000000000000000000000000000000000dead';
+// Elysium is an Arbitrum chain on HyperEVM: a bridge tx shows its HyperEVM sender here as sender + 0x1111…1111
+const unalias = (a) => '0x' + ((BigInt(a) - 0x1111000000000000000000000000000000001111n + (1n << 160n)) % (1n << 160n)).toString(16).padStart(40, '0');
 // v4 PoolManagers by launchpad (each launchpad runs its own; all pools are native HYPE / coin)
 const LAUNCHPADS = {
   '0x06c63714fbf1f5753017123e2fcfdede4540b2c4': { name: 'BOXA', hook: '0xbcc1f22d137c1d98dfa5548e4d4261d7aee06acc' },
@@ -690,6 +691,17 @@ async function main() {
     } catch {}
   }
 
+  // 3e. launch-watched devs that have never been on Elysium (the old HyperCore and HyperEVM meme devs): each is
+  // checked once, so its first move here leads its alert (🛬). 0 = never here yet, 1 = already active when first checked
+  state.devHere ||= {};
+  if (state.hyper) for (const k of ['tokens', 'nonces', 'at']) delete state.hyper[k]; // left by the old HyperCore/HyperEVM deploy watch
+  for (const a of [...DEVW.keys()].filter((x) => !(x in state.devHere)).slice(0, 8)) {
+    try {
+      const [n, b] = await Promise.all([rpc('eth_getTransactionCount', [a, 'latest']), rpc('eth_getBalance', [a, 'latest'])]);
+      state.devHere[a] = parseInt(n, 16) > 0 || BigInt(b || '0x0') > 0n ? 1 : 0;
+    } catch {}
+  }
+
   // 4. tracked wallets
   if (W.size) {
     const moves = {};
@@ -790,6 +802,15 @@ async function main() {
         }
         // Arbitrum-style deposit types (0x64 deposit, 0x65 unsigned, 0x68 retry, 0x69 retryable) = HYPE bridged in from HyperEVM
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
+        // a tracked wallet bridging from HyperEVM to a different wallet (a retryable ticket): the sender shows aliased,
+        // so the recipient is followed like any fresh wallet it funds (a dev setting up a launch wallet)
+        if (bridged && to && val > 0 && ['0x64', '0x68'].includes(String(tx.type).toLowerCase())) {
+          const src = unalias(f);
+          if (src !== to && W.has(src) && !W.has(to) && !INFRA.has(to)) {
+            M(src).push(`🌉 <b>bridged ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM to another wallet ${walletLink(to)}${txLink(tx.hash)}`);
+            funded.push({ f: src, to, val, hash: tx.hash, via: 'bridge' });
+          }
+        }
         if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
@@ -809,7 +830,7 @@ async function main() {
         bump('new/alt');
         msgs.push(
           `🧬 <b>${esc(W.get(x.f))}</b> funded a fresh wallet\n` +
-          `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''}${x.via ? ' (split in one batch tx)' : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
+          `${walletLink(x.to)} got ${hype(x.val)}${px ? ` (${usd(x.val * px)})` : ''}${x.via === 'batch' ? ' (split in one batch tx)' : x.via === 'bridge' ? ' over the bridge from HyperEVM' : ''} · it has sent ${n} txs so far${txLink(x.hash)}\n` +
           `Now tracking it as <b>${esc(label)}</b>.`
         );
       } catch {}
@@ -848,8 +869,16 @@ async function main() {
         held[k] = holdLine(bal, meta, price ? bal * price : null, px);
       } catch { held[k] = ''; }
     }
+    // a dev landing on Elysium for the first time: the alert opens with it and keeps every line (even small receives)
+    const landed = new Set();
+    for (const w of DEVW.keys()) {
+      if (!moves[w]?.length || state.devHere[w] !== 0) continue;
+      state.devHere[w] = 1;
+      landed.add(w);
+      moves[w].unshift('🛬 <b>first move on Elysium</b> (never active here before)');
+    }
     for (const [w, own] of DEVW) {
-      if (!moves[w]) continue;
+      if (!moves[w] || landed.has(w)) continue;
       moves[w] = moves[w].filter((x) => {
         if (/^(launched|deployed a contract|<b>split|🌉)/.test(x)) return true;
         const big = /^(?:sent|received) ([\d.]+)(K?) HYPE/.exec(x);
@@ -966,9 +995,6 @@ async function main() {
 
   // 4e. LayerZero's Zero being wired ahead of its Nov 30 launch (zero.mjs keeps its own timers)
   try { await zeroWatch({ state, msgs }); } catch (e) { console.log('zero watch failed:', e.message); }
-
-  // 4f. HyperCore and HyperEVM launches by the deployers we follow (hyper.mjs keeps its own timers)
-  try { await hyperWatch({ state, msgs, W, DEVW, hrpc }); } catch (e) { console.log('hyper watch failed:', e.message); }
 
   // 5. the official mainnet RPC opening up (one ping, ever)
   if (!state.official && now() - (state.officialCheckedAt || 0) > 600) {

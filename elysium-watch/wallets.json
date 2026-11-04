@@ -1099,5 +1099,167 @@
   "label": "PERPME dev (HyperEVM)",
   "group": "dev",
   "watch": "launch"
+ },
+ {
+  "address": "0x12bbcba58f4a9e5306c723633b57a005602722be",
+  "label": "STAR dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x3109836d33dd4c7f9572d67d941d262956675d8c",
+  "label": "OMNIX dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xdbef76244deb4f63612fa82ee6b78c523b636346",
+  "label": "JPEG dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x0e291f917489d7f5a7035a302d7fea7861aa1d95",
+  "label": "VAULT dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x1fd395a66cf70e897333acdd2dc7b7986f7b960c",
+  "label": "CAT dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xef21f6a8b2e3309d9edeeec6b0bb7963088814bf",
+  "label": "SPH dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xdfdeb39d0bc98e37d3f13b05226b19173acba087",
+  "label": "ATEHUN dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xd9e123f1d89860bca5f368e6cac0ccbf5f6b61af",
+  "label": "RUG dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x17a4ce9320bec0ac79420f0af19848044a469d8d",
+  "label": "POINTS dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xcc16ae2ffc076d7bcd5ec3fb1e9aa5c2984133a1",
+  "label": "SIX dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xf517639a8872e756ac98d3c65507d2ebc25cc032",
+  "label": "CZ + FUN dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xd5d04ad6d8170631ba6f293d8a015dfa445b22c6",
+  "label": "VEGAS dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xeacdb112d3d7882af10ef31b65e6addb595092d0",
+  "label": "PANDA dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x1f6e4f57b59524a8af7a5cdd87f12ca1ef64c98a",
+  "label": "AUTIST dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x16f8ccad7df1be36ce743287485d2b005cb3eec5",
+  "label": "SENT dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x1406125fde50b26bcd783b2cc1ed16a18621df27",
+  "label": "LICK dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xa9fb6044fc1f468955995b2c637bdc4ba7c1d2ea",
+  "label": "TATE dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x150bf1195f27123aa4aaa249df10b28acc0a0636",
+  "label": "SYLVI dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xfb4fa056d1306b27a3da359c9400ee50961f7519",
+  "label": "WOW dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xe8f7355a17fc67219fd6d15fc9ffd5662977957b",
+  "label": "MEOW dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x8324e7228c5fd4f2effce437d080b196e3ecc962",
+  "label": "NOCEX dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x716008a4371137638f196eb2fefaaa960c05d47c",
+  "label": "BOZO dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x86c66b00257dc08d4e33dc7c50e9a05c1937b397",
+  "label": "WAGMI dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x1c49e03f3683fd39bc01751378c7f59cbb97d1b0",
+  "label": "GMEOW dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x2857532d16209ada3869fb65df859a3320de5e14",
+  "label": "TRUMP dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0x496277820fefabf18091b0653d780ad151052078",
+  "label": "HPYH dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
+ },
+ {
+  "address": "0xceebc1c8e24786d9232e75ff1780835f23dff314",
+  "label": "PILL dev (HyperCore)",
+  "group": "dev",
+  "watch": "launch"
  }
 ]
