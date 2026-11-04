@@ -1010,7 +1010,12 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
   if (!r && (state.pools[t] || []).some((p) => p.kind === 'ascend')) return { text: `<b>${esc(m.sym || short(t))}</b> trades on <b>Ascend</b>, but the bot does not know Ascend's router yet (it learns it from the first trades on Ascend).\nSet it with /ascend router 0x… and paste the coin again.\n<code>${t}</code>` };
-  if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it.` };
+  if (!r) {
+    // a pasted wallet (no code) is not a coin: point at /withdraw instead of a pool search that cannot succeed
+    const code = await rpc('eth_getCode', [t, 'latest']).catch(() => null);
+    if (code === '0x') return { text: `<code>${t}</code> is a wallet, not a coin.\nTo send HYPE there: <code>/withdraw ${t} all</code> (or an amount), then tap ✅ Send.\nTo send a coin there: <code>/send 0xCOIN all ${t}</code>` };
+    return { text: `No route for <code>${t}</code>.\nNo HYPE, WHYPE or KNTQ pool for it among the ${poolCount()} the bot has indexed (ElysPump, Uniswap and the other v4 pool managers), no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it. Coins paired with USDC on Uniswap are not routed yet.` };
+  }
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
   // an Ascend coin whose anti-snipe fee is still up: priced as of the second it drops (when a tap would buy)
@@ -1754,10 +1759,14 @@ async function dailyReport(force = true) {
 
 async function withdraw(to, amtStr) {
   const bal = await hypeBal();
-  const gasCost = 21000n * (await gasPrice()) * 2n;
+  // a plain transfer costs more than 21000 gas on Elysium: as an Arbitrum chain it adds its parent chain's data fee
+  // (about 31K in all), and a transfer sent with 21000 is refused outright
+  let gas = 80000;
+  try { gas = Math.max(30000, Math.ceil(Number(BigInt(await rpc('eth_estimateGas', [{ from: me, to, value: '0x1' }]))) * 1.5)); } catch {}
+  const gasCost = BigInt(gas) * (await gasPrice()) * 2n;
   const value = amtStr === 'all' ? bal - gasCost : toWei(amtStr);
   if (!value || value <= 0n || value > bal - gasCost / 2n) throw new Error(`not enough HYPE (wallet has ${fmtH(num(bal))})`);
-  const hash = await serial(() => sendRaw({ to, value, data: '0x', gas: 21000 }));
+  const hash = await serial(() => sendRaw({ to, value, data: '0x', gas }));
   const msg = await say(`⏳ Sending ${fmtH(num(value))} to <code>${to}</code> · ${txLink(hash)}`);
   track(hash, (rc) => edit(msg, `${rc.status === '0x1' ? '✅ Sent' : '❌ Failed to send'} ${fmtH(num(value))} to <code>${to}</code> · ${txLink(hash)}`), () => edit(msg, `⌛ Withdrawal not confirmed after 2 h · ${txLink(hash)}`));
 }
