@@ -121,6 +121,19 @@ const CREATE2_DEPLOYERS = new Set(['0x4e59b44847b379578588920ca78fbf26c0b4956c',
 
 // off-chain sources
 const CT_DOMAINS = ['ascendlaunch.xyz', 'signal.family', 'kinetiq.xyz'];
+// Ascend's hosts beyond the front page (from its certificates). Checked like the site: title, gate, scripts,
+// Elysium addresses, chain id. A host that does not resolve yet is skipped quietly until it does.
+const ASCEND_HOSTS = {
+  'app.ascendlaunch.xyz': 'Ascend app',
+  'docs.ascendlaunch.xyz': 'Ascend docs',
+  'data.ascendlaunch.xyz': 'Ascend data server',
+  'api.ascendlaunch.xyz': 'Ascend api',
+  'indexer.ascendlaunch.xyz': 'Ascend indexer',
+  'app-staging.ascendlaunch.xyz': 'Ascend app (staging)',
+  'api-staging.ascendlaunch.xyz': 'Ascend api (staging)',
+  'data-staging.ascendlaunch.xyz': 'Ascend data server (staging)',
+};
+// Ascend's own Elysium node (rpc.ascendlaunch.xyz, live since Nov 4): chain id, head and client version
 const X_ACCOUNTS = {
   AscendLaunch: null, // every post
   SignalFam: /elysium|kinetiq|ascend|99901/i,
@@ -652,7 +665,11 @@ async function webChecks(ctx, g, msgs, t0) {
   if (due(g, 'w:sigapp', 180)) jobs.push(['sigapp', () => checkSignalApp(ctx, g, msgs)]);
   if (due(g, 'w:sigely', 180)) jobs.push(['sigely', () => checkSignalEly(g, msgs)]);
   if (due(g, 'w:ascend', 180)) jobs.push(['ascend', () => checkSite(ctx, g, msgs, 'ascend', 'https://ascendlaunch.xyz/', 'Ascend')]);
+  // Ascend's other hosts: the app (where chain settings and addresses land first), docs, and the data and api
+  // servers (live, answer "not found" on their front page). Their RPC on Elysium is probed separately.
+  for (const [s, label] of Object.entries(ASCEND_HOSTS)) if (due(g, 'w:site:' + s, 180)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', label)]);
   for (const s of Object.keys(g.web.extra || {})) if (due(g, 'w:site:' + s, 300)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', s)]);
+  if (due(g, 'w:ascendrpc', 180)) jobs.push(['ascendrpc', () => checkAscendRpc(g, msgs)]);
   if (due(g, 'w:docs', 600)) jobs.push(['docs', () => checkDocs(g, msgs)]);
   const ctIdx = Math.floor(now() / 300) % CT_DOMAINS.length;
   if (due(g, 'w:ct' + ctIdx, 900)) jobs.push(['ct:' + CT_DOMAINS[ctIdx], () => checkCT(g, msgs, CT_DOMAINS[ctIdx])]);
@@ -770,6 +787,28 @@ async function checkSite(ctx, g, msgs, key, url, label) {
   st.base = { ...now1, addrs: [...new Set([...b.addrs, ...now1.addrs])].slice(-3000), scripts: [...new Set([...b.scripts, ...now1.scripts])].slice(-200) };
 }
 
+// Ascend's RPC: alert when it first answers, changes chain, stops answering, or gains Elysium contracts in
+// its error/landing text. Chain id must stay 99901; anything else is news too.
+async function checkAscendRpc(g, msgs) {
+  const st = (g.web.ascendrpc ||= {});
+  const call = async (m) => {
+    const r = await fetch('https://rpc.ascendlaunch.xyz', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': UA }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: m, params: [] }), signal: AbortSignal.timeout(15000) });
+    const j = await r.json().catch(() => ({}));
+    return { s: r.status, v: j.result ?? null, e: j.error?.message || null };
+  };
+  let chain, head, ver;
+  try { [chain, head, ver] = await Promise.all([call('eth_chainId'), call('eth_blockNumber'), call('web3_clientVersion')]); }
+  catch (e) {
+    if (st.up && once(g, 'ascendrpc:down:' + Math.floor(now() / 3600))) msgs.push(`🌐 <b>Ascend RPC stopped answering</b> (rpc.ascendlaunch.xyz)\n${esc(String(e.message || e).slice(0, 80))}`);
+    st.up = 0; return;
+  }
+  const cur = { chain: chain.v, head: parseInt(head.v || '0', 16) || 0, ver: String(ver.v || '').slice(0, 60) };
+  if (!st.up && once(g, 'ascendrpc:up:' + (st.at ? Math.floor(now() / 3600) : 0))) msgs.push(`🌐 <b>Ascend RPC is ${st.at ? 'back' : 'live'}</b> (rpc.ascendlaunch.xyz)\nchain ${esc(String(cur.chain))}${cur.chain === '0x1863d' ? ' = Elysium 99901' : ' (NOT Elysium)'} · block ${cur.head} · ${esc(cur.ver)}`);
+  else if (st.chain && cur.chain !== st.chain && once(g, 'ascendrpc:chain:' + cur.chain)) msgs.push(`🌐 <b>Ascend RPC changed chain</b> ${esc(String(st.chain))} → ${esc(String(cur.chain))}`);
+  else if (st.ver && cur.ver !== st.ver && once(g, 'ascendrpc:ver:' + cur.ver)) msgs.push(`🌐 <b>Ascend RPC node upgraded</b>\n${esc(st.ver)} → ${esc(cur.ver)}`);
+  st.up = 1; st.chain = cur.chain; st.head = cur.head; st.ver = cur.ver; st.at = now();
+}
+
 async function checkDocs(g, msgs) {
   const st = (g.web.docs ||= {});
   const pages = ['/docs/connecting-to-elysium', '/docs/contract-addresses', '/ecosystem', '/ecosystem/ascend', '/ecosystem/signal', '/explorer'];
@@ -879,9 +918,9 @@ function refCounts(g) {
   return c;
 }
 function webLine(g) {
-  const names = { sigapp: 'Signal app', sigely: 'Signal Elysium page', ascend: 'Ascend site', docs: 'Kinetiq docs', registry: 'chain registry' };
+  const names = { sigapp: 'Signal app', sigely: 'Signal Elysium page', ascend: 'Ascend site', ascendrpc: 'Ascend RPC', docs: 'Kinetiq docs', registry: 'chain registry', ...Object.fromEntries(Object.entries(ASCEND_HOSTS).map(([h, l]) => ['site:' + h, l])) };
   const ok = [], bad = [];
-  for (const [k, n] of Object.entries(names)) { const s = g.web[k]; if (!s?.at) continue; (s.ok ? ok : bad).push(n + (!s.ok && /blocked/.test(s.err || '') ? ' (bot wall, hourly browser check covers it)' : '')); }
+  for (const [k, n] of Object.entries(names)) { const s = g.web[k]; if (!s?.at) continue; if (!s.ok && /ENOTFOUND|getaddrinfo/.test(s.err || '')) continue; (s.ok ? ok : bad).push(n + (!s.ok && /blocked/.test(s.err || '') ? ' (bot wall, hourly browser check covers it)' : '')); }
   const ct = Object.keys(g.web.ct || {}).length;
   const xs = Object.entries(g.web.xs || {}).filter(([, s]) => s.last).length;
   const xbad = Object.keys(X_ACCOUNTS).filter((h) => g.web['x:' + h] && !g.web['x:' + h].ok).length;
