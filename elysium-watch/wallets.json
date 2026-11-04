@@ -1269,5 +1269,33 @@
   "label": "PILL dev (HyperCore)",
   "group": "dev",
   "watch": "launch"
+ },
+ {
+  "address": "0x6c3bdb99021f07272e00767fba13417d09fc6d5f",
+  "label": "Stands dev (deployer, admin key)",
+  "group": "standsteam",
+  "coins": [
+   "0x8e0d1ed72dfa8280b403e7a3db670fd8dd28dea9"
+  ]
+ },
+ {
+  "address": "0x7d89968d7544f3608c74e59ec3dde7d37927f87f",
+  "label": "Stands fee wallet",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xece1ee20b0c1f0e1478de59d82515d79c327f8e6",
+  "label": "Stands team funder",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xcb534680008e870f492ee0c57a1e1517a3f378af",
+  "label": "Stands dev hop (paid the launch buy)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xedb75aa49bd3cd5babdb003c0e627daae6cdb372",
+  "label": "Stands buyback bot",
+  "group": "standsteam"
  }
 ]

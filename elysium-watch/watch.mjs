@@ -50,7 +50,7 @@ const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
 const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
 // exit watch: groups that are a team or a cluster you hold against. Their moves come as one 🚨 alert per group with
 // what the whole group still holds, and a coin they send to a fresh wallet is followed (the hop before a sell)
-const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
