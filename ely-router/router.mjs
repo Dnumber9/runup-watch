@@ -116,12 +116,15 @@ const PINNED = [
   { t: '0x0f79931689af199e7cf868ed1107bba2c83c68f7', pm: '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', fee: 0, ts: 60, hook: '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc', b: 279485, id: '0x7b182abb748bae25e2c73abd8b4cf3157d8d35a47e4b36d1ee5565ade94c3c27' }, // VOLTA
 ];
 const T_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
-// Ascend's launchpad runs a modified Uniswap v4 (its testnet build): Initialize(id, currency0, currency1) with data
-// (hooks, fee, extra, sqrtPrice, tick), a 6-field PoolKey, a wrapped quote token paid through Permit2 and its own
-// Universal Router. Its pools are indexed here so the bot knows the moment a coin lists on Ascend, but they cannot be
-// traded through ROUTER: that needs an Ascend route once its mainnet contracts are known.
+// Ascend runs a PancakeSwap Infinity fork: a CL pool manager whose Initialize is (id, currency0, currency1) with data
+// (hooks, fee, parameters, sqrtPrice, tick), a 6-field PoolKey (currency0, currency1, hooks, poolManager, fee,
+// parameters), coins paired with a quote token (Mock USDC on its testnet) or native HYPE, and trades through its
+// Universal Router (execute, INFI_SWAP) with ERC20s pulled through Permit2. Its launchpad hook charges an anti-snipe
+// fee that steps down each second after launch (testnet: 90%, 72.2, 54.4, 36.6, 18.8, then 1% from +5 s).
 const T_INIT_ASCEND = '0x426cc62fe6a33a40ba2788c2c87a9c34ee4582b95bc9fa5a7bb7ae70b750b99c';
-const ASCEND_QUOTES = new Set(String(process.env.ASCEND_QUOTES || '').toLowerCase().split(',').filter(Boolean)); // its quote token(s) on mainnet, once known
+const T_SWAP_ASCEND = '0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237';
+const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
+const ASCEND_QUOTES = new Set(String(process.env.ASCEND_QUOTES || '').toLowerCase().split(',').filter(Boolean)); // quote token(s), when known in advance
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
@@ -148,6 +151,10 @@ state.snipes ||= [];   // [{ id, k: token|dev|new, w, hype, left, b, at, pms, go
 state.copy ||= {};     // leader wallet → { name, hype, at }
 state.copyDone ||= {}; // `${leader}:${token}` → time (each coin copied once per leader)
 state.dev ||= {};      // token → { w: creator, peak: tokens }
+state.asc ||= {};
+state.asc.ur ||= {};      // Ascend pool manager → its Universal Router (learned from its swaps, or /ascend router)
+state.asc.quotes ||= {};  // Ascend quote token → pools seen with it
+state.asc.slot ||= {};    // token (or launchpad hook) → storage slot of SIM's balance in it, for simulations
 const cfg = () => ({
   slip: BigInt(state.set.slip ?? process.env.SLIPPAGE_BPS ?? 1500),
   max: Number(state.set.max ?? process.env.MAX_BUY_HYPE ?? 5),
@@ -354,8 +361,8 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve';
-const routerOf = (r) => (r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend';
+const routerOf = (r) => (r?.kind === 'ascend' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
@@ -365,12 +372,13 @@ const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'curve' ? enc(curveO
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
-const routeOf = (p) => (p.kind === 'ascend' ? { kind: 'ascend', name: 'Ascend', pm: p.pm, hook: p.hook, q: p.q } : p.q
+const routeLabel = (r) => (r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
+  if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
   if (r.kind === 'curve') return u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
   return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
@@ -387,6 +395,7 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
+  if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
   if (r.kind === 'curve') return u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
@@ -400,6 +409,288 @@ async function kyber(path, body) {
 const kyRoute = (tin, tout, amt) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tout}&amountIn=${amt}`);
 const kyBuild = (sum, slip) => kyber('/route/build', { routeSummary: sum, sender: me, recipient: me, slippageTolerance: Number(slip), deadline: deadline() });
 
+// ── Ascend (PancakeSwap Infinity fork) ───────────────────────────────────────────────────────────────
+const ascQuotes = () => new Set([...ASCEND_QUOTES, ...Object.keys(state.asc?.quotes || {}), ...(state.set?.ascquote ? [state.set.ascquote] : [])]);
+// seconds after launch before a snipe buys: set by hand, or null (auto: the fee schedule is read by simulation)
+const ascDelay = () => { const v = state.set.ascdelay ?? process.env.ASCEND_DELAY; return v == null || v === '' || v === 'auto' ? null : Number(v); };
+const ascDelayText = () => (ascDelay() == null ? 'as soon as its anti-snipe fee is gone' : `${ascDelay()} s after launch`);
+const ascUr = (pm) => lc(state.asc.ur[pm] || state.set.ascrouter || process.env.ASCEND_ROUTER || '');
+// ABI pieces for the Universal Router: execute(bytes commands, bytes[] inputs, uint256 deadline), INFI_SWAP (0x10)
+// carrying (bytes actions, bytes[] params); actions CL_SWAP_EXACT_IN_SINGLE 06, SETTLE_ALL 0c, TAKE_ALL 0f
+const pad32 = (h) => h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+const abiBytes = (h) => word(h.length / 2) + pad32(h);
+const abiBytesArr = (items) => {
+  let off = items.length * 32;
+  const offs = [], body = [];
+  for (const h of items) { const e = abiBytes(h); offs.push(word(off)); body.push(e); off += e.length / 2; }
+  return word(items.length) + offs.join('') + body.join('');
+};
+const infiSwap = (actions, params) => { const A = abiBytes(actions); return word(64) + word(64 + A.length / 2) + A + abiBytesArr(params); };
+const urExecute = (commands, inputs, dl) => { const C = abiBytes(commands); return '0x3593564c' + word(96) + word(96 + C.length / 2) + word(dl) + C + abiBytesArr(inputs); };
+const ascKey = (r, t) => (r.qFirst ? [r.q, t] : [t, r.q]).concat([r.hook, r.pm, r.fee, r.params]);
+const ascSwapParam = (r, t, zfo, amt, minOut) => word(32) + [...ascKey(r, t), zfo ? 1 : 0, amt, minOut, 320].map(word).join('') + word(0);
+// buy: the quote in (native HYPE from msg.value, or pulled through Permit2), the coin out to the sender
+const ascBuyData = (r, t, qAmt, minOut, dl) => urExecute('10', [infiSwap('060c0f', [ascSwapParam(r, t, r.qFirst, qAmt, minOut), word(r.q) + word(qAmt), word(t) + word(minOut)])], dl);
+const ascSellData = (r, t, amt, minOut, dl, settleMax = amt) => urExecute('10', [infiSwap('060c0f', [ascSwapParam(r, t, !r.qFirst, amt, minOut), word(t) + word(settleMax), word(r.q) + word(minOut)])], dl);
+// Simulation helper (hand-assembled, only ever placed at SIM through a state override). Calldata words: router,
+// coin, buyLen, sellLen, amount offset in sellData, quote (0 = native), Permit2, flags (1: approve the quote
+// before buying, 2: proceeds are native), then buyData and sellData. It approves through Permit2 itself, buys,
+// reads its coin balance, sells that balance back and returns (got, back); reverts with 1 (buy), 2 (balance),
+// 3 (sell), 4/5 (approvals). Checked against Ascend's testnet pools: 5 USDC in, 4.9006 USDC back (1% each way).
+const ASC_CODE = '0x36156101e55760e0356001161561007f5763095ea7b360e01b60005260c0356004526000196024526000600060446000600060a0355af115610208576387517c4560e01b60005260a035600452600035602452600160a01b60019003604452600160301b600190036064526000600060846000600060c0355af115610213575b60403580156100a45780610100612000376000600082612000346000355af1156101e7575b506370a0823160e01b6000523060045260206000602460006020355afa156101f25760005160603580156101d95763095ea7b360e01b60005260c035600452600019602452600060006044600060006020355af115610208576387517c4560e01b600052602035600452600035602452600160a01b60019003604452600160301b600190036064526000600060846000600060c0355af1156102135780604035610100016130003781608035613000015260e03560021660a0351517610189576370a0823160e01b60005230600452602060006024600060a0355afa5060005161018b565b475b600060008361300060006000355af1156101fd5760e03560021660a03515176101d3576370a0823160e01b60005230600452602060006024600060a0355afa506000516101d5565b475b0390505b60205260005260406000f35b005b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b600460005260206000fd5b600560005260206000fd';
+const ASC_MARK = 0xabcdef0123456789abcdef0123456789n;
+// The storage slot of SIM's balance in a token, so a simulation can hand the helper tokens. Tried in order: the
+// slot found before for this token or its launchpad (coins of one launchpad share a layout), the usual mapping
+// slots (0-12; 51 for bridged OpenZeppelin-upgradeable tokens such as Elysium's USDC; the OpenZeppelin 5 namespace;
+// Solady's seed), then slots 13-60.
+const OZ5_ERC20 = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00n;
+const mapSlot = (base) => keccak256(concat([vpad(SIM), vpad(toHex(base))]));
+const SLOT_GROUPS = () => [
+  [...Array.from({ length: 13 }, (_, i) => mapSlot(i)), mapSlot(51), mapSlot(OZ5_ERC20), keccak256(concat([SIM, '0x000000000000000087a211a2']))],
+  Array.from({ length: 24 }, (_, i) => mapSlot(13 + i)),
+  Array.from({ length: 24 }, (_, i) => mapSlot(37 + i)),
+];
+const slotSeen = new Set();
+async function simSlot(t, hint) {
+  const probe = async (s) => {
+    const r = await ethCall(t, enc('70a08231', SIM), {}, { [t]: { stateDiff: { [s]: '0x' + word(123456789n) } } }).catch(() => null);
+    return !!r && u256(r) === 123456789n;
+  };
+  const known = state.asc.slot[t] ?? (hint ? state.asc.slot[hint] : undefined);
+  if (known && slotSeen.has(t + known)) return known; // checked once this run: no extra round trip
+  let s = known && (await probe(known)) ? known : null;
+  for (const g of SLOT_GROUPS()) {
+    if (s) break;
+    s = g[(await Promise.all(g.map(probe))).indexOf(true)] || null;
+  }
+  if (!s) return null;
+  slotSeen.add(t + s);
+  if (state.asc.slot[t] !== s || (hint && state.asc.slot[hint] !== s)) { state.asc.slot[t] = s; if (hint) state.asc.slot[hint] = s; save(); }
+  return s;
+}
+// buy and/or sell through the helper, as of now or as of `time` (a block-time override, for the seconds after launch)
+async function ascSim(r, t, { qAmt = 0n, sellAmt = 0n, buy = true, sell = true, time = null } = {}) {
+  if (!r.ur) throw new Error('Ascend router not known yet');
+  const native = r.q === ZERO;
+  const bd = buy ? strip(ascBuyData(r, t, qAmt, 0n, 2 ** 31 - 1)) : '';
+  const sd = sell ? strip(ascSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256)) : '';
+  const off = sell ? sd.indexOf(word(ASC_MARK)) / 2 : 0;
+  const flags = (buy && !native ? 1 : 0) | (native ? 2 : 0);
+  const data = '0x' + [r.ur, t, bd.length / 2, sd.length / 2, off, r.q, PERMIT2, flags].map(word).join('') + bd + sd;
+  const ov = { [SIM]: { code: ASC_CODE, balance: hex((buy && native ? qAmt : 0n) + 10n ** 22n) } };
+  if (buy && !native) {
+    const s = await simSlot(r.q);
+    if (!s) throw new Error('cannot simulate: unknown balance layout of the quote token');
+    ov[r.q] = { stateDiff: { [s]: '0x' + word(qAmt) } };
+  }
+  if (!buy) {
+    const s = await simSlot(t, r.hook);
+    if (!s) throw new Error('cannot simulate: unknown balance layout of the coin');
+    ov[t] = { stateDiff: { [s]: '0x' + word(sellAmt) } };
+  }
+  const params = [{ from: SIM, to: SIM, data, value: hex(buy && native ? qAmt : 0n), gas: hex(30000000) }, 'latest', ov];
+  let res;
+  if (time) {
+    try { res = await race('eth_call', [...params, { time: hex(time) }]); }
+    catch (e) { if (reverted(e)) throw e; res = await race('eth_call', params); } // no node takes a block time: as of now
+  } else res = await race('eth_call', params);
+  return { got: u256(res), back: BigInt('0x' + (strip(res).slice(64, 128) || '0')) };
+}
+// quote units per HYPE (1e18 for native HYPE): dollar quotes at the HYPE price, others at KyberSwap's price
+const ascRates = {};
+async function ascRate(q) {
+  if (q === ZERO) return 10n ** 18n;
+  const c = ascRates[q];
+  if (c && Date.now() - c.t < 60000) return c.v;
+  const m = await tokenMeta(q);
+  let v = null;
+  if (/usd/i.test(m.sym)) { const px = await hypeUsd(); if (px) v = (BigInt(Math.round(px * 1e6)) * 10n ** BigInt(m.d)) / 10n ** 6n; }
+  if (!v) { try { v = BigInt((await kyRoute(NATIVE, q, 10n ** 18n)).routeSummary.amountOut); } catch {} }
+  if (!v) throw new Error(`no HYPE price for ${m.sym}`);
+  ascRates[q] = { v, t: Date.now() };
+  return v;
+}
+const qOfWei = async (q, wei) => (wei * (await ascRate(q))) / 10n ** 18n;
+const weiOfQ = async (q, amt) => (amt * 10n ** 18n) / (await ascRate(q));
+// Ascend's testnet Universal Router: mainnet may reuse the address (same deployer and nonce). Its code holds
+// execute() and, as immutables, its pool manager and the canonical Permit2 (checked on testnet).
+const ASC_UR_GUESS = ['0x90332b0ecbb2c9517f405627b0dd5d5265246563'];
+// the Universal Router of an Ascend pool manager: set by hand, the contract with execute() that its swaps come
+// from, or the testnet address when the code there names this pool manager (before anyone trades through it)
+async function ascRouterFor(pm) {
+  const known = ascUr(pm);
+  if (known) return known;
+  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  const logs = (await Promise.all([0, 1, 2].map((k) => rpc('eth_getLogs', [{ address: pm, topics: [T_SWAP_ASCEND], fromBlock: hex(Math.max(0, head - 2000 * (k + 1) + 1)), toBlock: hex(Math.max(0, head - 2000 * k)) }]).catch(() => [])))).flat();
+  const n = {};
+  for (const l of logs) { const a = lc('0x' + l.topics[2].slice(26)); n[a] = (n[a] || 0) + 1; }
+  const cands = Object.keys(n).sort((x, y) => n[y] - n[x]).slice(0, 6).map((a) => [a, false]).concat(ASC_UR_GUESS.map((a) => [a, true]));
+  for (const [a, guess] of cands) {
+    const code = lc(await rpc('eth_getCode', [a, 'latest']).catch(() => '0x'));
+    if (code.includes('3593564c') && (!guess || code.includes(pm.slice(2)))) { state.asc.ur[pm] = a; save(); return a; }
+  }
+  return null;
+}
+const ascRoute = (p, ur) => ({ kind: 'ascend', name: 'Ascend', pm: p.pm, hook: p.hook, fee: p.fee, params: p.params, q: p.q, qFirst: p.qFirst, ur: ur || null, b: p.b });
+async function ascRouteOf(p) { const ur = await ascRouterFor(p.pm); return ur ? ascRoute(p, ur) : null; }
+async function ascQuoteBuy(r, t, wei) { return (await ascSim(r, t, { qAmt: await qOfWei(r.q, wei), sell: false })).got; }
+async function ascQuoteSell(r, t, amt) { return weiOfQ(r.q, (await ascSim(r, t, { buy: false, sellAmt: amt })).back); }
+async function ascSellCheck(r, t, wei, time) {
+  try {
+    const qAmt = await qOfWei(r.q, wei);
+    const { got, back } = await ascSim(r, t, { qAmt, time });
+    const loss = 1 - num(back) / num(qAmt);
+    return { ok: got > 0n && back > 0n && loss * 100 <= cfg().tax, got, back: await weiOfQ(r.q, back), loss, note: `sell check: round trip ${(loss * 100).toFixed(1)}%` };
+  } catch (e) {
+    const code = String(e.data || '').slice(-2);
+    if (code === '03') return { ok: false, blocked: true, note: 'cannot be sold back (honeypot or sells blocked)' };
+    return { ok: null, note: `sell check unavailable${/router not known/.test(e.message) ? ' (Ascend router not known yet)' : ''}` };
+  }
+}
+// Permit2 route: the token approves Permit2, Permit2 lets the router pull it; both for good (burner wallet)
+async function ascApprovals(token, ur, amt) {
+  const [a, p] = await Promise.all([
+    ethCall(token, enc('dd62ed3e', me, PERMIT2), {}, undefined, true).then(u256).catch(() => 0n),
+    ethCall(PERMIT2, enc('927da105', me, token, ur), {}, undefined, true).then(strip).catch(() => ''),
+  ]);
+  const p2 = p ? BigInt('0x' + (p.slice(0, 64) || '0')) : 0n, exp = p ? Number(BigInt('0x' + (p.slice(64, 128) || '0'))) : 0;
+  const txs = [];
+  if (a < amt) txs.push({ to: token, data: enc('095ea7b3', PERMIT2, MAX256), gas: 120000 });
+  if (p2 < amt || exp < Date.now() / 1000 + 600) txs.push({ to: PERMIT2, data: enc('87517c45', token, ur, (1n << 160n) - 1n, (1n << 48n) - 1n), gas: 120000 });
+  return txs;
+}
+async function ascPreApprove(t, r) {
+  if (approving.has(t)) return;
+  const txs = await ascApprovals(t, r.ur, 1n << 128n);
+  if (!txs.length) return;
+  approving.add(t);
+  try { await serial(async () => { for (const x of txs) await sendRaw(x); }); }
+  catch (e) { approving.delete(t); throw e; }
+}
+// a new Ascend pool whose coin side is not obvious: the coin is the side that had no code before the launch block
+const ascResolving = new Set();
+async function resolveAscend(l, p) {
+  if (ascResolving.has(p.id)) return;
+  ascResolving.add(p.id);
+  try {
+    const before = hex(Math.max(0, p.b - 1));
+    const [k0, k1] = await Promise.all([p.c0, p.c1].map((c) => rpc('eth_getCode', [c, before]).catch(() => null)));
+    let q = null;
+    if (k0 === '0x' && k1 && k1 !== '0x') q = p.c1;
+    else if (k1 === '0x' && k0 && k0 !== '0x') q = p.c0;
+    else {
+      const [m0, m1] = await Promise.all([tokenMeta(p.c0), tokenMeta(p.c1)]);
+      const qq = (m) => /usd|hype/i.test(m.sym);
+      q = qq(m0) && !qq(m1) ? p.c0 : qq(m1) && !qq(m0) ? p.c1 : null;
+    }
+    if (!q) return;
+    const t = q === p.c0 ? p.c1 : p.c0;
+    const pp = { ...p, q, qFirst: q === p.c0 };
+    const list = (state.pools[t] ||= []);
+    if (list.some((y) => y.id === pp.id)) return;
+    list.push(pp);
+    delete state.routes[t];
+    state.asc.quotes[q] = (state.asc.quotes[q] || 0) + 1;
+    if (live) fresh.push({ t, ...pp, tx: lc(l.transactionHash || ''), newPm: !knownPms.has(pp.pm) });
+    knownPms.add(pp.pm);
+    save();
+  } finally { ascResolving.delete(p.id); }
+}
+// buy plan for an Ascend coin: amount in the quote, sell check (as of `time` for a snipe), approvals, the swap
+async function ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, hBal) {
+  const { slip } = cfg();
+  r.ur ||= await ascRouterFor(r.pm);
+  if (!r.ur) throw new Error('Ascend router not known yet: set it with /ascend router 0x…');
+  const native = r.q === ZERO;
+  const [qAmt, qm, qBal] = await Promise.all([qOfWei(r.q, wei), native ? null : tokenMeta(r.q), native ? null : balOf(r.q, me, true)]);
+  if (native ? hBal < wei + 2n * 10n ** 15n : qBal < qAmt) {
+    throw new Error(native ? `not enough HYPE: wallet has ${fmtH(num(hBal))}` : `not enough ${qm.sym}: wallet has ${fmt(num(qBal, qm.d))}, this buy needs ${fmt(num(qAmt, qm.d))}. Ascend coins are paired with ${qm.sym}: send some to ${me}`);
+  }
+  if (!native && hBal < 2n * 10n ** 15n) throw new Error('need a little HYPE in the wallet for gas');
+  const head = opts.label ? `${opts.label}\n` : '';
+  // a snipe timed for the second the fee drops also prices the second before, for its minimum (below)
+  const [sc, prev] = await Promise.all([ascSellCheck(r, t, wei, opts.ascTime),
+    opts.sendAt && opts.ascTime ? ascSim(r, t, { qAmt, sell: false, time: opts.ascTime - 1 }).then((x) => x.got).catch(() => null) : null]);
+  if (cfg().check && !force && sc.ok === false) {
+    J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
+    const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).`
+      : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).${sc.loss > 0.15 ? ' Ascend charges a falling anti-snipe fee for the first seconds after launch.' : ''}`;
+    await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
+    return { refused: true };
+  }
+  const expect = sc.got > 0n ? sc.got : (await ascSim(r, t, { qAmt, sell: false, time: opts.ascTime })).got;
+  let minOut = (expect * (10000n - slip)) / 10000n;
+  // landing a second early means a higher fee: the minimum sits halfway between the two outcomes, so that reverts
+  if (prev != null && prev > 0n && prev * 100n < expect * 98n && (prev + expect) / 2n > minOut) minOut = (prev + expect) / 2n;
+  const txs = native ? [] : await ascApprovals(r.q, r.ur, qAmt);
+  txs.push({ to: r.ur, value: native ? qAmt : 0n, data: ascBuyData(r, t, qAmt, minOut, deadline()), gas: 900000 });
+  if (!native) sc.note = `${fmt(num(qAmt, qm.d))} ${qm.sym}${sc.note ? ', ' + sc.note : ''}`;
+  return { txs, expect, sc };
+}
+// when the anti-snipe fee is gone: the round trip simulated as of each second after launch, against the same trip
+// ten minutes later (the pool's normal fee); the first second within half a percent of that. null if unreadable.
+async function ascFeeDrop(r, t, t0, qAmt) {
+  const loss = (time) => ascSim(r, t, { qAmt, time }).then((x) => 1 - num(x.back) / num(qAmt)).catch(() => null);
+  const base = await loss(t0 + 600);
+  if (base == null) return null;
+  for (const ks of [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15], [20, 30, 45, 60, 90, 120]]) {
+    const ls = await Promise.all(ks.map((k) => loss(t0 + k)));
+    const i = ls.findIndex((x) => x != null && x <= base + 0.005);
+    if (i >= 0) return { k: ks[i], base, loss: ls[i], first: ls[0] };
+  }
+  return { k: null, base };
+}
+// Ascend launches: wait out the anti-snipe fee, then buy in the first second it is down to normal. When that second
+// is (auto) comes from simulating the round trip as of each second after the launch block. The buy is planned
+// 1.5 s ahead and only the swap waits for the second; its minimum is priced as of that second, so a swap that
+// lands early (fee still high) reverts instead of overpaying.
+const ASC_MARGIN = Number(process.env.ASCEND_MARGIN_MS ?? 200); // ms after the second turns before sending
+async function ascSnipe(f, s) {
+  let label = `🎯 Ascend snipe: new coin <code>${short(f.t)}</code>`;
+  try {
+    const blk = await rpc('eth_getBlockByNumber', [hex(f.b), false]);
+    const t0 = Number(BigInt(blk.timestamp));
+    let r = null;
+    for (let i = 0; i < 80 && !r; i++) { r = await ascRouteOf(f).catch(() => null); if (!r) await sleep(250); } // its router shows up with the first trades
+    if (!r) return say(`${label}\n⚠️ Ascend's router is not known and no trade revealed it within 20 s. Set it with /ascend router 0x…, then buy from the card.`);
+    let delay = ascDelay();
+    if (delay == null) {
+      const fd = await ascFeeDrop(r, f.t, t0, await qOfWei(r.q, toWei(String(s.hype)))).catch(() => null);
+      delay = fd?.k ?? 5;
+      label += fd?.k == null ? ' · fee schedule unreadable, buying at +5 s' : fd.k === 0 ? ' · no anti-snipe fee'
+        : ` · anti-snipe fee gone from +${fd.k} s (${fd.first == null ? 'buys revert before that' : `a buy and sell back lost ${Math.round(fd.first * 100)}% at launch`})`;
+    } else label += ` · buying at +${delay} s`;
+    const at = t0 + delay, sendAt = at * 1000 + ASC_MARGIN;
+    if (sendAt - 1500 > Date.now()) await sleep(Math.min(sendAt - 1500 - Date.now(), 120000));
+    let res;
+    for (let i = 0; i < 4; i++) {
+      // a revert means it landed before the fee stepped down, or the price ran: again, a little later, at the new price
+      const sa = sendAt + i * 400;
+      res = await buy(f.t, s.hype, null, false, 'snipe', { route: r, label, ascTime: Math.max(at, Math.floor(Date.now() / 1000)), sendAt: sa > Date.now() ? sa : 0,
+        revertNote: i < 3 ? 'it landed before the fee dropped, or the price ran past your slippage; trying again' : null });
+      if (!res?.reverted) return res;
+      await sleep(300);
+    }
+    return res;
+  } catch (e) { return say(`${label}\n⚠️ ${esc(e.message).slice(0, 200)}`); }
+}
+async function ascStatus() {
+  const pools = Object.values(state.pools).flat().filter((p) => p.kind === 'ascend');
+  const qs = [...ascQuotes()];
+  const qLines = await Promise.all(qs.map(async (q) => {
+    if (q === ZERO) return 'native HYPE';
+    const m = await tokenMeta(q).catch(() => ({ sym: '?', d: 18 }));
+    const b = await balOf(q, me, true).catch(() => null);
+    return `${esc(m.sym)} <code>${q}</code>${b != null ? ` · wallet ${fmt(num(b, m.d))}` : ''}`;
+  }));
+  const urs = { ...state.asc.ur };
+  return `<b>Ascend</b>\nRouter: ${state.set.ascrouter ? `<code>${state.set.ascrouter}</code> (set)` : Object.keys(urs).length ? Object.entries(urs).map(([pm, u]) => `<code>${u}</code> (learned for ${short(pm)})`).join(', ') : 'not known yet (learned from the first trades, or /ascend router 0x…)'}\n` +
+    `Quote: ${qLines.length ? qLines.join(' · ') : 'not known yet (learned from the first pool, or /ascend quote 0x…)'}\n` +
+    `Pools indexed: ${pools.length} · snipes buy ${ascDelayText()}\n` +
+    `Armed: ${state.snipes.filter((x) => x.k === 'asc').map(snipeText).join(' · ') || 'none (/snipe ascend 1)'}\n\n` +
+    `/ascend router 0x… · /ascend quote 0x… · /ascend delay auto|5 · /ascend approve (approve the quote once, so the first buy is one transaction)`;
+}
+
 // ── live pool index: every v4 Initialize on Elysium, from any pool manager ─────────────────────────────
 const pmName = (pm) => PM_NAMES[pm] || short(pm);
 const knownPms = new Set();   // every pool manager that has ever had a pool (a new one = a new launchpad)
@@ -411,11 +702,13 @@ function parseInit(l) {
   const c0 = lc('0x' + l.topics[2].slice(26)), c1 = lc('0x' + l.topics[3].slice(26)), pm = lc(l.address), d = strip(l.data);
   let t, q = null;
   if (l.topics[0] === T_INIT_ASCEND) {
-    // the quote is whichever side is a known Ascend quote; unknown yet, the side with the lower address is assumed
-    const qIs0 = ASCEND_QUOTES.size ? ASCEND_QUOTES.has(c0) : true;
-    if (ASCEND_QUOTES.size && !ASCEND_QUOTES.has(c0) && !ASCEND_QUOTES.has(c1)) return null;
-    t = qIs0 ? c1 : c0;
-    return { t, p: { pm, kind: 'ascend', fee: Number(BigInt('0x' + d.slice(0, 64 * 2).slice(64))), ts: 0, hook: '0x' + d.slice(24, 64), q: qIs0 ? c0 : c1, qFirst: qIs0, b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) } };
+    // which side is the coin: native HYPE or a known quote is the other side; otherwise it is settled on chain
+    // (resolveAscend: the coin is the side that had no code before the launch block)
+    const p = { pm, kind: 'ascend', fee: Number(BigInt('0x' + d.slice(64, 128))), params: '0x' + d.slice(128, 192), hook: '0x' + d.slice(24, 64), b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]), c0, c1 };
+    const qs = ascQuotes();
+    const q = c0 === ZERO || qs.has(c0) ? c0 : qs.has(c1) ? c1 : null;
+    if (q) { p.q = q; p.qFirst = q === c0; }
+    return { t: q ? (q === c0 ? c1 : c0) : null, p };
   }
   if (c0 === ZERO) t = c1;
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c0)) { t = c1; q = c0; }
@@ -428,6 +721,7 @@ function parseInit(l) {
 function addPool(l) {
   const x = parseInit(l);
   if (!x) return 0;
+  if (!x.t) { resolveAscend(l, x.p).catch((e) => console.error('ascend pool', e.message)); return 0; }
   const { t, p } = x, pm = p.pm;
   const list = (state.pools[t] ||= []);
   if (list.some((y) => y.id === p.id)) return 0;
@@ -467,7 +761,9 @@ async function findRoute(t, fresh = false) {
   const probe = 10n ** 16n;
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
-  let cands = (state.pools[t] || []).filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf);
+  const pools = state.pools[t] || [];
+  let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf);
+  for (const p of pools.filter((x) => x.kind === 'ascend').slice(-2)) { const ar = await ascRouteOf(p).catch(() => null); if (ar) cands.push(ar); }
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
   cands = cands.concat(await v3Pools(t), await curvePools(t));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
@@ -528,6 +824,7 @@ async function scanV4(t, ok) {
 const RT_CODE = '0x36156100c3576040358060a060003760006000826000346000355af1156100a2576370a0823160e01b6000523060045260206000602460006020355afa156100ad5760005163095ea7b360e01b60005260003560045280602452600060006044600060006020355af15047606035808460a00161010037826080356101000152600060008261010060006000355af1156100b85750470360205260005260406000f35b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b00';
 async function sellCheck(r, t, wei) {
   if (!isPool(r)) return { ok: null, note: 'sell check skipped (KyberSwap route)' };
+  if (r.kind === 'ascend') return ascSellCheck(r, t, wei);
   const bd = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1), sd = sellData(r, t, 0, 0, SIM, 2 ** 31 - 1);
   const len = (h) => (h.length - 2) / 2;
   const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(amtOffset(r, t)) + strip(bd) + strip(sd);
@@ -551,6 +848,7 @@ async function quoteBuy(r, t, wei) {
 // HYPE out for selling `amt` tokens now
 async function quoteSellOut(r, t, amt) {
   if (!isPool(r)) return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
+  if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
   const allowed = u256(await ethCall(t, enc('dd62ed3e', me, routerOf(r))));
   return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, routerOf(r)));
 }
@@ -615,7 +913,7 @@ const cacheBal = (t, bal) => { const p = state.pos[t]; if (p) { p.balW = bal.toS
 // ── card ───────────────────────────────────────────────────────────────────────────────────────────
 async function cardText(t) {
   const [m, r, px] = await Promise.all([tokenMeta(t), findRoute(t), hypeUsd()]);
-  if (!r && (state.pools[t] || []).some((p) => p.kind === 'ascend')) return { text: `<b>${esc(m.s || short(t))}</b> trades on <b>Ascend</b>, which this bot cannot route yet: Ascend runs its own modified v4 with a wrapped quote and its own router.\nBuy it on app.ascendlaunch.xyz for now.\n<code>${t}</code>` };
+  if (!r && (state.pools[t] || []).some((p) => p.kind === 'ascend')) return { text: `<b>${esc(m.sym || short(t))}</b> trades on <b>Ascend</b>, but the bot does not know Ascend's router yet (it learns it from the first trades on Ascend).\nSet it with /ascend router 0x… and paste the coin again.\n<code>${t}</code>` };
   if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
@@ -670,15 +968,20 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
   const wei = toWei(String(hypeAmt));
   const known = opts.route || state.routes[t];
-  const scP = isPool(known) ? sellCheck(known, t, wei) : null; // started right away when the route is known
+  const scP = isPool(known) && known.kind !== 'ascend' ? sellCheck(known, t, wei) : null; // started right away when the route is known
   let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
-  if (bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
+  if (r.kind !== 'ascend' && bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const head = opts.label ? `${opts.label}\n` : '';
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
   // or lose too much on the round trip, and its buy leg is the quote for this exact size.
-  let sc = { note: '' }, expect = null;
-  if (isPool(r)) {
+  let sc = { note: '' }, expect = null, ascTxs = null;
+  if (r.kind === 'ascend') {
+    const plan = await ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, bal);
+    if (plan.refused) return { ok: false, refused: true };
+    ({ sc, expect } = plan);
+    ascTxs = plan.txs;
+  } else if (isPool(r)) {
     sc = await (scP && r === known ? scP : sellCheck(r, t, wei));
     if (cfg().check && !force && sc.ok === false) {
       J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
@@ -698,16 +1001,20 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     }
   }
   let tx;
-  if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
+  if (ascTxs) tx = ascTxs[ascTxs.length - 1];
+  else if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 };
   else {
     const k = await kyRoute(NATIVE, t, wei);
     const b = await kyBuild(k.routeSummary, slip);
     expect = BigInt(b.amountOut);
     tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
   }
-  const msgP = say(`${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…${sc.note ? ` (${sc.note})` : ''}`, null, replyTo);
+  const waitS = opts.sendAt ? (opts.sendAt - Date.now()) / 1000 : 0;
+  const msgP = say(`${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…${sc.note ? ` (${sc.note})` : ''}${waitS > 0.3 ? `\nSending in ${waitS.toFixed(1)} s, when the fee drops.` : ''}`, null, replyTo);
   let hash;
-  try { hash = await serial(() => sendRaw(tx)); }
+  // a timed snipe: approvals go now, the swap itself at opts.sendAt
+  const send = async () => { let h; const list = ascTxs || [tx]; for (const x of list) { if (opts.sendAt && x === list[list.length - 1] && opts.sendAt > Date.now()) await sleep(opts.sendAt - Date.now()); h = await sendRaw(x); } return h; };
+  try { hash = await serial(send); }
   catch (e) { await edit(await msgP, `${head}❌ Buy of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`); return { ok: false, error: e.message }; }
   const sentAt = Date.now();
   const rcP = receipt(hash);
@@ -718,7 +1025,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> was dropped by the network; nothing spent. Tap again.`, cardButtons(t)); return { ok: false }; }
   if (rc.status !== '0x1') {
     J({ side: 'revert', coin: t, sym: m.sym, hype: hypeAmt, src, slip: Number(slip), route: r.name, hash });
-    await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (price moved past your ${Number(slip) / 100}% slippage?) · ${txLink(hash)}`, cardButtons(t));
+    await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (${opts.revertNote || `price moved past your ${Number(slip) / 100}% slippage?`}) · ${txLink(hash)}`, cardButtons(t));
     return { ok: false, reverted: true };
   }
   let got = gotFromLogs(rc, t);
@@ -737,7 +1044,8 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
   // after the buy: approve so every sell is one transaction, note the creator's bag for the dev guard (when on),
   // and add the auto-sell preset (when set)
-  if (cfg().preapprove && isPool(r)) preApprove(t, routerOf(r)).catch((e) => console.error('preapprove', e.message));
+  if (cfg().preapprove && r.kind === 'ascend') ascPreApprove(t, r).catch((e) => console.error('preapprove', e.message));
+  else if (cfg().preapprove && isPool(r)) preApprove(t, routerOf(r)).catch((e) => console.error('preapprove', e.message));
   if (cfg().devsell > 0) devOf(t).then(async (d) => { if (d?.w) { d.peak = num(await balOf(t, d.w), m.d); save(); } }).catch(() => {});
   let autoLine = '';
   try {
@@ -770,7 +1078,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   const p0 = state.pos[t], r0 = state.routes[t];
   const cached = p0?.balW ? BigInt(p0.balW) : null;
   const guess = opts.amt == null && cached > 0n ? (cached * BigInt(Math.min(100, Math.max(1, Math.round(pct))))) / 100n : null;
-  const qGuess = isPool(r0) && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
+  const qGuess = isPool(r0) && r0.kind !== 'ascend' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
   let [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t, routerOf(r0)).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   const rtr = routerOf(r);
@@ -785,7 +1093,15 @@ async function sell(t, pct, replyTo, opts = {}) {
   const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 120000 });
   let txs, expect;
   try {
-    if (isPool(r)) {
+    if (r.kind === 'ascend') {
+      r.ur ||= await ascRouterFor(r.pm);
+      if (!r.ur) throw new Error('Ascend router not known yet: /ascend router 0x…');
+      const backQ = (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
+      expect = await weiOfQ(r.q, backQ);
+      const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
+      txs = [...ap, { to: r.ur, data: ascSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: 900000 }];
+      if (r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
+    } else if (isPool(r)) {
       const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
       if (allowed >= amt) {
         expect = (r === r0 && amt === guess && (await qGuess)) || (await v4QuoteSell(r, t, amt, null));
@@ -836,7 +1152,14 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> was dropped by the network; nothing sold. Tap again.`, cardButtons(t)); return false; }
   if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted (price moved past your slippage?) · ${txLink(hash)}`, cardButtons(t)); return false; }
   const [hNow, left] = await Promise.all([hypeBal(true).catch(() => before), balOf(t, me, true).catch(() => tokBefore)]);
-  const got = num(hNow - before);
+  let got = num(hNow - before), qLine = '';
+  if (opts.outQ) {
+    // an Ascend coin paired with a token (USDC): the proceeds are that token, valued in HYPE
+    const qNow = await balOf(opts.outQ.q, me, true).catch(() => opts.outQ.before);
+    const gq = qNow > opts.outQ.before ? qNow - opts.outQ.before : 0n;
+    got = num(await weiOfQ(opts.outQ.q, gq));
+    qLine = ` (${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`;
+  }
   const sold = num(tokBefore - left, m.d);
   const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; p.lastSell = Date.now();
   p.cOut = (p.cOut ?? 0) + Math.max(got, 0);
@@ -845,7 +1168,7 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   J({ side: 'sell', coin: t, sym: m.sym, hype: Math.max(got, 0), tok: sold, pct, hash, why: opts.kind });
   refreshPin();
   const px = await hypeUsd();
-  await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${usd(got, px)} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}`, cardButtons(t));
+  await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for <b>${fmtH(got)}</b>${qLine || usd(got, px)} · ${((Date.now() - sentAt) / 1000).toFixed(1)} s · ${txLink(hash)}`, cardButtons(t));
   return true;
 }
 function track(hash, onDone, onTimeout) {
@@ -1036,6 +1359,7 @@ async function handleFresh() {
       if (s.k === 'token') hit = f.t === s.w;
       else if (s.k === 'new') { hit = f.newPm || (s.pms || []).includes(f.pm); if (hit && f.newPm) (s.pms ||= []).push(f.pm); }
       else if (s.k === 'dev') hit = (f.from ??= await txFrom(f.tx)) === s.w;
+      else if (s.k === 'asc') hit = f.kind === 'ascend';
       if (!hit) continue;
       (s.got ||= []).push(f.t);
       if (--s.left <= 0) state.snipes = state.snipes.filter((x) => x.id !== s.id);
@@ -1045,6 +1369,7 @@ async function handleFresh() {
   }
 }
 async function snipeBuy(f, s) {
+  if (f.kind === 'ascend') return ascSnipe(f, s);
   // a coin that already trades elsewhere is bought on its best pool, not blindly on the new one (anyone can open a
   // thin, mispriced pool for any token)
   const others = (state.pools[f.t] || []).some((p) => p.id !== f.id);
@@ -1061,6 +1386,7 @@ async function snipeBuy(f, s) {
   }
 }
 function snipeText(s) {
+  if (s.k === 'asc') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Ascend launches' : 'Ascend launch'}, ${ascDelayText()}`;
   return s.k === 'token' ? `${s.hype} HYPE of <code>${short(s.w)}</code> when its pool opens` :
     s.k === 'dev' ? `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' coins' : 'coin'} ${short(s.w)} launches` :
     `${s.hype} HYPE of the first ${s.left > 1 ? s.left + ' coins' : 'coin'} on any new pool manager`;
@@ -1383,7 +1709,8 @@ const HELP =
   `/bal · /pnl · /stats 7d · /journal · /export · /report · /wallet\n` +
   `/set slip 15 · /set max 5 · /set sizes 1,2,3,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
-  `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on`;
+  `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
+  `<b>Ascend</b>: /ascend (status, router, quote) · /snipe ascend 1 buys the next Ascend launch once its anti-snipe fee is gone`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
 const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
@@ -1646,17 +1973,37 @@ async function onMessage(msg) {
   }
   if (cmd === '/snipe') {
     const sub = lc(args[0] || '');
-    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe off · cancel all';
+    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe off · cancel all';
     if (sub === 'off') { state.snipes = []; save(); return say('All snipes cancelled.'); }
     let s;
     if (sub === 'dev') { const w = addrIn(args[1]), h = Number(args[2]); if (!w || !(h > 0)) return say(usage); s = { k: 'dev', w, hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[3]) || 1))) }; }
     else if (sub === 'new') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'new', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
+    else if (sub === 'ascend' || sub === 'asc') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'asc', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
     else { const t = addrIn(args[0]), h = Number(args[1]); if (!t || !(h > 0)) return say(usage); s = { k: 'token', w: t, hype: h, left: 1 }; }
     if (s.hype > cfg().max) throw new Error(`max per buy is ${cfg().max} HYPE (change with /set max)`);
     s.id = oid(); s.at = Date.now(); s.b = Number(BigInt(await rpc('eth_blockNumber', [])));
     state.snipes.push(s); save();
     const already = s.k === 'token' && state.pools[s.w]?.length ? `\nIt already has ${state.pools[s.w].length} pool${state.pools[s.w].length > 1 ? 's' : ''}: this fires on its next new one (a migration). To buy now, paste it for a card.` : '';
     return say(`🎯 Snipe armed: ${snipeText(s)}. The pool index now checks every 0.4 s; the sell check still runs first.${already}`, [[{ text: '✖ Cancel', callback_data: `n:${s.id}` }]]);
+  }
+  if (cmd === '/ascend') {
+    const sub = lc(args[0] || '');
+    const a = addrIn(args[1] || '');
+    if (sub === 'router' && a) { state.set.ascrouter = a; save(); }
+    else if (sub === 'quote' && a) { state.set.ascquote = a; save(); }
+    else if (sub === 'delay' && lc(args[1]) === 'auto') { delete state.set.ascdelay; save(); }
+    else if (sub === 'delay' && args[1] !== '' && Number(args[1]) >= 0 && Number(args[1]) <= 120) { state.set.ascdelay = Number(args[1]); save(); }
+    else if (sub === 'approve') {
+      const q = state.set.ascquote || Object.keys(state.asc.quotes).find((x) => x !== ZERO);
+      const ur = state.set.ascrouter || Object.values(state.asc.ur)[0];
+      if (!q || !ur) return say('Needs the quote token and the router first: /ascend quote 0x… · /ascend router 0x…');
+      const txs = await ascApprovals(q, ur, 1n << 128n);
+      if (!txs.length) return say('The quote is already approved for Ascend.');
+      const hs = await serial(async () => { const o = []; for (const x of txs) o.push(await sendRaw(x)); return o; });
+      return say(`Approving the quote for Ascend: ${hs.map((h) => txLink(h)).join(' ')}`);
+    }
+    else if (sub) return say('Usage: /ascend · /ascend router 0x… · /ascend quote 0x… · /ascend delay auto|5 · /ascend approve');
+    return say(await ascStatus());
   }
   if (cmd === '/snipes') { const v = snipesView(); return say(v.text, v.rows); }
   if (cmd === '/copy') {
