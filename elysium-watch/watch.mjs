@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { gate, gateDigest, gatePms } from './gate.mjs';
 import { zeroWatch } from './zero.mjs';
+import { hyperWatch } from './hyper.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
 const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
@@ -966,6 +967,9 @@ async function main() {
   // 4e. LayerZero's Zero being wired ahead of its Nov 30 launch (zero.mjs keeps its own timers)
   try { await zeroWatch({ state, msgs }); } catch (e) { console.log('zero watch failed:', e.message); }
 
+  // 4f. HyperCore and HyperEVM launches by the deployers we follow (hyper.mjs keeps its own timers)
+  try { await hyperWatch({ state, msgs, W, DEVW, hrpc }); } catch (e) { console.log('hyper watch failed:', e.message); }
+
   // 5. the official mainnet RPC opening up (one ping, ever)
   if (!state.official && now() - (state.officialCheckedAt || 0) > 600) {
     state.officialCheckedAt = now();
@@ -1215,7 +1219,10 @@ function dropMutedCoins(msgs, cm) {
     const btnHit = typeof m === 'object' && m.buttons ? hit(JSON.stringify(m.buttons)) : false;
     if (text.startsWith('👛')) {
       const [head, ...lines] = text.split('\n');
-      const keep = lines.filter((x) => !hit(x));
+      // a line's continuation (its "↳ holds" line) goes with it, so a muted coin's buy never leaves its holds behind
+      const groups = [];
+      for (const x of lines) { if (groups.length && !/^(• |…and \d+ more$)/.test(x)) groups[groups.length - 1].push(x); else groups.push([x]); }
+      const keep = groups.filter((g) => !g.some(hit)).flat();
       if (!keep.length || keep.every((x) => /^…and \d+ more$/.test(x))) continue;
       const t2 = [head, ...keep].join('\n');
       out.push(typeof m === 'string' ? t2 : btnHit ? t2 : { ...m, text: t2 });
