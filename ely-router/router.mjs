@@ -640,39 +640,78 @@ async function ascFeeDrop(r, t, t0, qAmt) {
   }
   return { k: null, base };
 }
-// Ascend launches: wait out the anti-snipe fee, then buy in the first second it is down to normal. When that second
-// is (auto) comes from simulating the round trip as of each second after the launch block. The buy is planned
-// 1.5 s ahead and only the swap waits for the second; its minimum is priced as of that second, so a swap that
-// lands early (fee still high) reverts instead of overpaying.
-const ASC_MARGIN = Number(process.env.ASCEND_MARGIN_MS ?? 200); // ms after the second turns before sending
-async function ascSnipe(f, s) {
-  let label = `🎯 Ascend snipe: new coin <code>${short(f.t)}</code>`;
-  try {
-    const blk = await rpc('eth_getBlockByNumber', [hex(f.b), false]);
+// An Ascend coin in its first minutes: when its anti-snipe fee is gone ({ t0, at } while that second is still ahead,
+// else null). Measured once per coin by simulating the round trip as of each second after launch, or the delay set
+// with /ascend delay.
+const ascDrops = {};
+async function ascEarly(r, t, wei) {
+  if (r.b == null) return null;
+  let d = ascDrops[t];
+  if (!d) {
+    const blk = await rpc('eth_getBlockByNumber', [hex(r.b), false]);
     const t0 = Number(BigInt(blk.timestamp));
+    let k = 0;
+    if (Date.now() / 1000 - t0 < 300) {
+      k = ascDelay();
+      if (k == null) k = (await ascFeeDrop(r, t, t0, await qOfWei(r.q, wei)).catch(() => null))?.k ?? 5;
+    }
+    d = ascDrops[t] = { t0, at: t0 + k };
+  }
+  return Date.now() / 1000 < d.at ? d : null;
+}
+// A buy while the fee is still up: planned now, the swap sent the second the fee drops (its minimum is priced as of
+// that second, so landing early reverts instead of paying the higher fee), tried again up to 3 times if it lands
+// early or the price runs.
+const ASC_MARGIN = Number(process.env.ASCEND_MARGIN_MS ?? 200); // ms after the second turns before sending
+async function ascWaitBuy(t, hypeAmt, replyTo, force, src, opts, r, d) {
+  const sendAt = d.at * 1000 + ASC_MARGIN;
+  const label = `${opts.label ? opts.label + '\n' : ''}⏱ Anti-snipe fee still up: buying at +${d.at - d.t0} s after launch, the second it drops`;
+  let res;
+  for (let i = 0; i < 4; i++) {
+    const sa = sendAt + i * 400;
+    res = await buy(t, hypeAmt, replyTo, force, src, { ...opts, route: r, label, ascTime: Math.max(d.at, Math.floor(Date.now() / 1000)), sendAt: sa > Date.now() ? sa : 0,
+      revertNote: i < 3 ? 'it landed before the fee dropped, or the price ran past your slippage; trying again' : null });
+    if (!res?.reverted) return res;
+    await sleep(300);
+  }
+  return res;
+}
+// /snipe ascend: buys the next launch on its own (the timing is the same as a tap, see ascEarly)
+async function ascSnipe(f, s) {
+  const label = `🎯 Ascend snipe: new coin <code>${short(f.t)}</code>`;
+  try {
     let r = null;
     for (let i = 0; i < 80 && !r; i++) { r = await ascRouteOf(f).catch(() => null); if (!r) await sleep(250); } // its router shows up with the first trades
     if (!r) return say(`${label}\n⚠️ Ascend's router is not known and no trade revealed it within 20 s. Set it with /ascend router 0x…, then buy from the card.`);
-    let delay = ascDelay();
-    if (delay == null) {
-      const fd = await ascFeeDrop(r, f.t, t0, await qOfWei(r.q, toWei(String(s.hype)))).catch(() => null);
-      delay = fd?.k ?? 5;
-      label += fd?.k == null ? ' · fee schedule unreadable, buying at +5 s' : fd.k === 0 ? ' · no anti-snipe fee'
-        : ` · anti-snipe fee gone from +${fd.k} s (${fd.first == null ? 'buys revert before that' : `a buy and sell back lost ${Math.round(fd.first * 100)}% at launch`})`;
-    } else label += ` · buying at +${delay} s`;
-    const at = t0 + delay, sendAt = at * 1000 + ASC_MARGIN;
-    if (sendAt - 1500 > Date.now()) await sleep(Math.min(sendAt - 1500 - Date.now(), 120000));
-    let res;
-    for (let i = 0; i < 4; i++) {
-      // a revert means it landed before the fee stepped down, or the price ran: again, a little later, at the new price
-      const sa = sendAt + i * 400;
-      res = await buy(f.t, s.hype, null, false, 'snipe', { route: r, label, ascTime: Math.max(at, Math.floor(Date.now() / 1000)), sendAt: sa > Date.now() ? sa : 0,
-        revertNote: i < 3 ? 'it landed before the fee dropped, or the price ran past your slippage; trying again' : null });
-      if (!res?.reverted) return res;
-      await sleep(300);
-    }
-    return res;
+    return await buy(f.t, s.hype, null, false, 'snipe', { route: r, label });
   } catch (e) { return say(`${label}\n⚠️ ${esc(e.message).slice(0, 200)}`); }
+}
+// New Ascend coins are posted the moment the index sees them, with buy buttons, so a launch can be bought early by
+// hand. Up to 6 an hour (/ascend alerts off|on|N), then one note and quiet until the hour rolls over.
+const ELYXA = 'https://elyxa.trade';
+const ascAlerted = [];
+let ascMuted = 0;
+const ascCap = () => { const v = state.set.ascalerts ?? 6; return v === 'off' ? 0 : Number(v) || 6; };
+async function ascAlert(f) {
+  const cap = ascCap();
+  if (!cap) return;
+  const now = Date.now();
+  while (ascAlerted.length && now - ascAlerted[0] > 3600000) ascAlerted.shift();
+  if (ascAlerted.length >= cap) {
+    if (now - ascMuted > 3600000) { ascMuted = now; await say(`🆕 Ascend is busy: ${cap} launches posted in the last hour, the rest stay quiet until it slows (/ascend alerts 20 raises the limit, /ascend alerts off stops them).`); }
+    return;
+  }
+  ascAlerted.push(now);
+  const [m, dev, r] = await Promise.all([tokenMeta(f.t), txFrom(f.tx), ascRouteOf(f).catch(() => null)]);
+  const [devBal, d] = await Promise.all([dev ? balOf(f.t, dev, true).catch(() => null) : null, r ? ascEarly(r, f.t, 10n ** 18n).catch(() => null) : null]);
+  const sup = m.sup ? num(m.sup, m.d) : 0;
+  const qn = f.q === ZERO ? 'HYPE' : esc((await tokenMeta(f.q).catch(() => ({ sym: 'USDC' }))).sym);
+  const devLine = dev ? `Dev <a href="${ELYXA}/#/portfolio?w=${dev}">${short(dev)}</a>${devBal != null && sup ? ` holds ${((num(devBal, m.d) / sup) * 100).toFixed(1)}%` : ''}\n` : '';
+  const when = !r ? `⚠️ Ascend's router is not known yet, so ⚡ cannot buy until the first trades show it (or /ascend router 0x…).\n`
+    : d ? `⏱ Anti-snipe fee is up until +${d.at - d.t0} s after launch. A ⚡ tap now waits for it and buys the second it drops.\n` : '';
+  const h = f.t.slice(2);
+  await say(`🆕 <b>Ascend launch</b> · <b>${esc(m.sym)}</b> · paired with ${qn} · <a href="${ELYXA}/#/terminal/${f.t}">chart</a>\n${devLine}${when}<code>${f.t}</code>`,
+    [[...cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })), { text: '⚡ X', callback_data: `k:${h}` }, { text: '🔎', callback_data: `c:${h}` }]]);
 }
 async function ascStatus() {
   const pools = Object.values(state.pools).flat().filter((p) => p.kind === 'ascend');
@@ -684,11 +723,14 @@ async function ascStatus() {
     return `${esc(m.sym)} <code>${q}</code>${b != null ? ` · wallet ${fmt(num(b, m.d))}` : ''}`;
   }));
   const urs = { ...state.asc.ur };
+  const armed = state.snipes.filter((x) => x.k === 'asc').map(snipeText).join(' · ');
   return `<b>Ascend</b>\nRouter: ${state.set.ascrouter ? `<code>${state.set.ascrouter}</code> (set)` : Object.keys(urs).length ? Object.entries(urs).map(([pm, u]) => `<code>${u}</code> (learned for ${short(pm)})`).join(', ') : 'not known yet (learned from the first trades, or /ascend router 0x…)'}\n` +
     `Quote: ${qLines.length ? qLines.join(' · ') : 'not known yet (learned from the first pool, or /ascend quote 0x…)'}\n` +
-    `Pools indexed: ${pools.length} · snipes buy ${ascDelayText()}\n` +
-    `Armed: ${state.snipes.filter((x) => x.k === 'asc').map(snipeText).join(' · ') || 'none (/snipe ascend 1)'}\n\n` +
-    `/ascend router 0x… · /ascend quote 0x… · /ascend delay auto|5 · /ascend approve (approve the quote once, so the first buy is one transaction)`;
+    `Pools indexed: ${pools.length}\n` +
+    `New launches: ${ascCap() ? `posted here with ⚡ buttons, up to ${ascCap()} an hour` : 'not posted (/ascend alerts on)'}\n` +
+    `A ⚡ tap while a coin's anti-snipe fee is up waits and buys ${ascDelay() == null ? 'the second it drops' : `${ascDelay()} s after launch`}\n` +
+    (armed ? `Snipe armed: ${armed}\n` : '') +
+    `\n/ascend router 0x… · /ascend quote 0x… · /ascend alerts off|on|20 · /ascend delay auto|5 · /ascend approve (approve the quote once, so the first buy is one transaction)`;
 }
 
 // ── live pool index: every v4 Initialize on Elysium, from any pool manager ─────────────────────────────
@@ -917,7 +959,10 @@ async function cardText(t) {
   if (!r) return { text: `No route for <code>${t}</code>.\nNo HYPE or ElysPump WHYPE v4 pool for it among the ${poolCount()} the bot has indexed, no WHYPE pool on ${V3DEX.map((x) => x.name).join(' or ')}, not on a known bonding curve, and KyberSwap does not know it.` };
   const probe = 10n ** 16n;
   const devInfo = devOf(t).then(async (d) => (d?.w ? { w: d.w, bal: await balOf(t, d.w, true) } : null)).catch(() => null);
-  const [p, one, bal, sc, dv] = await Promise.all([quoteBuy(r, t, probe), quoteBuy(r, t, 10n ** 18n).catch(() => null), balOf(t, me, true), sellCheck(r, t, 10n ** 17n), devInfo]);
+  // an Ascend coin whose anti-snipe fee is still up: priced as of the second it drops (when a tap would buy)
+  const d = r.kind === 'ascend' ? await ascEarly(r, t, 10n ** 17n).catch(() => null) : null;
+  const qb = async (wei) => (d ? (await ascSim(r, t, { qAmt: await qOfWei(r.q, wei), sell: false, time: d.at })).got : quoteBuy(r, t, wei));
+  const [p, one, bal, sc, dv] = await Promise.all([qb(probe), qb(10n ** 18n).catch(() => null), balOf(t, me, true), d ? ascSellCheck(r, t, 10n ** 17n, d.at) : sellCheck(r, t, 10n ** 17n), devInfo]);
   cacheBal(t, bal);
   const spot = num(probe) / num(p, m.d);               // HYPE per token
   const sup = m.sup ? num(m.sup, m.d) : 0;
@@ -933,6 +978,7 @@ async function cardText(t) {
   const os = state.orders[t] || [];
   const text =
     `<b>${esc(m.sym)}</b> · ${isPool(r) ? esc(routeLabel(r)) : 'via KyberSwap'}\n` +
+    (d ? `⏱ Anti-snipe fee is up until +${d.at - d.t0} s after launch (${Math.max(0, d.at - Math.floor(Date.now() / 1000))} s left). Prices below are as of then, and a ⚡ tap waits for it.\n` : '') +
     `Price ${spot.toPrecision(3)} HYPE${mc ? ` · MC <b>${fmtH(mc)}</b>${usd(mc, px)}` : ''}\n` +
     (one ? `1 HYPE → ${fmt(num(one, m.d))} ${esc(m.sym)}${impact != null ? ` (impact ${(impact * 100).toFixed(1)}%)` : ''}\n` : '') +
     (bal > 0n ? `You hold ${fmt(num(bal, m.d))} ≈ ${fmtH(bagH)}${usd(bagH, px)}${pnl}${entry && sup && px ? ` · entry MC $${fmt(entry * sup * px)}` : ''}\n` : '') +
@@ -971,6 +1017,12 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   const scP = isPool(known) && known.kind !== 'ascend' ? sellCheck(known, t, wei) : null; // started right away when the route is known
   let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
+  // an Ascend coin whose anti-snipe fee is still up: wait for the second it drops instead of paying it
+  if (r.kind === 'ascend' && opts.ascTime == null) {
+    r.ur ||= await ascRouterFor(r.pm).catch(() => null);
+    const d = r.ur ? await ascEarly(r, t, wei).catch(() => null) : null;
+    if (d) return ascWaitBuy(t, hypeAmt, replyTo, force, src, opts, r, d);
+  }
   if (r.kind !== 'ascend' && bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const head = opts.label ? `${opts.label}\n` : '';
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
@@ -1347,10 +1399,11 @@ async function guardCoin(t) {
   }
 }
 
-// snipes fire on pools the index sees live
+// pools the index sees live: Ascend launches are posted, snipes fire
 async function handleFresh() {
   if (!fresh.length) return;
   const list = fresh.splice(0);
+  for (const f of list) if (f.kind === 'ascend') ascAlert(f).catch((e) => console.error('ascend alert', e.message));
   if (!state.snipes.length) return;
   for (const f of list) {
     for (const s of [...state.snipes]) {
@@ -1501,7 +1554,7 @@ const REPORT_HOUR_UTC = Number(process.env.REPORT_HOUR_UTC ?? 20); // 21:00 in L
 const J = (e) => { state.journal.push({ t: Date.now(), ...e }); if (state.journal.length > 3000) state.journal.splice(0, state.journal.length - 3000); save(); };
 // which alert a ⚡ tap came from, by the alert's first emoji
 const srcOf = (txt = '') => {
-  const map = [['🚀', 'launch alert'], ['🔥', 'volume run'], ['🎯', 'group buy'], ['👛', 'wallet move'], ['🧬', 'fresh wallet'], ['🌉', 'bridge'], ['🚨', 'gate'], ['🛬', 'cielo arrival']];
+  const map = [['🚀', 'launch alert'], ['🔥', 'volume run'], ['🎯', 'group buy'], ['👛', 'wallet move'], ['🧬', 'fresh wallet'], ['🌉', 'bridge'], ['🚨', 'gate'], ['🛬', 'cielo arrival'], ['🆕', 'ascend launch']];
   for (const [e, n] of map) if (txt.startsWith(e)) return n;
   return 'card';
 };
@@ -1710,7 +1763,7 @@ const HELP =
   `/set slip 15 · /set max 5 · /set sizes 1,2,3,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
-  `<b>Ascend</b>: /ascend (status, router, quote) · /snipe ascend 1 buys the next Ascend launch once its anti-snipe fee is gone`;
+  `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
 const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
@@ -1991,6 +2044,8 @@ async function onMessage(msg) {
     const a = addrIn(args[1] || '');
     if (sub === 'router' && a) { state.set.ascrouter = a; save(); }
     else if (sub === 'quote' && a) { state.set.ascquote = a; save(); }
+    else if (sub === 'alerts' && ['off', 'on'].includes(lc(args[1]))) { if (lc(args[1]) === 'on') delete state.set.ascalerts; else state.set.ascalerts = 'off'; save(); }
+    else if (sub === 'alerts' && Number(args[1]) >= 1 && Number(args[1]) <= 120) { state.set.ascalerts = Math.floor(Number(args[1])); save(); }
     else if (sub === 'delay' && lc(args[1]) === 'auto') { delete state.set.ascdelay; save(); }
     else if (sub === 'delay' && args[1] !== '' && Number(args[1]) >= 0 && Number(args[1]) <= 120) { state.set.ascdelay = Number(args[1]); save(); }
     else if (sub === 'approve') {
@@ -2002,7 +2057,7 @@ async function onMessage(msg) {
       const hs = await serial(async () => { const o = []; for (const x of txs) o.push(await sendRaw(x)); return o; });
       return say(`Approving the quote for Ascend: ${hs.map((h) => txLink(h)).join(' ')}`);
     }
-    else if (sub) return say('Usage: /ascend · /ascend router 0x… · /ascend quote 0x… · /ascend delay auto|5 · /ascend approve');
+    else if (sub) return say('Usage: /ascend · /ascend router 0x… · /ascend quote 0x… · /ascend alerts off|on|20 · /ascend delay auto|5 · /ascend approve');
     return say(await ascStatus());
   }
   if (cmd === '/snipes') { const v = snipesView(); return say(v.text, v.rows); }
