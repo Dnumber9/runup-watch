@@ -77,7 +77,7 @@ const LAUNCHPADS = {
 };
 const HOOK_NAMES = {
   '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'the Ascend? launchpad', // Safe-owned launchpad behind CHAMELEON, e/acc, YUM
-  '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'the 6b12 launchpad',    // HOBBES and ~80 launches an hour
+  '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'Montra',                // montramarkets.xyz, HOBBES and ~80 launches an hour
   '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec': 'Mesa',                  // mesa.cx
 };
 // a launchpad name for a coin: its pool's hook when that hook is a known launchpad, else its PoolManager
@@ -137,7 +137,25 @@ function int256(hex) {
   const x = BigInt('0x' + hex);
   return x >= 1n << 255n ? x - (1n << 256n) : x;
 }
-const assetLink = (t, label = 'chart') => `<a href="${ELYXA}/#/terminal/${t}">${label}</a>`;
+// a coin opens on the launchpad it launched on (its pool hook first, then its PoolManager), else on Elyxa.
+// Token page formats as each launchpad's own site links them.
+const LP_PAGES = {
+  '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': ['Montra', (t) => `https://montramarkets.xyz/token/${t}`],
+  '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec': ['Mesa', (t) => `https://mesa.cx/markets/elysium/${t}`],
+  '0x06c63714fbf1f5753017123e2fcfdede4540b2c4': ['BOXA', (t) => `https://boxa.club/asset?address=${t}`],
+  '0xb308b5df891c300a5f5a5b8fdbc30108ba842490': ['Kleos', (t) => `https://www.thekleos.xyz/token/${t}`],
+  '0x5fb015a49f5b35073f9ce01c2adb287a75f89600': ['ElysPump', (t) => `https://elysp.com/#/token/${t}`],
+};
+const ELYXA_PAGE = ['Elyxa', (t) => `${ELYXA}/#/terminal/${t}`];
+let TOKS = {};           // coin → { lp, hook }: the main scan's state.tok (the fast lane's copy of it)
+const LIVE_TOKS = {};    // coins whose pool the fast lane saw open since its last read of state.json
+// an Initialize log seen by the fast lane: its coin's launchpad, until the main scan has recorded the coin
+const noteLaunchpad = (tok, l) => {
+  const c0 = lc(topicAddr(l.topics[2])), c1 = lc(topicAddr(l.topics[3])), coin = isHype(c0) ? c1 : isHype(c1) ? c0 : null;
+  if (coin && !tok[coin]) LIVE_TOKS[coin] = { lp: lc(l.address), hook: lc('0x' + (words(l.data)[2] || '').slice(24)) };
+};
+const pageOf = (t) => { const r = LIVE_TOKS[t] || TOKS[t]; return (r && (LP_PAGES[r.hook] || LP_PAGES[r.lp])) || ELYXA_PAGE; };
+const assetLink = (t, label = 'chart') => `<a href="${pageOf(t)[1](t)}">${label}</a>`;
 // wallets open on Elyxa's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
 const EXPLORER = 'https://elysium.kinetiq.xyz/explorer';
 const walletLink = (a, label) => `<a href="${ELYXA}/#/portfolio?w=${a}">${label || short(a)}</a>`;
@@ -238,7 +256,7 @@ const asLinks = (buttons) => buttons.map((b) => {
   return { text: b.text, url: `${BUY_PAGE}?t=0x${m[2]}${m[3] ? `&a=${Number(m[3]) / 10}` : ''}` };
 });
 // Elyxa's terminal charts coins from every launchpad; quick buy stays as the one-tap route
-const coinLink = (state, t) => `${assetLink(t, 'open on Elyxa')} · <a href="${BUY_PAGE}?t=${t}">quick buy</a>`;
+const coinLink = (state, t) => `${assetLink(t, `open on ${pageOf(t)[0]}`)} · <a href="${BUY_PAGE}?t=${t}">quick buy</a>`;
 
 // alerts go through the trade bot when it is set up, else the command bot (both set in main); the old bot is the fallback
 let ALERT = null, TRADE = null;
@@ -389,6 +407,7 @@ async function main() {
   try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
   const firstRun = !state;
   state ||= { v: 1, block: 0, runs: 0, started: now(), pools: {}, v3: {}, tok: {}, meta: {}, alerted: {}, unknownPm: {}, digestAt: now(), official: false, px: null };
+  TOKS = (state.tok ||= {}); // coin links open on each coin's own launchpad
   // pool managers the gate identified as Ascend or Signal join the launchpad list
   for (const [pm, x] of Object.entries(gatePms(state))) if (!LAUNCHPADS[pm]) { LAUNCHPADS[pm] = { name: x.name, hook: x.hook }; INFRA.add(pm); }
   let wallets = [];
@@ -1576,6 +1595,7 @@ async function fastMain() {
   const refresh = () => {
     try { st = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {} // a failed read keeps the last good copy
     st.tok ||= {}; st.pools ||= {}; st.v3 ||= {}; st.meta ||= {};
+    TOKS = st.tok; for (const t of Object.keys(LIVE_TOKS)) if (st.tok[t]) delete LIVE_TOKS[t];
     view = trackedView(st);
     for (const [t, m] of Object.entries(st.meta)) if (!fst.meta[t]) fst.meta[t] = m;
     const alertChat = st.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
@@ -1599,6 +1619,7 @@ async function fastMain() {
     for (const l of await getLogs({ topics: [T_INIT_V4] }, seedFrom, head0, FAST_RANGE)) {
       const id = lc(l.topics[1]);
       if (!st.pools[id]) fst.pools[id] = poolEntry({ tok: st.tok }, lc(l.address), lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
+      noteLaunchpad(st.tok, l);
     }
   } catch (e) { console.log('fast: pool seed failed:', e.message); }
 
@@ -1664,6 +1685,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     if (l.topics[0] !== T_INIT_V4) continue;
     const id = lc(l.topics[1]);
     if (!poolOf(id)) fst.pools[id] = poolEntry({ tok: st.tok }, lc(l.address), lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
+    noteLaunchpad(st.tok, l); // a new coin's launchpad, for its links before the main scan has recorded it
   }
   const mine = logs.filter((l) => l.topics[0] === T_TRANSFER && l.topics.length === 3 && (W.has(lc(topicAddr(l.topics[1]))) || W.has(lc(topicAddr(l.topics[2])))) && !WHYPE.has(lc(l.address)));
   if (!mine.length) return;
