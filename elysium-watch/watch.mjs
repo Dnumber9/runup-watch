@@ -23,10 +23,12 @@ const BOXA = 'https://boxa.club';     // BOXA's API (token index); boxa.pro is o
 const ELYXA = 'https://elyxa.trade'; // links in alerts (indexes every launchpad's trades and wallet PnL)
 
 const LOG_RANGE = 500;           // the chain got busy: small log windows, split further if a node times out
-const FIRST_LOOKBACK = 900;      // first run: about the last hour (14 blocks a minute)
-const MAX_BLOCKS = 6000;         // catch up at most ~7 hours in one scan
-const SCAN_MAX = 300;            // blocks handled per tick (~5 min of chain); the next tick continues
-const SKIP_LAG = 1500;           // further behind than this: jump to near the head, alerts are only useful live
+// Elysium now makes about 6.5 blocks a second (it was 14 a minute at launch), so these are sized in blocks for that pace
+const FIRST_LOOKBACK = 3000;     // first run: about the last 8 minutes
+const MAX_BLOCKS = 24000;        // catch up at most about an hour in one go
+const SCAN_MAX = 1200;           // blocks handled per tick (about 3 min of chain); the next tick continues
+const SKIP_LAG = 7800;           // further behind than this (about 20 min): jump to near the head, alerts are only useful live
+const BLOCK_FETCH = 10;          // blocks read in parallel each tick (one at a time could not keep up with the chain)
 const WARMUP_RUNS = 3;           // scans that only learn baselines
 const COOLDOWN_H = 2;            // hours before the same coin can ping again
 const DIGEST_EVERY_H = 4;
@@ -621,10 +623,19 @@ async function main() {
   }
 
   // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
-  const blocks = [];
-  for (let b = Math.max(from, head - 900); b <= head; b++) {
-    try { const blk = await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), true]); if (blk) blocks.push(blk); } catch {}
-  }
+  // read in parallel and kept in block order
+  const want = [];
+  for (let b = Math.max(from, head - SCAN_MAX + 1); b <= head; b++) want.push(b);
+  const got = new Array(want.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BLOCK_FETCH, want.length) }, async () => {
+    while (next < want.length) {
+      const k = next++;
+      try { got[k] = await rpc('eth_getBlockByNumber', ['0x' + want[k].toString(16), true]); } catch {}
+    }
+  }));
+  const blocks = got.filter(Boolean);
+  if (blocks.length < want.length) console.log(`blocks read ${blocks.length}/${want.length}`);
 
   // 3c. wallets from the Cielo list showing up on Elysium for the first time: one ping, then full tracking
   const S = loadCielo();
