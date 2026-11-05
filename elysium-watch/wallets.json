@@ -853,7 +853,7 @@
  },
  {
   "address": "0x78e3a21209a35fd6bd101eb9ea0f44d00ece2f88",
-  "label": "ECAT dev (ElysPump)",
+  "label": "ECAT dev (ElysPump) · KNTQ holder #231 (97K)",
   "group": "dev",
   "watch": "launch",
   "coins": [
@@ -1186,7 +1186,7 @@
  },
  {
   "address": "0xf517639a8872e756ac98d3c65507d2ebc25cc032",
-  "label": "CZ + FUN dev (HyperCore)",
+  "label": "CZ + FUN dev (HyperCore) · KNTQ whale #14 (1.24M), HL NMTD +$32.0M",
   "group": "dev",
   "watch": "launch"
  },
@@ -1881,5 +1881,199 @@
   "group": "dev",
   "watch": "launch",
   "cluster": false
+ },
+ {
+  "address": "0xaf0fdd39e5d92499b0ed9f68693da99c0ec1e92e",
+  "label": "KNTQ whale #1 (23.98M KNTQ, HL +$27.8M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xa9b95f2a2e7ef219021efc5c04c32761b8553bbd",
+  "label": "KNTQ whale #2 (11.00M KNTQ, HL +$20.4M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xfc667adba8d4837586078f4fdcdc29804337ca06",
+  "label": "KNTQ whale #3 (3.21M KNTQ, HL +$48.7M, KoolKrypto?)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x77375a8c9d13bf79afb2a87f1b0ac1dfd5f5bf66",
+  "label": "KNTQ whale #4 (3.05M KNTQ, HL +$55.4M, KoolKrypto?)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xbf66cb8b987fee1f6526bb6ee04345d36405f913",
+  "label": "KNTQ whale #5 (2.51M KNTQ, not on HL leaderboard)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x549e6dd8453ed87fccdcf4f8b37162b10edc0533",
+  "label": "KNTQ whale #6 (2.01M KNTQ, HL −$4.2M) quiet",
+  "group": "kntqwhale",
+  "watch": "launch"
+ },
+ {
+  "address": "0xe867fbdad3291530e41530301ecb77693850c78e",
+  "label": "KNTQ whale #7 (2.00M KNTQ, HL +$62.0M, KoolKrypto?)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x9b28837deb55b014f7a37f2812d6ec042ce87ca1",
+  "label": "KNTQ whale #8 (1.95M KNTQ, HL +$2.3M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xa23190045c4aebeb724844ce622465475e539bae",
+  "label": "KNTQ whale #9 (1.80M KNTQ, HL +$12.7M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x440f6e1469d8685c64b3445fa220cd683ff24bb0",
+  "label": "KNTQ whale #10 (1.51M KNTQ, HL +$2.1M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xfeb63b9e4a871b644816d94a1d19517a87ce5fa0",
+  "label": "KNTQ whale #11 (1.45M KNTQ, HL +$393K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x2e32935bfd5b2718f99bc8fdf8b37c16811f7d97",
+  "label": "KNTQ whale #12 (1.43M KNTQ, 0xsanuxo, HL +$3.1M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xc2cb60662017a1da2562e9cccea9df74d9d8edf9",
+  "label": "KNTQ whale #13 (1.33M KNTQ, HL +$1.9M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x477baede70cb2e7723e010600df84674a4baafaf",
+  "label": "KNTQ whale #15 (1.23M KNTQ, HL +$931K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xb1839ea781ed5574801dd6460cf634d81ad06844",
+  "label": "KNTQ whale #16 (1.18M KNTQ, HL +$594K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x998195b0c9f8d7528d72afa805db224a5a79c539",
+  "label": "KNTQ whale #17 (1.18M KNTQ, HL −$676K) quiet",
+  "group": "kntqwhale",
+  "watch": "launch"
+ },
+ {
+  "address": "0x6981378e696b0dd0e585d4d519c98b8a2c5bc020",
+  "label": "KNTQ whale #18 (1.16M KNTQ, HL +$567K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x1e771e1b95c86491299d6e2a5c3b3842d03b552e",
+  "label": "KNTQ whale #19 (1.12M KNTQ, HL +$5.0M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xe85458669e58c9440c0045a034edf6d3110609c5",
+  "label": "KNTQ whale #20 (1.12M KNTQ, HL −$10K) quiet",
+  "group": "kntqwhale",
+  "watch": "launch"
+ },
+ {
+  "address": "0x0c1f6941fdcde9488dfd36ca16fed6b3bc49672b",
+  "label": "KNTQ whale #21 (1.06M KNTQ, HL +$581K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x0871deb34bfd2052b1c10dc4f6c0912a2a47e927",
+  "label": "KNTQ whale #22 (1.00M KNTQ, PURRINA, HL +$11.4M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x1858987516bef70d9c3d9208ff7bfc65f00320b4",
+  "label": "KNTQ whale #23 (1.00M KNTQ, HL +$432K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x381fe486d87c7f2633c777f1b5be3105a2a51744",
+  "label": "KNTQ whale #24 (977K KNTQ, HL +$1.1M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xf3365305d3fe902b4b916ed7785b3751cf40e3a8",
+  "label": "KNTQ whale #25 (946K KNTQ, HL +$165K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x9f99eae212a63c0d7d29902b0c6858d1e5eb2da8",
+  "label": "KNTQ whale #26 (945K KNTQ, HL +$68K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0xe326375742cf703a3e7037bb7fed1e01e33609e8",
+  "label": "KNTQ whale #27 (936K KNTQ, HL −$178K) quiet",
+  "group": "kntqwhale",
+  "watch": "launch"
+ },
+ {
+  "address": "0x459387334728fc26b61939b2f27c738f53f88bd8",
+  "label": "KNTQ whale #28 (931K KNTQ, HL +$83K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x50f49b9ff9e376d8090ac799ccafdd750e40b920",
+  "label": "KNTQ whale #29 (921K KNTQ, HL +$1.0M)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x4b85bf981916936249a62b7e77f30e567997a395",
+  "label": "KNTQ whale #30 (828K KNTQ, HL +$347K)",
+  "group": "kntqwhale"
+ },
+ {
+  "address": "0x4e82d47bdc9edc451239495478dbb5a83c30fd39",
+  "label": "KNTQ holder #52 on Elysium (534K KNTQ)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x5e5d46747100a6d10797d9432f78380aefc6eebe",
+  "label": "KNTQ holder #209 on Elysium (107K KNTQ, HL +$845K)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x4b47dd5e50b039ac280f6d8a92e00e046137dcf4",
+  "label": "KNTQ holder #499 on Elysium (26K KNTQ, 59 HYPE here)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x4f66509d41402de9b0c8bf21a2b9116844877702",
+  "label": "KNTQ holder #1024 on Elysium (5.4K KNTQ, 101 HYPE here)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x80bffee5c265061934b16fdfb1638d8d232061da",
+  "label": "KNTQ holder #1415 on Elysium (3.5K KNTQ, 220 HYPE here, HL +$405K)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0xfa1fe308a3d99c2b6a6bb73eddcf7c550dec7b39",
+  "label": "KNTQ holder #347 on Elysium (49K KNTQ, 4 HYPE here)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x119cdaaf1f867339581f9f615614cc26798583ae",
+  "label": "KNTQ holder #419 on Elysium (34K KNTQ, 2 HYPE here)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0xa0417a9d8c7c667fab84df7827c567731b6fcf38",
+  "label": "KNTQ holder #483 on Elysium (27K KNTQ, 9 HYPE here)",
+  "group": "kntqely"
+ },
+ {
+  "address": "0x2112fbd1b0017ca73d9fd80576a0f90b846628fc",
+  "label": "KNTQ holder #525 on Elysium (24K KNTQ)",
+  "group": "kntqely"
  }
 ]
