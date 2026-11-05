@@ -41,5 +41,6 @@
  {"address": "0xd44dbef792c82600332dcbbc433a2a5243e03618", "note": "bridger, regular trader (wins and losses, no pump), removed Nov 5"},
  {"address": "0x5815ae41da6de9b2d0e35a386238b059f62ad617", "note": "bridger, regular trader (wins and losses, no pump), removed Nov 5"},
  {"address": "0xb426cacd2485cfd59dc5bd9aa875bbb15ccfdba8", "note": "bridger, regular trader (wins and losses, no pump), removed Nov 5"},
- {"address": "0xdf1b8ed45631bb968cb63d76ea527dacda415463", "note": "bridger, regular trader (wins and losses, no pump), removed Nov 5"}
+ {"address": "0xdf1b8ed45631bb968cb63d76ea527dacda415463", "note": "bridger, regular trader (wins and losses, no pump), removed Nov 5"},
+ {"address": "0xca40e925dc43a0ecde6c8b1a2709c170ec501060", "note": "bridge relayer (sends HYPE to many unrelated wallets), not a BOXA #6 or culture wallet"}
 ]

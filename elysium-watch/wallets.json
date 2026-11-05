@@ -266,8 +266,8 @@
  },
  {
   "address": "0x55ba70051fd74edcb97166ee5461165239fc147e",
-  "label": "close to culture",
-  "group": "boxa6"
+  "label": "culture alt 2 (close to culture, paid by his Robinhood wallet)",
+  "group": "culture"
  },
  {
   "address": "0xb5a84bfd780645d7341b77302f608ecb7b49f99f",
@@ -465,18 +465,18 @@
  },
  {
   "address": "0xf45832d5ad62a06a2a5d9b26e1b932cfd26341b3",
-  "label": "BOXA #6 cluster (ECAT early)",
-  "group": "boxa6"
+  "label": "culture alt 3 (BOXA #6 cluster, ECAT early)",
+  "group": "culture"
  },
  {
   "address": "0x991e645cbba882b705fe7441c48d58d17b2a0c0e",
   "label": "culture alt (BOXA #6 cluster, ECAT early)",
-  "group": "boxa6"
+  "group": "culture"
  },
  {
   "address": "0x356db8cdc3746922928f0905e3f3f13b927d4335",
-  "label": "culture likely",
-  "group": "boxa6"
+  "label": "culture likely (main Elysium wallet)",
+  "group": "culture"
  },
  {
   "address": "0x7aeb860272506ad5ce893a79369adbbc5a3fa0a4",
@@ -551,11 +551,6 @@
  {
   "address": "0x90e21986e199b433b56b5e9e386dda39f8ddf912",
   "label": "BOXA #6 group 90e2 (buys from HyperEVM)",
-  "group": "boxa6"
- },
- {
-  "address": "0xca40e925dc43a0ecde6c8b1a2709c170ec501060",
-  "label": "BOXA #6 funder ca40",
   "group": "boxa6"
  },
  {
@@ -1722,5 +1717,30 @@
   "address": "0xaca819e57522fff74386f1a8f3b64b0000000000",
   "label": "Fresh bridger 61 HYPE (never traded yet)",
   "group": "freshbridge"
+ },
+ {
+  "address": "0xded3aa90c7698e57c6fc502e50dd5cba1d40d2c6",
+  "label": "culture alt 4 (active, funded from his BSC wallet)",
+  "group": "culture"
+ },
+ {
+  "address": "0xf79dfcf61a59b1bcd6cfff957005f7de77ff2581",
+  "label": "culture alt 5 (active)",
+  "group": "culture"
+ },
+ {
+  "address": "0x7ea2ba05503f032fce4846a4f0ebdafe012ceed0",
+  "label": "culture main 1 (Robinhood Chain, funds his alts)",
+  "group": "culture"
+ },
+ {
+  "address": "0xee8adf5dbd6ac8cb0a11e7731d1e84ceb1e9dbd2",
+  "label": "culture main 2 (Robinhood Chain, funds his alts)",
+  "group": "culture"
+ },
+ {
+  "address": "0x96a24e5dd410fc97269fd8910b11fc413a0a2596",
+  "label": "culture Arbitrum wallet",
+  "group": "culture"
  }
 ]

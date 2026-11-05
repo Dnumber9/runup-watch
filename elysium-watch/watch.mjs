@@ -406,10 +406,12 @@ async function main() {
     W.set(a, x.label);
     if (x.group) G.set(a, x.group); else G.delete(a);
   }
-  // a muted wallet takes the alts it funded with it (alt of alt too), unless one was added back with /add
+  // a muted wallet takes the alts it funded with it (alt of alt too), unless one was added back with /add or is named
+  // in wallets.json (a muted bridge service funds plenty of wallets that are tracked for their own reasons)
+  const listed = new Set(okW.map((w) => lc(w.address)));
   for (let more = true; more;) {
     more = false;
-    for (const [a, x] of Object.entries(state.auto)) if (!state.muted[a] && !state.manual[a] && state.muted[x.from]) { state.muted[a] = now(); more = true; }
+    for (const [a, x] of Object.entries(state.auto)) if (!state.muted[a] && !state.manual[a] && !listed.has(a) && state.muted[x.from]) { state.muted[a] = now(); more = true; }
   }
   for (const a of Object.keys(state.muted)) { W.delete(a); G.delete(a); }
 
