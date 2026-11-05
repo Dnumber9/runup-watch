@@ -1762,5 +1762,100 @@
   "address": "0x96a24e5dd410fc97269fd8910b11fc413a0a2596",
   "label": "culture Arbitrum wallet",
   "group": "culture"
+ },
+ {
+  "address": "0x18a82c968b992d28d4d812920eb7b4305306f8f1",
+  "label": "Kinetiq governance multisig (4 of 8, HyperEVM)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x64bd77698ab7c3fd0a1f54497b228ed7a02098e3",
+  "label": "Kinetiq treasury multisig (4 of 7, HyperEVM)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xba85f851202a0b301f62e9139a74c1c3336e21b2",
+  "label": "Kinetiq Ethereum multisig (3 of 6)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xfcaddd4395fbc10fb6fa024a427561c1841a0849",
+  "label": "Kinetiq signer on all 3 multisigs (Omnia lead)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x99ed257a514d81a62c3195934d4e63a1c2c3946a",
+  "label": "Kinetiq governance signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xf0b3a9bff7b733bbf6b9fdca20cc954de5e8aa77",
+  "label": "Kinetiq governance signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xdc1c4b5d08528a25a96ba036ddd6496fa2fb6947",
+  "label": "Kinetiq governance signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x64cbed11afe88631b7b6c12d8b50e59e8e07f42e",
+  "label": "Kinetiq governance signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x806e5f088a12a86bf1984378a824c224d29c7503",
+  "label": "Kinetiq governance signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x07c78968a1be7151ad62a6b95e11321a8a4f77cd",
+  "label": "Kinetiq governance signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x9bd23f6e1012d490faee8c81d3bad9d4e4f71624",
+  "label": "Kinetiq governance signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xa8480ec8d00e868c1203a9e891f526427b000410",
+  "label": "Kinetiq treasury + Ethereum signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x1936bb3b9c72e609149eb2fb65ade52cbb7a76c5",
+  "label": "Kinetiq treasury + Ethereum signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x10d1de74a463a29e28b34077375533c030df4a43",
+  "label": "Kinetiq treasury signer (active on Hyperliquid)",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x281e60cb094d9636d9f61a6daf9ac8968a7042c2",
+  "label": "Kinetiq treasury + Ethereum signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0xb2219b9b7712eb034ca73401b6058948139a90d8",
+  "label": "Kinetiq treasury signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x809952548c23af49d92b5df2b6bb955a02ed4487",
+  "label": "Kinetiq treasury signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x703431394060db77574caa17decb07034403e604",
+  "label": "Kinetiq Ethereum signer",
+  "group": "kinetiq"
+ },
+ {
+  "address": "0x1a4fdf8ae9c82b979a0fed2b9665d1e22a4d71c0",
+  "label": "Kinetiq Ethereum signer",
+  "group": "kinetiq"
  }
 ]
