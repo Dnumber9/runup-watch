@@ -217,10 +217,13 @@ const txLink = (h) => `<a href="${EXPLORER}${h}">tx</a>`;
 
 // ── RPC: rotate for reads, broadcast to every node for sends ───────────────────────────────────────
 const reverted = (e) => e && (e.code === 3 || /revert/i.test(e.message || ''));
-const transient = (e) => /abort|timeout|timed? ?out|rate limit|busy|unavailable|fetch failed|ECONN|ENOTFOUND|socket|502|503|504|-32005/i.test(`${e.name} ${e.message} ${e.code}`);
+const transient = (e) => /abort|timeout|timed? ?out|rate limit|too many|busy|unavailable|fetch failed|ECONN|ENOTFOUND|socket|bad answer|429|502|503|504|-32005/i.test(`${e.name} ${e.message} ${e.code}`);
 async function call1(url, method, params, ms = 8000) {
   const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(ms) });
-  const j = await r.json();
+  // a node that is rate limiting answers 429 with a text or HTML page, not JSON: that is a busy node, not a bad call
+  const body = await r.text();
+  let j;
+  try { j = JSON.parse(body); } catch { throw new Error(`bad answer HTTP ${r.status}`); }
   if (j.error) { const e = new Error(j.error.message || 'rpc error'); e.code = j.error.code; e.data = j.error.data; throw e; }
   return j.result;
 }
@@ -1593,10 +1596,18 @@ const RUNUP_BLOCKS = 12000;   // about half an hour of Elysium blocks: the run-u
 const mineName = (w) => state.mine[w]?.name || short(w);
 const noteAsk = {};           // message id of a 📒 trade note question → journal entry ids
 const noteSent = {};          // coin → last 📒 buy message (a coin bought in two of your wallets at once asks once)
+// "missing trie node": the node that answered keeps no state for that block (the archive host sits behind a load
+// balancer with some pruned nodes), so the same call is asked again and lands on another node
+const stateGone = (e) => /missing trie node|is not available|header not found|state.{0,40}not found|pruned/i.test(`${e?.message}`);
+const STATE_CALLS = new Set(['eth_getBalance', 'eth_getTransactionCount', 'eth_call', 'eth_getCode', 'eth_getStorageAt']);
 async function arch(method, params) {
-  for (let i = 0; i < 3; i++) {
-    try { return await call1(ARCHIVE, method, params, 12000); } catch (e) { if (!transient(e)) break; await sleep(400 * (i + 1)); }
+  let last;
+  for (let i = 0; i < 8; i++) {
+    try { return await call1(ARCHIVE, method, params, 12000); } catch (e) { last = e; if (!transient(e) && !stateGone(e)) break; await sleep(500 * (i + 1)); }
   }
+  // the live nodes keep recent state only: a balance or nonce at an old block has to come from the archive node,
+  // so asking them only turns a busy archive into a wrong "missing trie node"
+  if (STATE_CALLS.has(method) && params[params.length - 1] !== 'latest') throw last;
   return rpc(method, params);
 }
 async function pmap(items, n, fn) {
@@ -1752,8 +1763,20 @@ async function mineRead(hashes, wallets, live) {
   await pmap([...new Set(order.map((g) => g.b))], 6, async (b) => { try { times[b] = parseInt((await rpc('eth_getBlockByNumber', [hex(b), false])).timestamp, 16) * 1000; } catch { times[b] = Date.now(); } });
   const out = [], later = [];
   for (const g of order) {
-    try { out.push(...(await applyTrades(g.w, g.b, times[g.b], await readTrades(g.w, g.b, g.txs), live, later))); }
-    catch (e) { console.error('mine read', g.w, g.b, e.message); for (const x of g.txs) delete state.mineSeen[seenKey(x.hash, g.w)]; }
+    // in block order: a trade read later than the ones after it would mix up the cost of a coin, so a failed read
+    // is asked again here before moving on
+    let r = null, err = null;
+    for (let k = 0; k < 4 && !r; k++) {
+      try { r = await readTrades(g.w, g.b, g.txs); } catch (e) { err = e; await sleep(3000 * (k + 1)); }
+    }
+    if (!r) {
+      console.error('mine read', g.w, g.b, err?.message);
+      for (const x of g.txs) delete state.mineSeen[seenKey(x.hash, g.w)];
+      (state.mineGaps ||= {})[`${g.w}:${g.b}`] = Date.now();
+      continue;
+    }
+    try { out.push(...(await applyTrades(g.w, g.b, times[g.b], r, live, later))); }
+    catch (e) { console.error('mine apply', g.w, g.b, e.message); }
   }
   applyMoves(later);
   if (Object.keys(state.mineSeen).length > 20000) { const keep = Object.entries(state.mineSeen).sort((a, b) => b[1] - a[1]).slice(0, 10000); state.mineSeen = Object.fromEntries(keep); }
@@ -1872,7 +1895,7 @@ async function sentTxs(w, head, after = 0, low = 0) {
     const idx = [];
     for (let i = 0; i < k; i++) if (hi[i] - lo[i] > 1) idx.push(i);
     if (!idx.length) break;
-    await pmap(idx, 12, async (i) => {
+    await pmap(idx, 8, async (i) => {
       const mid = Math.floor((lo[i] + hi[i]) / 2);
       try { const c = Number(BigInt(await arch('eth_getTransactionCount', [w, hex(mid)]))); if (c >= after + i + 1) hi[i] = mid; else lo[i] = mid; } catch {}
     });
@@ -1900,6 +1923,22 @@ async function mineNonces(head) {
 // first import: every Transfer to or from the wallets over the whole chain plus every transaction they sent, then
 // their price histories
 const importing = new Set();
+const noteKey = (e) => `${e.w}:${e.hash}:${e.side}:${e.coin}`;
+// wipe what was read from your wallets and read it all again; trade notes are put back on the same trades
+function mineRebuild(quiet = false) {
+  const ws = Object.keys(state.mine);
+  if (!ws.length) return;
+  const keep = state.mineNotesKeep || {};
+  for (const e of state.journal) if (e.w && e.note) keep[noteKey(e)] = e.note;
+  state.mineNotesKeep = keep;
+  for (const w of ws) { delete state.mpos[w]; state.mine[w].imported = 0; }
+  state.journal = state.journal.filter((e) => !e.w);
+  state.mineSeen = {};
+  state.mineMove = {};
+  state.mineGaps = {};
+  save();
+  mineImport(ws, quiet).catch((e) => console.error('mine import', e.message));
+}
 async function mineImport(wallets, quiet = false) {
   const ws = wallets.filter((w) => !importing.has(w));
   if (!ws.length) return;
@@ -1919,6 +1958,8 @@ async function mineImport(wallets, quiet = false) {
       ev.push(...(await mineRead([...i2, ...o2].map((l) => lc(l.transactionHash)), ws, false)));
     }
     state.journal.sort((a, b) => a.t - b.t);
+    const keep = state.mineNotesKeep;
+    if (keep) { for (const e of state.journal) { const n = e.w && keep[noteKey(e)]; if (n && !e.note) e.note = n; } if (!Object.keys(state.mine).some((w) => !state.mine[w].imported && !ws.includes(w))) delete state.mineNotesKeep; }
     for (const w of ws) if (state.mine[w]) state.mine[w].imported = head;
     if (!state.mineBlock) state.mineBlock = head;
     save();
@@ -1945,7 +1986,7 @@ function mineView() {
     return `• <b>${esc(x.name)}</b> <code>${w}</code>\n   ${x.imported ? `${ps.length} coins · ${open.length} open bags worth ${fmtH(open.reduce((a, p) => a + (p.now || 0), 0))}` : 'importing…'}`;
   });
   return {
-    text: `📒 <b>Your wallets</b> (watch-only)\n${rows.join('\n')}\n\nTrade notes ${cfg().notes ? 'on' : 'off'} (/mine notes on|off) · /mine name 0x… main · /mine sync rebuilds from the chain · /stats 7d mine`,
+    text: `📒 <b>Your wallets</b> (watch-only)\n${rows.join('\n')}${Object.keys(state.mineGaps || {}).length ? `\n\n⚠️ ${Object.keys(state.mineGaps).length} trade block(s) could not be read from the node, so some numbers are short. /mine sync reads everything again.` : ''}\n\nTrade notes ${cfg().notes ? 'on' : 'off'} (/mine notes on|off) · /mine name 0x… main · /mine sync rebuilds from the chain · /stats 7d mine`,
     rows: ws.map(([w, x]) => [{ text: `✖ ${x.name}`, callback_data: `u:${w.slice(2)}` }]),
   };
 }
@@ -2623,13 +2664,8 @@ async function onMessage(msg) {
     if (sub === 'sync') {
       const ws = Object.keys(state.mine);
       if (!ws.length) return say('No wallets of yours added yet. /mine add 0xWALLET [name]');
-      for (const w of ws) { delete state.mpos[w]; state.mine[w].imported = 0; }
-      state.journal = state.journal.filter((e) => !e.w);
-      for (const k of Object.keys(state.mineSeen)) delete state.mineSeen[k];
-      state.mineMove = {};
-      save();
-      await say(`📒 Rebuilding ${ws.length} wallet${ws.length > 1 ? 's' : ''} from the chain. A few minutes; a summary comes when it is done.`);
-      mineImport(ws).catch((e) => console.error('mine import', e.message));
+      await say(`📒 Rebuilding ${ws.length} wallet${ws.length > 1 ? 's' : ''} from the chain. A few minutes; a summary comes when it is done. Your trade notes are kept.`);
+      mineRebuild();
       return;
     }
     const addrs = [...text.matchAll(/0x[0-9a-fA-F]{40}/g)].map((m) => m[0].toLowerCase());
@@ -2818,7 +2854,13 @@ async function main() {
   (async () => { for (;;) { await sleep(2000); await guardTick().catch((e) => console.error('guard', e.message)); } })();
   (async () => { for (;;) { await sleep(Object.keys(state.copy).length ? 1000 : 5000); await copyTick().catch((e) => console.error('copy', e.message)); } })();
   // your other wallets: imports a restart cut short are run again, then the live tail every 4 s
-  { const left = Object.keys(state.mine).filter((w) => !state.mine[w].imported); if (left.length) mineImport(left, true).catch((e) => console.error('mine import', e.message)); }
+  // the first version of the import skipped trades when the archive node answered "missing trie node": read once more
+  if ((state.mineV || 1) < 2 && Object.values(state.mine).some((x) => x.imported)) { state.mineV = 2; mineRebuild(); }
+  else {
+    state.mineV = 2;
+    const left = Object.keys(state.mine).filter((w) => !state.mine[w].imported);
+    if (left.length) mineImport(left, true).catch((e) => console.error('mine import', e.message));
+  }
   (async () => { for (;;) { await sleep(4000); await mineTick().catch((e) => console.error('mine', e.message)); } })();
   // open bags valued every 10 minutes; the daily report goes out once a day at REPORT_HOUR_UTC
   (async () => { for (;;) { await sleep(600000); await valuePositions().catch(() => {}); } })();
