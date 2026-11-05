@@ -1297,5 +1297,195 @@
   "address": "0xedb75aa49bd3cd5babdb003c0e627daae6cdb372",
   "label": "Stands buyback bot",
   "group": "standsteam"
+ },
+ {
+  "address": "0x2103c69696cb2d3779f5445393808239034e911c",
+  "label": "Elysium ops hub (multisig signer, funded the rollup)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xe7cb019b9ea946961207775f11cac8e3dbf1cb8a",
+  "label": "Elysium rollup deployer",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xf803f9bb536171bc46a59c225688594748751f67",
+  "label": "Elysium batch poster",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x8e87f7c65750c25c6708de33823124cf457676b2",
+  "label": "Elysium validator",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x6cbb552855ce5eb70af49b76a8048be8e3799a05",
+  "label": "Elysium fee wallet (chain fees)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xc030cee9e03a6dfbda0a817c8bdb4ba44d6d61d0",
+  "label": "Elysium upgrade multisig (4 of 11)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xa9fccc53f1c9095da867bd648683f8bdccc78d09",
+  "label": "Elysium multisig signer 1 (made the multisig)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xa0c600a6e85bf225958ffacc70b5fddf9a059038",
+  "label": "Elysium multisig signer 2",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xefcf0c8fafb425997870f845e26fc6ca6ee6dd5c",
+  "label": "Elysium multisig signer 3",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x4d8007a0e9f293e62e2b0f43c6cf4c4b9e135bae",
+  "label": "Elysium multisig signer 4",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xf3313c48bd8e17b823d5498d62f37019dfea647d",
+  "label": "Elysium multisig signer 5",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xa0737fea60f0601a192e3d2c98865a883ab0bda2",
+  "label": "Elysium multisig signer 6",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x81175155d85377c337d92f1fa52da166c3a4e7ac",
+  "label": "Elysium multisig signer 7",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x6bb4249858ee19b6abc071ad26bee690baa783a6",
+  "label": "Elysium multisig signer 8",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xcdc931935768c0562afe989a366a3dc4d52f4853",
+  "label": "Elysium multisig signer 9",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x9402c42db162d5a0927c032136f40cc9c71853f2",
+  "label": "Elysium multisig signer 10",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x61d92de7df80c04e8d3bff266ab54231c2c8878e",
+  "label": "Elysium ops hub alt (rollup factory deployer)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x2605434db931372990fe6e37959e2cf5c9b675b9",
+  "label": "Elysium ops hub alt 2",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xc44f8b8131d9ac389dc4a6618cf5e588c9bdec4e",
+  "label": "Elysium ops hub alt 3 (ops multisig signer)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xd840dbe75bd8d70e28e9548b0cdb800413a0142d",
+  "label": "Elysium ops hub alt 4 (staking ops)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xcf98c616918434239ae85c50a36ab91486256b57",
+  "label": "Elysium ops hub alt 5",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xc3205dd89da0b652df64c273c87501dc206dad06",
+  "label": "Elysium ops multisig 2",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x7df2a4a7b374157fcc9edb43e593f941bdda9158",
+  "label": "Elysium infra wallet (first user, funded the WHYPE deployer)",
+  "group": "elyinfra"
+ },
+ {
+  "address": "0x058bc86a8262670f97e3dbcb3da789f452b2bf91",
+  "label": "Elysium infra alt (deployed WHYPE and Uniswap v3)",
+  "group": "elyinfra"
+ },
+ {
+  "address": "0x33e233087d04758ee8df32e40433feb36ec988e1",
+  "label": "Elysium day-1 deployer (Uniswap v3 set)",
+  "group": "elyinfra"
+ },
+ {
+  "address": "0x5fa637713b819d6314e139291de2bfa7b7cd70eb",
+  "label": "Ascend deployer (testnet launchpad owner)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xabd08eb33d972302d0b3fc588e4676cb8514f547",
+  "label": "Ascend deployer 2",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x797dd8b5da7a10bf6e6534d549a9c256f8f4f0ab",
+  "label": "Ascend teammate? (sent the deployer 18.5 testnet HYPE)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x0f3a5171bbe8d1235f26d7b9a647578f11c55384",
+  "label": "Ascend teammate? (sent the deployer testnet HYPE)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xb1004644cf3991266fec642688a860cdcdff2a5e",
+  "label": "Ascend teammate? alt (made the new launchpad multisig)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xb6832e477e9b34a826a9726d61690c8bac8868b5",
+  "label": "Ascend? multisig 3 of 5 (owns the new launchpad)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x4a6fd6b7036f255d4575c874710b36bd6aa853d2",
+  "label": "Ascend? deployer (new launchpad and hook, Nov 4)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x83465a12f87a6b5e9593b2fbafc79b4711fd1d60",
+  "label": "Ascend? funder (paid the new deployer 15.6 HYPE)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x6ba8736ac937e13d5ea03f880609d5617dcce205",
+  "label": "Ascend? multisig signer 1",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x3e24e25d7719f0cb606570dac3d6370b90961c07",
+  "label": "Ascend? multisig signer 2",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xb6f4f759793181541667162fe01821ab513bf20a",
+  "label": "Ascend? multisig signer 3",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xf6a669c6dd3f22182dc4437ae5c2bad1b5b351fd",
+  "label": "Ascend? multisig signer 4",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xdd97993ff13e6e55b69a03e498674997b05d37ac",
+  "label": "Ascend? multisig signer 5",
+  "group": "ascendteam"
  }
 ]
