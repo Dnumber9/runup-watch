@@ -47,13 +47,22 @@ jobs:
           GH_API_TOKEN: ${{ github.token }}   # gate.mjs: chain registry lookups on GitHub's API
         run: |
           end=$((SECONDS + 330 * 60))
+          # fast lane: tracked-wallet trades within seconds, one long-running process (restarted here if it dies)
+          fast() { FAST_MINUTES=$(( (end - SECONDS) / 60 )) node elysium-watch/watch.mjs --fast >> /tmp/fast.log 2>&1 & FAST_PID=$!; }
+          : > /tmp/fast.log
+          fast
+          lines=0
           while [ $SECONDS -lt $end ]; do
             start=$SECONDS
             node elysium-watch/watch.mjs > /tmp/scan.log 2>&1 || { echo "scan failed, retrying next tick"; tail -5 /tmp/scan.log; }
             tail -1 /tmp/scan.log
+            # the fast lane's 5-minute summaries (counts and timings only)
+            now_lines=$(wc -l < /tmp/fast.log); if [ "$now_lines" -gt "$lines" ]; then tail -n +$((lines + 1)) /tmp/fast.log; lines=$now_lines; fi
+            if ! kill -0 $FAST_PID 2>/dev/null && [ $((end - SECONDS)) -gt 120 ]; then echo "fast lane stopped, restarting"; fast; fi
             left=$((10 - (SECONDS - start)))
             if [ $left -gt 0 ]; then sleep $left; fi
           done
+          kill $FAST_PID 2>/dev/null || true
 
       - name: Save state
         if: always() && hashFiles('elysium-watch/state.json') != ''
