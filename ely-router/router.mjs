@@ -2102,10 +2102,13 @@ function tips(s, hypeNow) {
   const gave = bot.filter((x) => !x.open && x.peak >= 2 * x.inv && x.out < 1.3 * x.inv);
   if (gave.length) out.push([4, `You gave back gains on ${gave.slice(0, 2).map((x) => `${esc(x.sym)} (peaked ${(x.peak / x.inv).toFixed(1)}×, closed ${(x.out / x.inv).toFixed(1)}×)`).join(', ')}.${cfg().auto === 'off' ? ` <code>/auto ${DEFAULT_AUTO}</code> takes half at 2× and trails the rest automatically.` : ` Your preset is ${esc(cfg().auto)}; a tighter trail would have kept more.`}`]);
   // your wallets: coins that doubled after the buy and came back under 1.2×, closed or still held
+  // the honest test of "sell half at 2×": what it keeps on the round trips against what it costs on the runners
   const rt = mine.filter((x) => x.pk >= 2 && (x.out + x.now) / x.inv < 1.2).sort((a, b) => b.pk - a.pk);
   if (rt.length) {
-    const lost = rt.reduce((a, x) => a + (x.inv - 0.5 * (x.out + x.now)), 0);
-    out.push([2, `${rt.length} coin${rt.length > 1 ? 's' : ''} went 2× or more after you bought and ${rt.length > 1 ? 'are' : 'is'} back under 1.2× for you: ${rt.slice(0, 4).map((x) => `${list([x])[0]} (ran ${x.pk.toFixed(1)}×, now ${((x.out + x.now) / x.inv).toFixed(2)}×)`).join(', ')}. Selling half at 2× would have kept <b>+${fmtH(lost)}</b>. Set the 2× sell the moment you buy.`]);
+    const kept = rt.reduce((a, x) => a + (x.inv - 0.5 * (x.out + x.now)), 0);
+    const run = mine.filter((x) => x.pk >= 2 && x.inv - 0.5 * (x.out + x.now) < 0).sort((a, b) => (a.inv - 0.5 * (a.out + a.now)) - (b.inv - 0.5 * (b.out + b.now)));
+    const cost = run.reduce((a, x) => a + (x.inv - 0.5 * (x.out + x.now)), 0);
+    out.push([2, `${rt.length} coin${rt.length > 1 ? 's' : ''} went 2× or more after you bought and ${rt.length > 1 ? 'are' : 'is'} back under 1.2× for you: ${rt.slice(0, 4).map((x) => `${list([x])[0]} (ran ${x.pk.toFixed(1)}×, now ${((x.out + x.now) / x.inv).toFixed(2)}×)`).join(', ')}. Half at 2× would have kept +${fmtH(kept)} there${run.length ? ` but cost ${fmtH(-cost)} on your runners (${run.slice(0, 2).map((x) => list([x])[0]).join(', ')})` : ''}: <b>net ${kept + cost >= 0 ? '+' : ''}${fmtH(kept + cost)}</b>. ${kept + cost > 0.2 * kept ? 'Taking something off after a big run pays for you so far.' : 'A fixed multiple does not fix this for you; sell on what the coin shows (dev, insiders or the group that pumped it selling), not on 2×.'}`]);
   }
   const late = mine.filter((x) => x.pl > 0 && x.off != null && x.pk >= 2);
   if (late.length >= 2) {
