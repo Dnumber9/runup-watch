@@ -76,7 +76,7 @@ const LAUNCHPADS = {
   '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1': { name: 'Uniswap v4', hook: null, busy: true },
 };
 const HOOK_NAMES = {
-  '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'the Ascend? launchpad', // Safe-owned launchpad behind CHAMELEON, e/acc, YUM
+  '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'Ascend',                // app.ascendlaunch.xyz (CHAMELEON, e/acc, NMEOWS, YUM)
   '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'Montra',                // montramarkets.xyz, HOBBES and ~80 launches an hour
   '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec': 'Mesa',                  // mesa.cx
 };
@@ -140,6 +140,7 @@ function int256(hex) {
 // a coin opens on the launchpad it launched on (its pool hook first, then its PoolManager), else on Elyxa.
 // Token page formats as each launchpad's own site links them.
 const LP_PAGES = {
+  '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': ['Ascend', (t) => `https://app.ascendlaunch.xyz/tokens/${t}`],
   '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': ['Montra', (t) => `https://montramarkets.xyz/token/${t}`],
   '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec': ['Mesa', (t) => `https://mesa.cx/markets/elysium/${t}`],
   '0x06c63714fbf1f5753017123e2fcfdede4540b2c4': ['BOXA', (t) => `https://boxa.club/asset?address=${t}`],
