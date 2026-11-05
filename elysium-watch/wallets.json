@@ -342,12 +342,32 @@
  {
   "address": "0x3048cdb54779e6966276dafe8d9f7d97cb7e2929",
   "label": "Stockium fee wallet (STOCKIUM creator)",
-  "group": "dev"
+  "group": "stockium"
  },
  {
   "address": "0x40269087501bd81eff75ced85cd2277580728b68",
   "label": "Stockium admin",
-  "group": "dev"
+  "group": "stockium"
+ },
+ {
+  "address": "0xd8d9bdeaa62b3a07b4e6bd272965777557652cd5",
+  "label": "Stockium alt (older, bridged in Nov 4, BLOB holder)",
+  "group": "stockium"
+ },
+ {
+  "address": "0xe14a6a962dc4b474ccbb5c631b328fa349327d58",
+  "label": "Stockium alt 2 (BLOB bundle Nov 5)",
+  "group": "stockium"
+ },
+ {
+  "address": "0x50ce4e4f849e94c6fe0b1e1fa095059d46ab44b8",
+  "label": "Stockium alt 3 (BLOB bundle Nov 5)",
+  "group": "stockium"
+ },
+ {
+  "address": "0x2ab3e9b7ca55dcf3140df6d4c98a08e948e8c4bd",
+  "label": "Stockium alt 4 (BLOB bundle Nov 5)",
+  "group": "stockium"
  },
  {
   "address": "0xbf4ce8b8d754f0677a7e4d21a114bf4f79d39257",
@@ -715,7 +735,7 @@
  {
   "address": "0x9aa03c534565ef4d41fba4dd054b86f00249fdbb",
   "label": "STOCKIUM pool creator on Elysium",
-  "group": "dev",
+  "group": "stockium",
   "watch": "launch",
   "coins": [
    "0x1e0cc793904f7d33fc632e97fe23b81a00a762a3"
