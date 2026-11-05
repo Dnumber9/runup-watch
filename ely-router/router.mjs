@@ -31,6 +31,8 @@
 //   replying to a card's 🎯 Limit question.
 // Pinned panel: one message pinned at the top of the chat lists every open trade with one-tap sells, edited
 //   every minute and after each trade, so alerts never bury it (/pin re-sends it at the bottom).
+// Your other wallets (/mine): wallets you trade from elsewhere, watch-only. Their Elysium buys and sells go into the
+// journal, /stats and the nightly tips beside the bot's own, with a 📒 note question on each buy and each coin closed.
 // Extras, off unless set: take profit, stop loss and trailing stop (/tp /sl /trail), an auto-sell preset on
 //   every buy (/auto), dev and rug guards (/set devsell, /set rug), snipes (/snipe) and copy trading (/copy).
 //
@@ -170,6 +172,7 @@ const cfg = () => ({
   copymax: Number(state.set.copymax ?? process.env.COPY_MAX_DAY ?? 10), // copy buys per day, all wallets together
   copysells: (state.set.copysells ?? 'on') !== 'off',                   // mirror the copied wallet's sells
   pin: (state.set.pin ?? process.env.PIN_TRADES ?? 'on') !== 'off',      // pinned open-trades panel at the top of the chat
+  notes: (state.set.notes ?? process.env.TRADE_NOTES ?? 'on') !== 'off', // 📒 note question on each buy and close in your other wallets
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
@@ -1569,6 +1572,389 @@ async function copyBuy(w, tok) {
   if (!res?.ok) { state.copyDay.n--; save(); }
 }
 
+// ── your other wallets: watch-only, for the journal and the tips ──────────────────────────────────────
+// Wallets you trade from yourself (another bot, a site) are added with /mine. The bot never holds their keys and
+// never trades from them. Their buys and sells on Elysium are read from the chain into the journal, /stats and the
+// nightly tips, beside the bot's own trades. A trade's HYPE side is the wallet's HYPE balance change across that
+// block plus gas plus any WHYPE it paid or got, so a trade through any bot, router or site counts the same.
+// Adding a wallet first imports its whole Elysium history. Each coin also gets its price history from the pool it
+// was traded on, to see how far it ran after the buy (round trips, late exits) and how far it had run before.
+state.mine ||= {};     // wallet → { name, at, imported }
+state.mpos ||= {};     // wallet → coin → position (cost basis, peak, run-up, pool)
+state.mineSeen ||= {}; // `${hash}:${wallet}` → time (each transaction read once per wallet)
+state.mineMove ||= {}; // `${hash}:${coin}:${to}` → cost that moved with tokens sent to another of your wallets
+const ARCHIVE = process.env.ARCHIVE_RPC || 'https://rpc.eleos.fun'; // archive node: balances at past blocks
+const T_SWAP_V4 = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
+const T_SWAP_V3 = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+const WHYPES = new Set(['0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0xba876237b0f021a6c6d852d6c26e107997cc5e81', '0x5ab377328592c03b5e7adb09254adb043f91fa11', '0x9f041fad8323d7c5bf8f928aade05b610df34b64']);
+const MINE_SKIP = new Set(['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65']); // USDC: not a coin trade
+const DUST = 0.0005;          // HYPE: below this a token move is a transfer, not a trade
+const RUNUP_BLOCKS = 12000;   // about half an hour of Elysium blocks: the run-up looked at before each buy
+const mineName = (w) => state.mine[w]?.name || short(w);
+const noteAsk = {};           // message id of a 📒 trade note question → journal entry ids
+const noteSent = {};          // coin → last 📒 buy message (a coin bought in two of your wallets at once asks once)
+async function arch(method, params) {
+  for (let i = 0; i < 3; i++) {
+    try { return await call1(ARCHIVE, method, params, 12000); } catch (e) { if (!transient(e)) break; await sleep(400 * (i + 1)); }
+  }
+  return rpc(method, params);
+}
+async function pmap(items, n, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } }));
+  return out;
+}
+// logs over any block range, 2,000 blocks per request, a few at once; a window that keeps failing is asked of the archive node
+async function logsRange(filter, from, to, n = 6) {
+  const wins = [];
+  for (let a = Math.max(0, from); a <= to; a += 2000) wins.push([a, Math.min(to, a + 1999)]);
+  const res = await pmap(wins, n, async ([a, b]) => {
+    const q = [{ ...filter, fromBlock: hex(a), toBlock: hex(b) }];
+    try { return await rpc('eth_getLogs', q, 5); } catch { return arch('eth_getLogs', q); }
+  });
+  return res.flat();
+}
+// HYPE per token at a swap, from the pool's sqrt price; flip = HYPE is the pool's first currency
+function swapPx(src, data, d) {
+  const sp = Number(BigInt('0x' + (strip(data).slice(128, 192) || '0'))) / 2 ** 96;
+  if (!(sp > 0)) return null;
+  const raw = sp * sp;
+  return (src.flip ? 1 / raw : raw) * 10 ** (d - 18);
+}
+
+// one wallet's token moves in one block, and its HYPE change across that block
+async function readTrades(w, b, txs) {
+  const [before, after] = await Promise.all([arch('eth_getBalance', [w, hex(b - 1)]), arch('eth_getBalance', [w, hex(b)])]);
+  let hypeLeg = num(BigInt(after) - BigInt(before));
+  const toks = {}, swaps = [];
+  for (const x of txs) {
+    if (x.from === w) hypeLeg += x.gas;
+    for (const l of x.logs) {
+      const t0 = lc(l.topics?.[0]);
+      if (t0 === T_SWAP_V4) swaps.push({ kind: 'v4', pm: lc(l.address), id: lc(l.topics[1]), data: l.data, hash: x.hash });
+      else if (t0 === T_SWAP_V3) swaps.push({ kind: 'v3', pool: lc(l.address), data: l.data, hash: x.hash });
+      if (t0 !== T_TRANSFER || l.topics.length !== 3) continue;
+      const f = lc('0x' + l.topics[1].slice(26)), to = lc('0x' + l.topics[2].slice(26)), a = lc(l.address);
+      if (f === to || (f !== w && to !== w)) continue;
+      const v = BigInt(l.data || '0x0');
+      if (WHYPES.has(a)) { hypeLeg += (to === w ? 1 : -1) * num(v); continue; }
+      if (MINE_SKIP.has(a)) continue;
+      const k = (toks[a] ||= { amt: 0n, peer: null, hash: x.hash });
+      k.amt += to === w ? v : -v;
+      k.peer = to === w ? f : to;
+      k.hash = x.hash;
+    }
+  }
+  return { hypeLeg, toks, swaps };
+}
+const mpos = (w, t, sym) => ((state.mpos[w] ||= {})[t] ||= { sym, hypeIn: 0, hypeOut: 0, tokIn: 0, tokOut: 0, cost: 0, held: 0 });
+// the pool a fill went through: the swap in the same transaction whose price matches the fill
+function pickPool(p, swaps, fillPx, d) {
+  let best = null, err = Infinity;
+  for (const s of swaps) {
+    for (const flip of [false, true]) {
+      const src = s.kind === 'v4' ? { kind: 'v4', pm: s.pm, id: s.id, flip } : { kind: 'v3', pool: s.pool, flip };
+      const px = swapPx(src, s.data, d);
+      if (!px) continue;
+      const e = Math.abs(Math.log(px / fillPx));
+      if (e < err) { err = e; best = src; }
+    }
+  }
+  if (best && err < 0.7) p.src = best; // within 2× of the fill (fees, slippage, a multi-hop route)
+}
+// turn one wallet-block into journal entries; moves in from another of your wallets come back in `later`
+async function applyTrades(w, b, ms, r, live, later) {
+  const coins = Object.entries(r.toks).filter(([, k]) => k.amt !== 0n);
+  if (!coins.length) return [];
+  const each = r.hypeLeg / coins.length;
+  const px = await hypeUsd();
+  const done = [];
+  for (const [t, k] of coins) {
+    const m = await tokenMeta(t);
+    const amt = num(k.amt < 0n ? -k.amt : k.amt, m.d);
+    if (!(amt > 0)) continue;
+    const own = !!state.mine[k.peer];
+    if (k.amt > 0n && each < -DUST) {
+      const hype = -each, p = mpos(w, t, m.sym);
+      p.hypeIn += hype; p.tokIn += amt; p.cost += hype; p.held += amt;
+      p.first ||= ms; p.b0 ||= b; p.lastBuy = ms; p.nb = (p.nb || 0) + 1; p.open = true;
+      const fill = hype / amt;
+      if (!p.src) pickPool(p, r.swaps.filter((s) => s.hash === k.hash), fill, m.d);
+      const mc = fill * num(m.sup, m.d);
+      if (p.mc0Usd == null && mc && px) p.mc0Usd = mc * px;
+      const e = { side: 'buy', coin: t, sym: m.sym, hype, tok: amt, mcUsd: mc && px ? mc * px : null, src: mineName(w), w, hash: k.hash, t: ms, id: oid() };
+      J(e); done.push(e);
+    } else if (k.amt < 0n && each > DUST) {
+      const hype = each, p = mpos(w, t, m.sym);
+      const frac = p.held > 0 ? Math.min(1, amt / p.held) : 1;
+      p.cost -= p.cost * frac; p.held = Math.max(0, p.held - amt);
+      if (p.held / Math.max(p.tokIn, 1e-18) < 0.02) { p.held = 0; p.cost = 0; p.open = false; p.now = 0; } // all out (taxed coins leave crumbs)
+      p.hypeOut += hype; p.tokOut += amt; p.lastSell = ms; p.lastSellB = b; p.ns = (p.ns || 0) + 1;
+      if (!p.src) pickPool(p, r.swaps.filter((s) => s.hash === k.hash), hype / amt, m.d);
+      const e = { side: 'sell', coin: t, sym: m.sym, hype, tok: amt, src: mineName(w), w, hash: k.hash, t: ms, id: oid() };
+      J(e); done.push(e);
+    } else if (k.amt < 0n) {
+      // sent away: the cost leaves with the tokens, so it is neither a win nor a loss here
+      const p = state.mpos[w]?.[t];
+      if (!p) continue;
+      const frac = p.held > 0 ? Math.min(1, amt / p.held) : 1;
+      const moved = p.cost * frac;
+      p.cost -= moved; p.held = Math.max(0, p.held - amt); p.hypeIn = Math.max(0, p.hypeIn - moved); p.tokIn = Math.max(0, p.tokIn - amt);
+      if (own) state.mineMove[`${k.hash}:${t}:${k.peer}`] = moved;
+    } else if (own) {
+      later.push({ w, t, m, amt, key: `${k.hash}:${t}:${w}`, ms, b });
+    }
+    // anything else coming in (airdrops, claims) is not a trade
+  }
+  return done;
+}
+function applyMoves(later) {
+  for (const x of later) {
+    const cost = state.mineMove[x.key];
+    if (cost == null) continue;
+    delete state.mineMove[x.key];
+    const p = mpos(x.w, x.t, x.m.sym);
+    p.hypeIn += cost; p.tokIn += x.amt; p.cost += cost; p.held += x.amt; p.first ||= x.ms; p.b0 ||= x.b; p.open = true;
+  }
+}
+// read a set of transactions for the given wallets: receipts, then each wallet-block in block order
+const seenKey = (h, w) => `${h}:${w.slice(2, 10)}`;
+const mineRetry = new Map(); // tx hash → tries, for receipts a node could not give yet
+async function mineRead(hashes, wallets, live) {
+  const ws = new Set(wallets);
+  const todo = [...new Set(hashes)].filter((h) => wallets.some((w) => !state.mineSeen[seenKey(h, w)]));
+  const got = await pmap(todo, 6, async (h) => {
+    try {
+      const [rc, tx] = await Promise.all([rpc('eth_getTransactionReceipt', [h]), rpc('eth_getTransactionByHash', [h])]);
+      if (!rc || !tx) throw new Error('not visible yet');
+      mineRetry.delete(h);
+      if (rc.status !== '0x1') { for (const w of ws) state.mineSeen[seenKey(h, w)] = Date.now(); return null; }
+      return { hash: h, b: parseInt(rc.blockNumber, 16), logs: rc.logs || [], from: lc(tx.from), gas: num(BigInt(rc.gasUsed || 0) * BigInt(rc.effectiveGasPrice || tx.gasPrice || 0)) };
+    } catch {
+      const n = (mineRetry.get(h) || 0) + 1;
+      if (live && n < 30) mineRetry.set(h, n); else mineRetry.delete(h); // live: asked again on the next ticks
+      return null;
+    }
+  });
+  const groups = {};
+  for (const x of got) {
+    if (!x) continue;
+    for (const w of ws) {
+      if (state.mineSeen[seenKey(x.hash, w)]) continue;
+      const hit = x.logs.some((l) => lc(l.topics?.[0]) === T_TRANSFER && l.topics.length === 3 && (lc('0x' + l.topics[1].slice(26)) === w || lc('0x' + l.topics[2].slice(26)) === w));
+      if (hit) (groups[`${w}:${x.b}`] ||= { w, b: x.b, txs: [] }).txs.push(x);
+      state.mineSeen[seenKey(x.hash, w)] = Date.now();
+    }
+  }
+  const order = Object.values(groups).sort((a, b) => a.b - b.b);
+  const times = {};
+  await pmap([...new Set(order.map((g) => g.b))], 6, async (b) => { try { times[b] = parseInt((await rpc('eth_getBlockByNumber', [hex(b), false])).timestamp, 16) * 1000; } catch { times[b] = Date.now(); } });
+  const out = [], later = [];
+  for (const g of order) {
+    try { out.push(...(await applyTrades(g.w, g.b, times[g.b], await readTrades(g.w, g.b, g.txs), live, later))); }
+    catch (e) { console.error('mine read', g.w, g.b, e.message); for (const x of g.txs) delete state.mineSeen[seenKey(x.hash, g.w)]; }
+  }
+  applyMoves(later);
+  if (Object.keys(state.mineSeen).length > 20000) { const keep = Object.entries(state.mineSeen).sort((a, b) => b[1] - a[1]).slice(0, 10000); state.mineSeen = Object.fromEntries(keep); }
+  save();
+  return out;
+}
+
+// price history since each buy: how far the coin ran after it (peak) and before it (run-up), and its price now
+async function mineHistory(head) {
+  const list = [];
+  for (const [w, ps] of Object.entries(state.mpos)) for (const [t, p] of Object.entries(ps)) {
+    if (!p.src || !p.b0 || p.hdone) continue;
+    list.push({ w, t, p });
+  }
+  if (!list.length) return;
+  const v4 = list.filter((x) => x.p.src.kind === 'v4'), v3 = list.filter((x) => x.p.src.kind === 'v3');
+  const from = Math.min(...list.map((x) => (x.p.hb ? x.p.hb + 1 : x.p.b0 - RUNUP_BLOCKS)));
+  if (from > head) return;
+  const logs = [];
+  if (v4.length) logs.push(...(await logsRange({ address: [...new Set(v4.map((x) => x.p.src.pm))], topics: [T_SWAP_V4, [...new Set(v4.map((x) => x.p.src.id))]] }, from, head)));
+  if (v3.length) logs.push(...(await logsRange({ address: [...new Set(v3.map((x) => x.p.src.pool))], topics: [T_SWAP_V3] }, from, head)));
+  const by = {};
+  for (const l of logs) (by[l.topics[0] === T_SWAP_V4 ? lc(l.topics[1]) : lc(l.address)] ||= []).push(l);
+  for (const { t, p } of list) {
+    const m = await tokenMeta(t);
+    const ls = (by[p.src.kind === 'v4' ? p.src.id : p.src.pool] || []).sort((a, b) => parseInt(a.blockNumber, 16) - parseInt(b.blockNumber, 16));
+    const end = p.held > 0 ? head : p.lastSellB || head;
+    for (const l of ls) {
+      const b = parseInt(l.blockNumber, 16);
+      if (p.hb && b <= p.hb) continue;
+      const px = swapPx(p.src, l.data, m.d);
+      if (!px) continue;
+      if (b < p.b0) { if (b >= p.b0 - RUNUP_BLOCKS) p.preMin = Math.min(p.preMin ?? Infinity, px); continue; }
+      if (b <= end) p.pkPx = Math.max(p.pkPx || 0, px);
+      p.lastPx = px; p.lastPxAt = Date.now();
+    }
+    p.hb = head;
+    if (!(p.held > 0)) p.hdone = true; // closed: its history is complete up to the last sell
+  }
+  save();
+}
+// open bags of your wallets: what is really in the wallet now, at the pool's last price (or a quote)
+async function mineValue() {
+  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  await mineHistory(head).catch((e) => console.error('mine history', e.message));
+  for (const [w, ps] of Object.entries(state.mpos)) for (const [t, p] of Object.entries(ps)) {
+    if (!(p.held > 0) && !(p.now > 0)) continue;
+    try {
+      const m = await tokenMeta(t);
+      const bal = num(await balOf(t, w), m.d);
+      if (bal <= 0) { p.now = 0; p.open = false; if (p.held > 0) { p.held = 0; p.cost = 0; } continue; }
+      let px = p.lastPx && p.src ? p.lastPx : null;
+      if (!px) { const r = await findRoute(t); if (r) px = await priceOf(t, r); }
+      if (px) { p.now = bal * px; p.nowAt = Date.now(); }
+      p.open = bal / Math.max(p.tokIn, 1e-18) > 0.02;
+    } catch {}
+  }
+  save();
+}
+
+// live: Transfer logs to and from your wallets, every few seconds; after a restart it catches up on what it missed
+let mineNonceAt = 0;
+async function mineTick() {
+  const ws = Object.keys(state.mine).filter((w) => state.mine[w].imported);
+  if (!ws.length) return;
+  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  if (!state.mineBlock) state.mineBlock = head;
+  if (head <= state.mineBlock) return;
+  const from = state.mineBlock + 1 - 12, to = Math.min(head, state.mineBlock + 40000);
+  const pad = ws.map((w) => '0x' + word(w));
+  const [ins, outs] = await Promise.all([logsRange({ topics: [T_TRANSFER, null, pad] }, from, to), logsRange({ topics: [T_TRANSFER, pad] }, from, to)]);
+  state.mineBlock = to;
+  const hashes = [...ins, ...outs].map((l) => lc(l.transactionHash)).concat([...mineRetry.keys()]);
+  const ev = hashes.length ? await mineRead(hashes, ws, true) : [];
+  // the nonce check once a minute catches anything the log tail missed
+  if (Date.now() - (mineNonceAt || 0) > 60000) { mineNonceAt = Date.now(); ev.push(...(await mineNonces(head).catch((e) => { console.error('mine nonces', e.message); return []; }))); }
+  save();
+  if (ev.length && cfg().notes) await mineNotify(ev, head).catch((e) => console.error('mine notify', e.message));
+}
+const dur = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : m < 2880 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.round(m / 1440)} days`; };
+// a 📒 message for each buy (why?) and each coin closed (what did you learn?); replies are saved on the trade
+async function mineNotify(ev, head) {
+  const px = await hypeUsd();
+  await mineHistory(head).catch(() => {}); // run-ups before the new buys, peaks of the coins just closed
+  for (const e of ev.filter((x) => x.side === 'buy')) {
+    const last = noteSent[e.coin];
+    if (last && Date.now() - last.at < 5 * 60000) { (noteAsk[last.id] ||= []).push(e.id); continue; } // the same coin in another of your wallets
+    const p = state.mpos[e.w]?.[e.coin];
+    const ran = p?.preMin && p.hypeIn ? (e.hype / e.tok) / p.preMin : null;
+    const m = await tg('sendMessage', { chat_id: OWNER, parse_mode: 'HTML', disable_web_page_preview: true, text: `📒 <b>${esc(mineName(e.w))}</b> bought <b>${esc(e.sym)}</b> · ${fmtH(e.hype)}${usd(e.hype, px)}${e.mcUsd ? ` at MC $${fmt(e.mcUsd)}` : ''}${ran && ran >= 1.5 ? ` · it had already run ${ran.toFixed(1)}× in the half hour before` : ''}\nWhy this one? Reply to note it (optional).`, reply_markup: { force_reply: true, input_field_placeholder: 'why I bought' } });
+    if (m?.message_id) { noteAsk[m.message_id] = [e.id]; noteSent[e.coin] = { id: m.message_id, at: Date.now() }; }
+  }
+  const closed = [...new Map(ev.filter((x) => x.side === 'sell').map((x) => [`${x.w}:${x.coin}`, x])).values()].filter((x) => !(state.mpos[x.w]?.[x.coin]?.held > 0));
+  for (const e of closed) {
+    const p = state.mpos[e.w][e.coin];
+    const pl = p.hypeOut - p.hypeIn, r = p.hypeIn > 0 ? pl / p.hypeIn : 0;
+    const entry = p.tokIn > 0 ? p.hypeIn / p.tokIn : null, exit = p.tokOut > 0 ? p.hypeOut / p.tokOut : null;
+    const pk = p.pkPx && entry ? p.pkPx / entry : null;
+    const off = p.pkPx && exit ? 1 - exit / p.pkPx : null;
+    const lines = [`📒 <b>${esc(mineName(e.w))}</b> closed <b>${esc(e.sym)}</b>: in ${fmtH(p.hypeIn)} · out ${fmtH(p.hypeOut)} · <b>${pl >= 0 ? '+' : ''}${fmtH(pl)} (${pct(r)})</b>${p.first ? ` · held ${dur((p.lastSell || Date.now()) - p.first)}` : ''}`];
+    if (pk && pk >= 1.3) lines.push(`It ran ${pk.toFixed(1)}× after your first buy${off != null && off > 0.15 ? `; you sold ${(off * 100).toFixed(0)}% under the top` : ''}.`);
+    else if (pk != null && pk < 1.15) lines.push('It never went 15% above your entry.');
+    lines.push('What did you learn? Reply to note it (optional).');
+    const m = await tg('sendMessage', { chat_id: OWNER, parse_mode: 'HTML', disable_web_page_preview: true, text: lines.join('\n'), reply_markup: { force_reply: true, input_field_placeholder: 'the lesson' } });
+    if (m?.message_id) noteAsk[m.message_id] = [e.id];
+  }
+  const ks = Object.keys(noteAsk); if (ks.length > 100) for (const k of ks.slice(0, ks.length - 100)) delete noteAsk[k];
+}
+// every transaction a wallet sent from nonce `after` on, found by nonce (a log query under load can come back empty,
+// a nonce count cannot): for each nonce, the first block where the wallet's count passes it
+async function sentTxs(w, head, after = 0, low = 0) {
+  const n = Number(BigInt(await arch('eth_getTransactionCount', [w, hex(head)])));
+  if (n <= after || n - after > 3000) return { n, hashes: [] };
+  const k = n - after, lo = new Array(k).fill(low), hi = new Array(k).fill(head);
+  for (let round = 0; round < 48; round++) {
+    const idx = [];
+    for (let i = 0; i < k; i++) if (hi[i] - lo[i] > 1) idx.push(i);
+    if (!idx.length) break;
+    await pmap(idx, 12, async (i) => {
+      const mid = Math.floor((lo[i] + hi[i]) / 2);
+      try { const c = Number(BigInt(await arch('eth_getTransactionCount', [w, hex(mid)]))); if (c >= after + i + 1) hi[i] = mid; else lo[i] = mid; } catch {}
+    });
+  }
+  const hashes = [];
+  await pmap([...new Set(hi)], 6, async (b) => {
+    try { const blk = await arch('eth_getBlockByNumber', [hex(b), true]); for (const t of blk.transactions || []) if (lc(t.from) === w) hashes.push(lc(t.hash)); } catch {}
+  });
+  return { n, hashes };
+}
+// once a minute: any nonce the live log tail missed is read by nonce
+async function mineNonces(head) {
+  const ev = [];
+  for (const [w, x] of Object.entries(state.mine)) {
+    if (!x.imported || x.nonce == null) continue;
+    const latest = Number(BigInt(await rpc('eth_getTransactionCount', [w, 'latest'])));
+    if (latest <= x.nonce) continue;
+    const { n, hashes } = await sentTxs(w, head, x.nonce, Math.max(0, (x.nonceB || head) - 2000));
+    ev.push(...(await mineRead(hashes, [w], true)));
+    x.nonce = n; x.nonceB = head;
+  }
+  save();
+  return ev;
+}
+// first import: every Transfer to or from the wallets over the whole chain plus every transaction they sent, then
+// their price histories
+const importing = new Set();
+async function mineImport(wallets, quiet = false) {
+  const ws = wallets.filter((w) => !importing.has(w));
+  if (!ws.length) return;
+  for (const w of ws) importing.add(w);
+  try {
+    const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+    const pad = ws.map((w) => '0x' + word(w));
+    const t0 = Date.now();
+    // three windows at a time each way: under heavier load a node can answer a log query empty
+    const [ins, outs] = await Promise.all([logsRange({ topics: [T_TRANSFER, null, pad] }, 1, head, 3), logsRange({ topics: [T_TRANSFER, pad] }, 1, head, 3)]);
+    const sent = [];
+    for (const w of ws) { const s = await sentTxs(w, head); sent.push(...s.hashes); if (state.mine[w]) { state.mine[w].nonce = s.n; state.mine[w].nonceB = head; } }
+    const ev = await mineRead([...ins, ...outs].map((l) => lc(l.transactionHash)).concat(sent), ws, false);
+    // trades made while the import ran: the live tail may already be past them for the wallets added before
+    if (state.mineBlock > head) {
+      const [i2, o2] = await Promise.all([logsRange({ topics: [T_TRANSFER, null, pad] }, head + 1, state.mineBlock), logsRange({ topics: [T_TRANSFER, pad] }, head + 1, state.mineBlock)]);
+      ev.push(...(await mineRead([...i2, ...o2].map((l) => lc(l.transactionHash)), ws, false)));
+    }
+    state.journal.sort((a, b) => a.t - b.t);
+    for (const w of ws) if (state.mine[w]) state.mine[w].imported = head;
+    if (!state.mineBlock) state.mineBlock = head;
+    save();
+    await mineValue().catch((e) => console.error('mine value', e.message));
+    if (quiet) return;
+    const lines = ws.map((w) => {
+      const ps = Object.values(state.mpos[w] || {}).filter((p) => p.hypeIn > 0);
+      const n = ev.filter((e) => e.w === w);
+      const inv = ps.reduce((a, p) => a + p.hypeIn, 0), out = ps.reduce((a, p) => a + p.hypeOut, 0), now = ps.reduce((a, p) => a + (p.now || 0), 0);
+      return `• <b>${esc(mineName(w))}</b>: ${n.filter((e) => e.side === 'buy').length} buys, ${n.filter((e) => e.side === 'sell').length} sells on ${ps.length} coins · in ${fmtH(inv)} · out ${fmtH(out)} · holding ${fmtH(now)} · <b>${out + now - inv >= 0 ? '+' : ''}${fmtH(out + now - inv)}</b>`;
+    });
+    await say(`📒 Imported (${Math.round((Date.now() - t0) / 1000)} s):\n${lines.join('\n')}\n\nThey are in /journal, /stats and the nightly tips from now on. /stats all mine for the full read.`);
+  } catch (e) {
+    console.error('mine import', e.message);
+    if (!quiet) await say(`⚠️ Import stopped: ${esc(e.message).slice(0, 200)}. /mine sync tries again.`);
+  } finally { for (const w of ws) importing.delete(w); }
+}
+function mineView() {
+  const ws = Object.entries(state.mine);
+  if (!ws.length) return { text: 'No wallets of yours added yet.\n/mine add 0xWALLET [name] · several addresses in one message work too. Watch-only: the bot never trades from them.', rows: null };
+  const rows = ws.map(([w, x]) => {
+    const ps = Object.values(state.mpos[w] || {}).filter((p) => p.hypeIn > 0);
+    const open = ps.filter((p) => p.open && (p.now || 0) > DUST);
+    return `• <b>${esc(x.name)}</b> <code>${w}</code>\n   ${x.imported ? `${ps.length} coins · ${open.length} open bags worth ${fmtH(open.reduce((a, p) => a + (p.now || 0), 0))}` : 'importing…'}`;
+  });
+  return {
+    text: `📒 <b>Your wallets</b> (watch-only)\n${rows.join('\n')}\n\nTrade notes ${cfg().notes ? 'on' : 'off'} (/mine notes on|off) · /mine name 0x… main · /mine sync rebuilds from the chain · /stats 7d mine`,
+    rows: ws.map(([w, x]) => [{ text: `✖ ${x.name}`, callback_data: `u:${w.slice(2)}` }]),
+  };
+}
+function mineDrop(w) {
+  delete state.mine[w]; delete state.mpos[w];
+  state.journal = state.journal.filter((e) => e.w !== w);
+  save();
+}
+
 // ── other commands ─────────────────────────────────────────────────────────────────────────────────
 async function balances() {
   const [b, px] = await Promise.all([hypeBal(), hypeUsd()]);
@@ -1634,19 +2020,45 @@ async function valuePositions() {
     } catch {}
   }
   save();
+  if (Object.keys(state.mine).length) await mineValue().catch((e) => console.error('mine value', e.message));
 }
 const pct = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(0)}%`;
 const mcBucket = (usdMc) => (usdMc == null ? null : usdMc < 5e3 ? 'under $5K' : usdMc < 20e3 ? '$5K to $20K' : usdMc < 100e3 ? '$20K to $100K' : 'over $100K');
-function stats(sinceMs = 0) {
-  const coins = new Set(state.journal.filter((e) => e.side === 'buy' && e.t >= sinceMs).map((e) => e.coin));
+const sizeBucket = (h) => (h < 1 ? 'under 1 HYPE' : h <= 2.01 ? '1 to 2 HYPE' : h <= 5 ? '2 to 5 HYPE' : 'over 5 HYPE');
+const holdBucket = (ms) => (ms == null ? null : ms < 15 * 60000 ? 'under 15 min' : ms < 2 * 3600e3 ? '15 min to 2 h' : 'over 2 h');
+// who: 'all' (the bot and your wallets), 'bot', 'mine' (your wallets), or one of your wallets by name
+function stats(sinceMs = 0, who = 'all') {
+  const wantBot = who === 'all' || who === 'bot';
+  const wantW = (w) => who === 'all' || who === 'mine' || lc(state.mine[w]?.name) === who || w === who;
   const rows = [];
-  for (const c of coins) {
-    const p = state.pos[c];
-    if (!p || !(p.hypeIn > 0)) continue;
-    const pl = (p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn;
-    rows.push({ c, sym: p.sym, inv: p.hypeIn, out: p.hypeOut || 0, now: p.now ?? 0, pl, r: pl / p.hypeIn, src: p.src || 'card', mc0: p.mc0Usd ?? null, peak: p.peak || 0, open: (p.now ?? 0) > 0.0005, first: p.first, lastSell: p.lastSell });
+  if (wantBot) {
+    const coins = new Set(state.journal.filter((e) => e.side === 'buy' && !e.w && e.t >= sinceMs).map((e) => e.coin));
+    for (const c of coins) {
+      const p = state.pos[c];
+      if (!p || !(p.hypeIn > 0)) continue;
+      const pl = (p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn;
+      rows.push({ c, sym: p.sym, inv: p.hypeIn, out: p.hypeOut || 0, now: p.now ?? 0, pl, r: pl / p.hypeIn, src: p.src || 'card', mc0: p.mc0Usd ?? null, peak: p.peak || 0, open: (p.now ?? 0) > 0.0005, first: p.first, lastSell: p.lastSell });
+    }
   }
-  const j = state.journal.filter((e) => e.t >= sinceMs);
+  // your wallets: one row per wallet and coin, with how far the coin ran after the first buy (pk), how far it had
+  // run in the half hour before it (runup) and how far under its top the exit was (off)
+  for (const [w, ps] of Object.entries(state.mpos)) {
+    if (!state.mine[w] || !wantW(w)) continue;
+    for (const [c, p] of Object.entries(ps)) {
+      if (!(p.hypeIn > 0) || (p.lastBuy || p.first || 0) < sinceMs) continue;
+      const now = p.open ? p.now ?? 0 : 0;
+      const pl = now + p.hypeOut - p.hypeIn;
+      const entry = p.tokIn > 0 ? p.hypeIn / p.tokIn : null, exit = p.tokOut > 0 ? p.hypeOut / p.tokOut : null;
+      const pk = p.pkPx && entry ? Math.max(1, p.pkPx / entry) : null;
+      rows.push({
+        c, w, mine: true, sym: p.sym, inv: p.hypeIn, out: p.hypeOut, now, pl, r: pl / p.hypeIn, src: mineName(w), mc0: p.mc0Usd ?? null,
+        peak: pk ? pk * p.hypeIn : 0, open: !!p.open && now > DUST, first: p.first, lastSell: p.lastSell,
+        pk, runup: p.preMin && entry ? entry / p.preMin : null, off: !p.open && exit && p.pkPx ? Math.max(0, 1 - exit / p.pkPx) : null,
+        hold: !p.open && p.first && p.lastSell ? p.lastSell - p.first : null,
+      });
+    }
+  }
+  const j = state.journal.filter((e) => e.t >= sinceMs && (e.w ? state.mine[e.w] && wantW(e.w) : wantBot));
   const s = {
     rows,
     inv: rows.reduce((a, x) => a + x.inv, 0), out: rows.reduce((a, x) => a + x.out, 0), now: rows.reduce((a, x) => a + x.now, 0),
@@ -1658,68 +2070,111 @@ function stats(sinceMs = 0) {
   s.winRate = rows.length ? wins.length / rows.length : 0;
   s.avgWin = wins.length ? wins.reduce((a, x) => a + x.r, 0) / wins.length : 0;
   s.avgLoss = losses.length ? losses.reduce((a, x) => a + x.r, 0) / losses.length : 0;
-  const group = (key) => {
+  const group = (key, xs = rows) => {
     const g = {};
-    for (const x of rows) { const k = key(x); if (!k) continue; (g[k] ||= []).push(x); }
-    return Object.entries(g).map(([k, xs]) => ({ k, n: xs.length, avg: xs.reduce((a, x) => a + x.r, 0) / xs.length, pl: xs.reduce((a, x) => a + x.pl, 0), win: xs.filter((x) => x.pl > 0).length / xs.length }));
+    for (const x of xs) { const k = key(x); if (!k) continue; (g[k] ||= []).push(x); }
+    return Object.entries(g).map(([k, ys]) => ({ k, n: ys.length, avg: ys.reduce((a, x) => a + x.r, 0) / ys.length, pl: ys.reduce((a, x) => a + x.pl, 0), win: ys.filter((x) => x.pl > 0).length / ys.length }));
   };
   s.bySrc = group((x) => x.src).sort((a, b) => b.avg - a.avg);
   s.byMc = group((x) => mcBucket(x.mc0)).sort((a, b) => b.avg - a.avg);
+  s.bySize = group((x) => sizeBucket(x.inv)).sort((a, b) => b.pl - a.pl);
+  s.byHold = group((x) => holdBucket(x.hold), rows.filter((x) => x.mine && !x.open)).sort((a, b) => b.pl - a.pl);
   return s;
 }
 function tips(s, hypeNow) {
   const out = [];
+  const bot = s.rows.filter((x) => !x.mine), mine = s.rows.filter((x) => x.mine);
+  const list = (xs) => xs.map((x) => `${esc(x.sym)}${Object.keys(state.mine).length > 1 && x.mine ? ` in ${esc(x.src)}` : ''}`);
   const tries = s.buys + s.reverts;
   if (tries >= 5 && s.reverts / tries >= 0.3) out.push([5, `${s.reverts} of ${tries} buys reverted on slippage. Fresh launches move fast: try <code>/set slip 25</code> (now ${Number(cfg().slip) / 100}%).`]);
-  if (tries >= 8 && s.reverts === 0 && cfg().slip >= 3000n) out.push([5, `No reverts at ${Number(cfg().slip) / 100}% slippage: <code>/set slip 20</code> would stop you overpaying on fills.`]);
+  if (tries >= 8 && s.reverts === 0 && cfg().slip >= 3000n && bot.length) out.push([5, `No reverts at ${Number(cfg().slip) / 100}% slippage: <code>/set slip 20</code> would stop you overpaying on fills.`]);
   const src = s.bySrc.filter((x) => x.n >= 3);
   if (src.length >= 2) {
     const b = src[0], w = src[src.length - 1];
-    if (b.avg - w.avg > 0.3) out.push([6, `Buys from <b>${esc(b.k)}</b> average ${pct(b.avg)} (${b.n} coins) vs <b>${esc(w.k)}</b> ${pct(w.avg)} (${w.n}). Lean on the first, size down or skip the second.`]);
+    if (b.avg - w.avg > 0.3) out.push([7, `Buys from <b>${esc(b.k)}</b> average ${pct(b.avg)} (${b.n} coins) vs <b>${esc(w.k)}</b> ${pct(w.avg)} (${w.n}). Lean on the first, size down or skip the second.`]);
   }
   const mc = s.byMc.filter((x) => x.n >= 3);
   if (mc.length >= 2 && mc[0].avg - mc[mc.length - 1].avg > 0.3) out.push([7, `Entries at <b>${mc[0].k}</b> market cap average ${pct(mc[0].avg)}; at ${mc[mc.length - 1].k} ${pct(mc[mc.length - 1].avg)}.`]);
   const dead = s.rows.filter((x) => x.open && x.r <= -0.5 && Date.now() - (x.first || 0) > 24 * 3600e3).sort((a, b) => a.r - b.r);
-  if (dead.length) out.push([3, `Bags down over 50% for a day or more: ${dead.slice(0, 3).map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}. Cut them or write them off; they rarely come back.`]);
+  if (dead.length) out.push([3, `Bags down over 50% for a day or more: ${dead.slice(0, 3).map((x) => `${list([x])[0]} ${pct(x.r)}`).join(', ')}. Cut them or write them off; they rarely come back.`]);
   const runners = s.rows.filter((x) => x.open && x.out === 0 && x.now >= 2 * x.inv).sort((a, b) => b.now / b.inv - a.now / a.inv);
-  if (runners.length) out.push([1, `${runners.slice(0, 2).map((x) => `<b>${esc(x.sym)}</b> is ${(x.now / x.inv).toFixed(1)}×`).join(', ')} with nothing taken. 💰 Initials on its card sells ${Math.round(100 / (runners[0].now / runners[0].inv))}% to get your stake back; the rest rides free.`]);
-  const gave = s.rows.filter((x) => !x.open && x.peak >= 2 * x.inv && x.out < 1.3 * x.inv);
+  if (runners.length) out.push([1, `${runners.slice(0, 2).map((x) => `<b>${list([x])[0]}</b> is ${(x.now / x.inv).toFixed(1)}×`).join(', ')} with nothing taken. ${runners[0].mine ? `Sell ${Math.round(100 / (runners[0].now / runners[0].inv))}% to get your stake back; the rest rides free.` : `💰 Initials on its card sells ${Math.round(100 / (runners[0].now / runners[0].inv))}% to get your stake back; the rest rides free.`}`]);
+  const gave = bot.filter((x) => !x.open && x.peak >= 2 * x.inv && x.out < 1.3 * x.inv);
   if (gave.length) out.push([4, `You gave back gains on ${gave.slice(0, 2).map((x) => `${esc(x.sym)} (peaked ${(x.peak / x.inv).toFixed(1)}×, closed ${(x.out / x.inv).toFixed(1)}×)`).join(', ')}.${cfg().auto === 'off' ? ` <code>/auto ${DEFAULT_AUTO}</code> takes half at 2× and trails the rest automatically.` : ` Your preset is ${esc(cfg().auto)}; a tighter trail would have kept more.`}`]);
+  // your wallets: coins that doubled after the buy and came back under 1.2×, closed or still held
+  const rt = mine.filter((x) => x.pk >= 2 && (x.out + x.now) / x.inv < 1.2).sort((a, b) => b.pk - a.pk);
+  if (rt.length) {
+    const lost = rt.reduce((a, x) => a + (x.inv - 0.5 * (x.out + x.now)), 0);
+    out.push([2, `${rt.length} coin${rt.length > 1 ? 's' : ''} went 2× or more after you bought and ${rt.length > 1 ? 'are' : 'is'} back under 1.2× for you: ${rt.slice(0, 4).map((x) => `${list([x])[0]} (ran ${x.pk.toFixed(1)}×, now ${((x.out + x.now) / x.inv).toFixed(2)}×)`).join(', ')}. Selling half at 2× would have kept <b>+${fmtH(lost)}</b>. Set the 2× sell the moment you buy.`]);
+  }
+  const late = mine.filter((x) => x.pl > 0 && x.off != null && x.pk >= 2);
+  if (late.length >= 2) {
+    const mid = [...late].sort((a, b) => a.off - b.off)[Math.floor(late.length / 2)].off;
+    const ex = [...late].sort((a, b) => b.pk - a.pk)[0];
+    if (mid >= 0.4) out.push([4, `On winners you sell a median ${(mid * 100).toFixed(0)}% under the top (${esc(ex.sym)} ran ${ex.pk.toFixed(1)}×, you got ${((ex.out + ex.now) / ex.inv).toFixed(1)}×). Scale out on the way up: a slice at 2×, 3× and 5×.`]);
+  }
+  // bought in two or more of your wallets within 5 minutes: double the size, not double the edge
+  const by = {};
+  for (const x of mine) (by[x.c] ||= []).push(x);
+  const twin = Object.values(by).filter((xs) => new Set(xs.map((x) => x.w)).size > 1 && Math.max(...xs.map((x) => x.first || 0)) - Math.min(...xs.map((x) => x.first || 0)) < 5 * 60000).flat();
+  if (twin.length >= 6) {
+    const pl = twin.reduce((a, x) => a + x.pl, 0), rest = mine.filter((x) => !twin.includes(x)), plr = rest.reduce((a, x) => a + x.pl, 0);
+    if (pl < 0) out.push([5, `${new Set(twin.map((x) => x.c)).size} coins were bought in two of your wallets at once: <b>${pl >= 0 ? '+' : ''}${fmtH(pl)}</b> on them, vs ${plr >= 0 ? '+' : ''}${fmtH(plr)} on everything else. One wallet per trade; double up only on your best setup.`]);
+  }
+  const sz = s.bySize.filter((x) => x.n >= 4);
+  if (sz.length >= 2 && sz[0].pl > 0 && sz[sz.length - 1].pl < 0) out.push([6, `Trades of <b>${sz[0].k}</b> made ${sz[0].pl >= 0 ? '+' : ''}${fmtH(sz[0].pl)} (${sz[0].n}); ${sz.filter((x) => x.pl < 0).map((x) => `${x.k} ${fmtH(x.pl)} (${x.n})`).join(', ')}. Keep to ${sz[0].k} until another size proves itself.`]);
+  const hd = s.byHold.filter((x) => x.n >= 4);
+  if (hd.length >= 2 && hd[0].pl > 0 && hd[hd.length - 1].pl < 0) out.push([6, `Coins you held <b>${hd[0].k}</b> made ${hd[0].pl >= 0 ? '+' : ''}${fmtH(hd[0].pl)} (${hd[0].n}); ${hd.filter((x) => x.pl < 0).map((x) => `${x.k} ${fmtH(x.pl)} (${x.n}, ${(x.win * 100).toFixed(0)}% wins)`).join(', ')}. The quick flips are where it leaks; give a trade time unless it breaks.`]);
+  const flat = mine.filter((x) => x.pk != null && x.pk < 1.15 && (!x.open || Date.now() - (x.first || 0) > 3600e3));
+  const measured = mine.filter((x) => x.pk != null);
+  if (measured.length >= 8 && flat.length / measured.length >= 0.3) out.push([7, `${flat.length} of ${measured.length} coins never went 15% above your price after you bought (${fmtH(flat.reduce((a, x) => a + x.pl, 0))}): those buys were the top of a move. Wait for the first pullback, or skip it.`]);
+  const ch = mine.filter((x) => x.runup >= 3), calm = mine.filter((x) => x.runup != null && x.runup < 1.5);
+  if (ch.length >= 4 && calm.length >= 4) {
+    const a = ch.reduce((s2, x) => s2 + x.r, 0) / ch.length, b = calm.reduce((s2, x) => s2 + x.r, 0) / calm.length;
+    if (b - a > 0.3) out.push([6, `Buys after a coin already ran 3× in the half hour before average ${pct(a)} (${ch.length}); buys before the run ${pct(b)} (${calm.length}). Stop chasing green candles.`]);
+  }
   if (s.rows.length >= 6 && s.winRate < 0.4 && s.avgWin < 2 * Math.abs(s.avgLoss)) out.push([8, `Win rate ${(s.winRate * 100).toFixed(0)}% with wins averaging ${pct(s.avgWin)} and losses ${pct(s.avgLoss)}: that loses money over time. Smaller sizes until one setup proves itself.`]);
-  const total = hypeNow + s.rows.reduce((a, x) => a + x.now, 0);
-  const big = s.rows.filter((x) => x.now > 0.4 * total && total > 0)[0];
-  if (big) out.push([2, `<b>${esc(big.sym)}</b> is ${((big.now / total) * 100).toFixed(0)}% of the wallet. One rug there sinks the week.`]);
-  return out.sort((x, y) => x[0] - y[0]).map((x) => x[1]).slice(0, 4);
+  const total = hypeNow + bot.reduce((a, x) => a + x.now, 0);
+  const big = bot.filter((x) => x.now > 0.4 * total && total > 0)[0];
+  if (big) out.push([2, `<b>${esc(big.sym)}</b> is ${((big.now / total) * 100).toFixed(0)}% of the bot wallet. One rug there sinks the week.`]);
+  return out.sort((x, y) => x[0] - y[0]).map((x) => x[1]).slice(0, 5);
 }
 function statsText(s, label, px) {
   if (!s.rows.length && !s.reverts && !s.refused) return `No trades ${label}.`;
   const best = [...s.rows].sort((a, b) => b.r - a.r).slice(0, 3), worst = [...s.rows].sort((a, b) => a.r - b.r).slice(0, 2);
+  const nm = (x) => `${esc(x.sym)}${x.mine && Object.keys(state.mine).length > 1 ? ` (${esc(x.src)})` : ''}`;
   return `<b>${label}</b>: ${s.rows.length} coins · ${s.buys} buys · ${s.sells} sells${s.reverts ? ` · ${s.reverts} reverted` : ''}${s.refused ? ` · ${s.refused} refused by the sell check` : ''}\n` +
     `In ${fmtH(s.inv)} · out ${fmtH(s.out)} · still holding ${fmtH(s.now)} · <b>${s.pl >= 0 ? '+' : ''}${fmtH(s.pl)}</b>${usd(s.pl, px)}\n` +
     (s.rows.length ? `Win rate ${(s.winRate * 100).toFixed(0)}% · avg win ${pct(s.avgWin)} · avg loss ${pct(s.avgLoss)}\n` : '') +
-    (best.length ? `Best: ${best.map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}\n` : '') +
-    (worst.length && worst[0].r < 0 ? `Worst: ${worst.map((x) => `${esc(x.sym)} ${pct(x.r)}`).join(', ')}\n` : '') +
-    (s.bySrc.length > 1 ? `By source: ${s.bySrc.map((x) => `${esc(x.k)} ${pct(x.avg)} (${x.n})`).join(' · ')}\n` : '');
+    (best.length ? `Best: ${best.map((x) => `${nm(x)} ${pct(x.r)}`).join(', ')}\n` : '') +
+    (worst.length && worst[0].r < 0 ? `Worst: ${worst.map((x) => `${nm(x)} ${pct(x.r)}`).join(', ')}\n` : '') +
+    (s.bySrc.length > 1 ? `By source: ${s.bySrc.map((x) => `${esc(x.k)} ${x.pl >= 0 ? '+' : ''}${fmtH(x.pl)} (${x.n})`).join(' · ')}\n` : '');
 }
-async function statsCommand(arg) {
+async function statsCommand(args) {
   await valuePositions();
   const spans = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6, all: Infinity };
-  const k = spans[arg] ? arg : '7d';
+  const words = args.map(lc).filter(Boolean);
+  const k = words.find((x) => spans[x]) || '7d';
+  const rest = words.filter((x) => !spans[x]).join(' ');
+  const who = !rest ? 'all' : rest === 'bot' || rest === 'mine' ? rest : addrIn(rest) || rest;
+  if (who !== 'all' && who !== 'bot' && who !== 'mine' && !Object.entries(state.mine).some(([w, x]) => w === who || lc(x.name) === who)) return `No wallet called <code>${esc(rest)}</code>. /mine lists yours.`;
   const since = spans[k] === Infinity ? 0 : Date.now() - spans[k];
   const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
-  const s = stats(since);
-  const t = tips(stats(0), num(hb));
-  return statsText(s, k === 'all' ? 'All time' : `Last ${k}`, px) + (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '\nTips appear once there are a few trades to learn from.') + `\n\n/stats 24h · /stats 7d · /stats 30d · /stats all`;
+  const s = stats(since, who);
+  const t = tips(stats(0, who), num(hb));
+  const whoTxt = who === 'all' ? '' : who === 'bot' ? ' · bot wallet' : who === 'mine' ? ' · your wallets' : ` · ${esc(mineName(Object.keys(state.mine).find((w) => w === who || lc(state.mine[w].name) === who)))}`;
+  return statsText(s, (k === 'all' ? 'All time' : `Last ${k}`) + whoTxt, px) + (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '\nTips appear once there are a few trades to learn from.') +
+    `\n\n/stats 24h · 7d · 30d · all${Object.keys(state.mine).length ? ', then bot, mine or a wallet name (/stats 30d mine)' : ''}`;
 }
 function journalText() {
   const last = state.journal.slice(-15).reverse();
   if (!last.length) return 'Journal is empty.';
   const icon = { buy: '🟢', sell: '🔵', revert: '❌', refused: '🚫', 'sell-revert': '❌' };
-  return last.map((e) => `${icon[e.side] || '•'} ${new Date(e.t).toISOString().slice(5, 16).replace('T', ' ')} ${e.side} <b>${esc(e.sym)}</b> ${e.hype != null ? fmtH(e.hype) : ''}${e.mcUsd ? ` · MC $${fmt(e.mcUsd)}` : ''}${e.src ? ` · ${esc(e.src)}` : ''}${e.sc != null ? ` · rt ${(e.sc * 100).toFixed(0)}%` : ''}`).join('\n') + '\n\n/export sends the full journal as a CSV.';
+  return last.map((e) => `${icon[e.side] || '•'} ${new Date(e.t).toISOString().slice(5, 16).replace('T', ' ')} ${e.side} <b>${esc(e.sym)}</b> ${e.hype != null ? fmtH(e.hype) : ''}${e.mcUsd ? ` · MC $${fmt(e.mcUsd)}` : ''}${e.w ? ` · 👛 ${esc(mineName(e.w))}` : e.src ? ` · ${esc(e.src)}` : ''}${e.sc != null ? ` · rt ${(e.sc * 100).toFixed(0)}%` : ''}${e.note ? `\n    📝 ${esc(e.note)}` : ''}`).join('\n') + '\n\n/export sends the full journal as a CSV.';
 }
 async function exportJournal() {
-  const cols = ['time', 'side', 'symbol', 'coin', 'hype', 'tokens', 'mc_usd', 'source', 'slippage_pct', 'roundtrip_pct', 'route', 'tx'];
-  const lines = [cols.join(',')].concat(state.journal.map((e) => [new Date(e.t).toISOString(), e.side, e.sym, e.coin, e.hype ?? '', e.tok ?? '', e.mcUsd != null ? Math.round(e.mcUsd) : '', e.src ?? '', e.slip != null ? e.slip / 100 : '', e.sc != null ? (e.sc * 100).toFixed(1) : '', e.route ?? '', e.hash ?? ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')));
+  const cols = ['time', 'side', 'symbol', 'coin', 'hype', 'tokens', 'mc_usd', 'source', 'wallet', 'slippage_pct', 'roundtrip_pct', 'route', 'tx', 'note'];
+  const lines = [cols.join(',')].concat(state.journal.map((e) => [new Date(e.t).toISOString(), e.side, e.sym, e.coin, e.hype ?? '', e.tok ?? '', e.mcUsd != null ? Math.round(e.mcUsd) : '', e.src ?? '', e.w ?? me, e.slip != null ? e.slip / 100 : '', e.sc != null ? (e.sc * 100).toFixed(1) : '', e.route ?? '', e.hash ?? '', e.note ?? ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')));
   const fd = new FormData();
   fd.append('chat_id', OWNER);
   fd.append('caption', `Trade journal · ${state.journal.length} entries`);
@@ -1749,10 +2204,12 @@ async function dailyReport(force = true) {
   const traded = s.buys + s.sells + s.reverts + s.refused > 0;
   if (!force && cfg().report === 'quiet' && !traded && !t.length) return null;
   const ch = prev && prev.d !== today ? value - prev.v : null;
+  const mineOpen = Object.entries(state.mpos).filter(([w]) => state.mine[w]).flatMap(([w, ps]) => Object.values(ps).filter((p) => p.open && (p.now ?? 0) > DUST).map((p) => ({ w, p }))).sort((a, b) => b.p.now - a.p.now);
   const text = `📒 <b>Daily report</b> · wallet ${fmtH(value)}${usd(value, px)}${ch != null ? ` (${ch >= 0 ? '+' : ''}${fmtH(ch)} vs ${prev.d})` : ''}\n` +
     `Free HYPE ${fmtH(hype)} · ${open.length} open bag${open.length === 1 ? '' : 's'}\n\n` +
     statsText(s, 'Last 24h', px) +
     (open.length ? `\n<b>Open bags</b>\n${open.slice(0, 8).map((p) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
+    (mineOpen.length ? `\n<b>Open bags in your wallets</b> · ${fmtH(mineOpen.reduce((a, x) => a + x.p.now, 0))}\n${mineOpen.slice(0, 8).map(({ w, p }) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)}${Object.keys(state.mine).length > 1 ? ` (${esc(mineName(w))})` : ''} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
     (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '');
   return say(text);
 }
@@ -1824,6 +2281,7 @@ const HELP =
   `/limit sell &lt;coin&gt; 50 100k · /limit sell &lt;coin&gt; 100 below 3k · /limit sell &lt;coin&gt; 50 2x\n` +
   `/orders · see and cancel\n\n` +
   `/bal · /pnl · /stats 7d · /journal · /export · /report · /wallet\n` +
+  `/mine add 0xWALLET [name] · your other wallets, watch-only: their trades go into /journal, /stats and the tips (no key, never traded from)\n` +
   `/set slip 15 · /set max 5 · /set sizes 1,2,3,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
@@ -1988,6 +2446,14 @@ async function onMessage(msg) {
   const [cmd0, ...args] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\S+$/, '');
   const reply = msg.message_id;
+  // an answer to a 📒 note question: saved on that trade (or on both wallets' buys of the same coin)
+  const noteFor = noteAsk[msg.reply_to_message?.message_id];
+  if (noteFor && !text.startsWith('/')) {
+    const hit = state.journal.filter((e) => noteFor.includes(e.id));
+    for (const e of hit) e.note = text.slice(0, 500);
+    save();
+    return say(hit.length ? `📝 Noted on ${esc(hit[0].sym)}. /journal shows it beside the trade.` : 'That trade is no longer in the journal.', null, reply);
+  }
   // an answer to a ⚡ X question: how much HYPE to buy
   const xFor = buyAsk[msg.reply_to_message?.message_id];
   if (xFor && !text.startsWith('/')) {
@@ -2021,7 +2487,7 @@ async function onMessage(msg) {
   if (cmd === '/wallet') return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium. The key only lives on your VPS.`);
   if (cmd === '/bal') return say(await balances());
   if (cmd === '/pnl') return say(await pnl());
-  if (cmd === '/stats') return say(await statsCommand(lc(args[0] || '')));
+  if (cmd === '/stats') return say(await statsCommand(args));
   if (cmd === '/journal') return say(journalText());
   if (cmd === '/export') return exportJournal();
   if (cmd === '/report') return dailyReport();
@@ -2125,6 +2591,63 @@ async function onMessage(msg) {
     return say(await ascStatus());
   }
   if (cmd === '/snipes') { const v = snipesView(); return say(v.text, v.rows); }
+  if (cmd === '/mine') {
+    const sub = lc(args[0] || '');
+    if (!sub) { const v = mineView(); return say(v.text, v.rows); }
+    if (sub === 'notes') {
+      const v = lc(args[1] || '');
+      if (!/^(on|off)$/.test(v)) return say('Usage: /mine notes on|off');
+      state.set.notes = v; save();
+      return say(v === 'on' ? '📒 Each buy in your wallets asks why, and each coin you close shows the result and asks what you learned. Replies are saved on the trade.' : 'Trade notes off. Your wallets are still journaled and counted in /stats.');
+    }
+    if (sub === 'del' || sub === 'off' || sub === 'remove') {
+      const x = lc(args.slice(1).join(' '));
+      const w = addrIn(x) || Object.keys(state.mine).find((k) => lc(state.mine[k].name) === x);
+      if (!w || !state.mine[w]) return say('Not one of your wallets. /mine lists them.');
+      const name = mineName(w);
+      mineDrop(w);
+      return say(`Removed <b>${esc(name)}</b> and its trades from the journal and /stats.`);
+    }
+    if (sub === 'name') {
+      const w = addrIn(args[1] || '') || Object.keys(state.mine).find((k) => lc(state.mine[k].name) === lc(args[1] || ''));
+      const name = args.slice(2).join(' ').replace(/[<>&]/g, '').slice(0, 24);
+      if (!w || !state.mine[w] || !name) return say('Usage: /mine name 0xWALLET main');
+      state.mine[w].name = name;
+      for (const e of state.journal) if (e.w === w) e.src = name;
+      save();
+      return say(`Renamed to <b>${esc(name)}</b>.`);
+    }
+    if (sub === 'sync') {
+      const ws = Object.keys(state.mine);
+      if (!ws.length) return say('No wallets of yours added yet. /mine add 0xWALLET [name]');
+      for (const w of ws) { delete state.mpos[w]; state.mine[w].imported = 0; }
+      state.journal = state.journal.filter((e) => !e.w);
+      for (const k of Object.keys(state.mineSeen)) delete state.mineSeen[k];
+      state.mineMove = {};
+      save();
+      await say(`📒 Rebuilding ${ws.length} wallet${ws.length > 1 ? 's' : ''} from the chain. A few minutes; a summary comes when it is done.`);
+      mineImport(ws).catch((e) => console.error('mine import', e.message));
+      return;
+    }
+    const addrs = [...text.matchAll(/0x[0-9a-fA-F]{40}/g)].map((m) => m[0].toLowerCase());
+    if (sub !== 'add' && !addrIn(sub)) return say('Usage: /mine add 0xWALLET [name] (several addresses work too) · /mine · /mine name 0x… main · /mine del &lt;name|address&gt; · /mine notes on|off · /mine sync');
+    if (!addrs.length) return say('Usage: /mine add 0xWALLET [name]');
+    const fresh = [];
+    for (const w of [...new Set(addrs)]) {
+      if (w === me) { await say('That is the bot wallet; its trades are already in the journal.'); continue; }
+      if (state.mine[w]) continue;
+      const code = await rpc('eth_getCode', [w, 'latest']).catch(() => '0x');
+      if (code && code !== '0x') { await say(`<code>${w}</code> is a contract, not a wallet. Skipped.`); continue; }
+      const name = addrs.length === 1 ? text.replace(/0x[0-9a-fA-F]{40}/g, ' ').split(/\s+/).slice(1).filter((x) => !/^add$/i.test(x)).join(' ').replace(/[<>&]/g, '').slice(0, 24) : '';
+      state.mine[w] = { name: name || short(w), at: Date.now(), imported: 0 };
+      fresh.push(w);
+    }
+    save();
+    if (!fresh.length) { const v = mineView(); return say(v.text, v.rows); }
+    await say(`📒 Added ${fresh.map((w) => `<b>${esc(mineName(w))}</b>`).join(', ')} (watch-only: no key, the bot never trades from ${fresh.length > 1 ? 'them' : 'it'}). Importing ${fresh.length > 1 ? 'their' : 'its'} Elysium history now: a few minutes, a summary comes when it is done.`);
+    mineImport(fresh).catch((e) => console.error('mine import', e.message));
+    return;
+  }
   if (cmd === '/copy') {
     const sub = lc(args[0] || '');
     if (!sub) { const v = copyView(); return say(v.text, v.rows); }
@@ -2238,6 +2761,7 @@ async function onCallback(q) {
   if (kind === 'o' && a) { removeOrder(a); await ack('Order cancelled'); const v = ordersView(); return edit(q.message, v.text, v.rows.length ? v.rows : null); }
   if (kind === 'n' && a) { state.snipes = state.snipes.filter((s) => s.id !== a); save(); await ack('Snipe cancelled'); const v = snipesView(); return edit(q.message, v.text, v.rows); }
   if (kind === 'y' && t) { delete state.copy[t]; save(); await ack('Stopped copying'); const v = copyView(); return edit(q.message, v.text, v.rows); }
+  if (kind === 'u' && t) { if (state.mine[t]) mineDrop(t); await ack('Removed'); const v = mineView(); return edit(q.message, v.text, v.rows); }
   if (kind === 'r' && t) { await ack('Refreshing…'); delete state.routes[t]; return showCard(t, q.message); }
   if (kind === 'c' && t) { await ack('Loading…'); return showCard(t); }
   if (kind === 'w' && pending[a] && !pending[a].kind) { const p = pending[a]; delete pending[a]; await ack('Sending…'); return withdraw(p.to, p.a); }
@@ -2261,7 +2785,8 @@ async function main() {
     { command: 'limit', description: '/limit <coin> 1 20k · /limit sell <coin> 50 100k' }, { command: 'orders', description: 'Limit orders: see and cancel' },
     { command: 'initials', description: '/initials <coin>: sell just enough to take your HYPE back' },
     { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
-    { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all' }, { command: 'journal', description: 'Last 15 trades' },
+    { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all [bot|mine]' }, { command: 'journal', description: 'Last 15 trades' },
+    { command: 'mine', description: 'Your other wallets, watch-only, for the journal and tips' },
     { command: 'set', description: 'slip, max, sizes and more' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
     { command: 'send', description: '/send <coin> <amount|50%|all> <address>: move tokens' },
     { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
@@ -2289,6 +2814,9 @@ async function main() {
   // orders and guards every 2 s; copied wallets every second
   (async () => { for (;;) { await sleep(2000); await guardTick().catch((e) => console.error('guard', e.message)); } })();
   (async () => { for (;;) { await sleep(Object.keys(state.copy).length ? 1000 : 5000); await copyTick().catch((e) => console.error('copy', e.message)); } })();
+  // your other wallets: imports a restart cut short are run again, then the live tail every 4 s
+  { const left = Object.keys(state.mine).filter((w) => !state.mine[w].imported); if (left.length) mineImport(left, true).catch((e) => console.error('mine import', e.message)); }
+  (async () => { for (;;) { await sleep(4000); await mineTick().catch((e) => console.error('mine', e.message)); } })();
   // open bags valued every 10 minutes; the daily report goes out once a day at REPORT_HOUR_UTC
   (async () => { for (;;) { await sleep(600000); await valuePositions().catch(() => {}); } })();
   // the pinned open-trades panel: up to date at start, then every minute
