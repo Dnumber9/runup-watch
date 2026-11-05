@@ -1,0 +1,37 @@
+name: state-dump
+
+# Prints the wallets the watcher found on its own because they bridged in a lot of HYPE ("bridger" in alerts),
+# from its saved state in the Actions cache. Read only: no secrets, no commits, nothing sent anywhere.
+# Only bridger rows are printed (address, amount, time); Cielo and Telegram-added wallets stay out of the public log.
+# Runs when this file changes, or by hand from the Actions tab.
+
+on:
+  push:
+    paths: ['.github/workflows/state-dump.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the watcher's state
+        uses: actions/cache/restore@v4
+        with:
+          path: elysium-watch/state.json
+          key: ely-state-dump-${{ github.run_id }}
+          restore-keys: ely-state-
+      - name: Print bridgers
+        run: |
+          node -e '
+            const s = JSON.parse(require("fs").readFileSync("elysium-watch/state.json", "utf8"));
+            const muted = s.muted || {};
+            const rows = Object.entries(s.auto || {}).filter(([, x]) => x.from === "bridge");
+            console.log("BRIDGERS " + rows.length);
+            for (const [a, x] of rows) console.log("B " + a + " " + (x.hype || 0) + " " + (x.t || 0) + (muted[a] ? " muted" : ""));
+            console.log("END");
+          '
