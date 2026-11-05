@@ -1560,6 +1560,51 @@
   "group": "snipecrew"
  },
  {
+  "address": "0xe86ec327b0a10fae139013d5a7e1b8207f7d0dd5",
+  "label": "Snipe crew 11 (new wallet)",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xbd2f3f8f33a912b05bdcbcc0a54c6bc32c7706a2",
+  "label": "Snipe crew 12",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xebb1f6929ce9e7f25a6374a4ab9f7ef771788485",
+  "label": "Snipe crew 13 (new wallet)",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xe4b76182e5ac75d8cc3917af2fbac54a558c58c0",
+  "label": "Snipe crew 14",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x7bc556cc4853d9b1b07c900f4c1d3e981ad2b505",
+  "label": "Snipe crew 15",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x2f135d86ce77d50e4430809b04497d5005c5c607",
+  "label": "Snipe crew 16",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xe424f1106bd34b1f36f37651d88cc0134764529c",
+  "label": "Snipe crew 17",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x8183d0e60e37b6fa45cfe3863a08dff587a4a19c",
+  "label": "Snipe crew 18",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x18c5c13e001088c7c9c4b87613cbf4708909b014",
+  "label": "Snipe crew 19 (new wallet)",
+  "group": "snipecrew"
+ },
+ {
   "address": "0xe8cf1d52017ba8828c72c71f34111f5b3dce4829",
   "label": "VOLTA crew 1 (128 HYPE into VOLTA at $613K)",
   "group": "voltacrew"
@@ -2050,5 +2095,60 @@
   "address": "0x2112fbd1b0017ca73d9fd80576a0f90b846628fc",
   "label": "KNTQ holder #525 on Elysium (24K KNTQ)",
   "group": "kntqely"
+ },
+ {
+  "address": "0x6e06352d624097eb0d2783fbd805d76275f09340",
+  "label": "EACCAT trio 1 (2.9 HYPE at +52s, also CHAMELEON)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0xf78dbd16470a0084355e63efb4030327f3c90161",
+  "label": "EACCAT trio 2 (2.9 HYPE at +54s, also CHAMELEON)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0x7e272b6f85a88430cc98c48eec4fa2a34ed79069",
+  "label": "EACCAT trio 3 (2.9 HYPE at +54s, also CHAMELEON)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0xcd1948fdd4f070a242cd4d2ca1acd0afb7f33b2d",
+  "label": "EACCAT pair 1 (14.7 HYPE at +3.5 min, also CHAMELEON)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0xb2a8fdbace81eafc26a92f6ad1986f9dd68651b6",
+  "label": "EACCAT pair 2 (14.7 HYPE at +3.5 min, also CHAMELEON)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0xd378268aa5aa4b2b91ea36d4bbbd79b8da289288",
+  "label": "EACCAT whale (141 HYPE at +7 min, CHAMELEON +165)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0x6b02364f98b33955f58a20d62ab1ba534ce15d79",
+  "label": "EACCAT early (13.4 HYPE at +31s, CHAMELEON +81)",
+  "group": "eaccatbuyers"
+ },
+ {
+  "address": "0xc8c3210b706426e24a8b709a149dc993bf322b38",
+  "label": "EACCAT fresh 1 (8.8 HYPE at +18s, only coin so far)",
+  "group": "eaccatfresh"
+ },
+ {
+  "address": "0x1ab381ce24c5db52d75bd6badf8ae750c841185d",
+  "label": "EACCAT fresh 2 (8.8 HYPE at +19s, only coin so far)",
+  "group": "eaccatfresh"
+ },
+ {
+  "address": "0xa6813dca36cff6ce4bc79c1ea0a77c3ae669fe85",
+  "label": "EACCAT fresh 3 (3.9 HYPE at +19s, only coin so far)",
+  "group": "eaccatfresh"
+ },
+ {
+  "address": "0xeeded54b1362532199cca5fa664c31d404123ead",
+  "label": "EACCAT fresh 4 (1 HYPE at +18s, only coin so far)",
+  "group": "eaccatfresh"
  }
 ]
