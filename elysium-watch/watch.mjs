@@ -59,7 +59,8 @@ const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
 const BRIDGE_MIN_HYPE = Number(process.env.BRIDGE_MIN_HYPE || 25); // fresh wallet bridging in at least this much from HyperEVM: ping + track
-const AUTO_MAX = 300;
+const AUTO_MAX = 500;            // auto-found wallets kept (dead ones and bridge duds are pruned, see housekeeping)
+const AUTO_DEAD_DAYS = 3;        // an auto-found wallet that sent no tx for this long is dropped (Cielo wallets stay)
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const DEAD = '0x000000000000000000000000000000000000dead';
@@ -71,7 +72,19 @@ const LAUNCHPADS = {
   '0x5fb015a49f5b35073f9ce01c2adb287a75f89600': { name: 'elyspump', hook: '0xe11cafa5901b0aab51eb78251488400f9e4320cc' },
   '0xb308b5df891c300a5f5a5b8fdbc30108ba842490': { name: 'Kleos', hook: '0x0c835e6a51717a514144d95c7f0a1c640179e0cc' },
   '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da': { name: 'eleos', hook: '0x8680965555dcea2a4c0ed3a29e59a8aa424e6acc' }, // eleos.fun (partner-gated site)
+  // the official Uniswap v4 PoolManager: several launchpads share it, told apart by their pool hook (HOOK_NAMES)
+  '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1': { name: 'Uniswap v4', hook: null, busy: true },
 };
+const HOOK_NAMES = {
+  '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'the Ascend? launchpad', // Safe-owned launchpad behind CHAMELEON, e/acc, YUM
+  '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'the 6b12 launchpad',    // HOBBES and ~80 launches an hour
+  '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec': 'Mesa',                  // mesa.cx
+};
+// a launchpad name for a coin: its pool's hook when that hook is a known launchpad, else its PoolManager
+const lpNameOf = (rec, dflt = 'unknown launchpad') => HOOK_NAMES[rec?.hook] || LAUNCHPADS[rec?.lp]?.name || (rec?.lp === 'uniswap' ? 'Uniswap' : dflt);
+// a launch on a busy shared PoolManager needs more traction before 🚀 (about 80 coins an hour launch there)
+const BUSY_MIN_BUYERS = 25;
+const BUSY_MIN_USD = 5000;
 const BOXA_PM = '0x06c63714fbf1f5753017123e2fcfdede4540b2c4';
 const LP_NAMES = Object.values(LAUNCHPADS).map((x) => x.name).join(', ');
 const WHYPE = new Set([
@@ -480,7 +493,8 @@ async function main() {
     if (!state.tok[coin]) {
       const b = parseInt(l.blockNumber, 16);
       const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
-      state.tok[coin] = { lp: pm, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
+      const hook = lc('0x' + (words(l.data)[2] || '').slice(24)); // Initialize data: fee, tickSpacing, hooks, sqrtPrice, tick
+      state.tok[coin] = { lp: pm, hook, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
       launchTxs.push({ coin, tx: l.transactionHash });
     }
   }
@@ -588,13 +602,14 @@ async function main() {
     const meta = await tokenMeta(state, t);
     const mcH = rec.price && meta.supply ? rec.price * meta.supply : null;
     const mcLine = mcH ? `MC ${px ? usd(mcH * px) : hype(mcH)}` : 'MC n/a';
-    const lpName = LAUNCHPADS[rec.lp]?.name || (rec.lp === 'uniswap' ? 'Uniswap' : 'unknown launchpad');
+    const lpName = lpNameOf(rec);
 
     // launch with traction: first hours only, once per coin
     if (age != null && age < LAUNCH_WINDOW_H * 3600 && !rec.launchAlert && !firstRun) {
       const volUsd = toUsd(rec.vol) ?? 0;
       const share = rec.vol ? rec.buyVol / rec.vol : 0;
-      if (rec.buyers.length >= LAUNCH_MIN_BUYERS && volUsd >= LAUNCH_MIN_USD && share >= LAUNCH_MIN_BUY_SHARE) {
+      const busy = LAUNCHPADS[rec.lp]?.busy;
+      if (rec.buyers.length >= (busy ? BUSY_MIN_BUYERS : LAUNCH_MIN_BUYERS) && volUsd >= (busy ? BUSY_MIN_USD : LAUNCH_MIN_USD) && share >= LAUNCH_MIN_BUY_SHARE) {
         rec.launchAlert = now();
         state.alerted['c:' + t] = { t: now() };
         const so = await socials(t);
@@ -896,7 +911,7 @@ async function main() {
       if (c && W.has(c)) {
         lastBuy[c] = coin;
         const meta = await tokenMeta(state, coin);
-        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${LAUNCHPADS[state.tok[coin].lp]?.name || '?'} · <code>${coin}</code> · ${assetLink(coin, 'chart')} · <a href="${BUY_PAGE}?t=${coin}">⚡ buy</a>${txLink(lt)}`);
+        M(c).push(`launched <b>${esc(meta.s)}</b> (${esc(meta.n)}) on ${lpNameOf(state.tok[coin], '?')} · <code>${coin}</code> · ${assetLink(coin, 'chart')} · <a href="${BUY_PAGE}?t=${coin}">⚡ buy</a>${txLink(lt)}`);
       }
     }
     // what each wallet still holds of the coins it moved (last placeholder per wallet+coin gets the line)
@@ -1065,10 +1080,10 @@ async function main() {
     for (const [t, r] of rows) {
       const m = await tokenMeta(state, t);
       const mc = r.price && m.supply ? r.price * m.supply : null;
-      lines.push(`${lines.length + 1}. ${assetLink(t, esc(m.s))} · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${LAUNCHPADS[r.lp]?.name || 'Uniswap'}`);
+      lines.push(`${lines.length + 1}. ${assetLink(t, esc(m.s))} · MC ${mc ? (px ? usd(mc * px) : hype(mc)) : 'n/a'} · ${px ? usd(r.dvol * px) : hype(r.dvol)} vol · ${lpNameOf(r, 'Uniswap')}`);
     }
     const launches = {};
-    for (const r of Object.values(state.tok)) if (r.born && r.born >= since) launches[LAUNCHPADS[r.lp]?.name || 'other'] = (launches[LAUNCHPADS[r.lp]?.name || 'other'] || 0) + 1;
+    for (const r of Object.values(state.tok)) if (r.born && r.born >= since) { const k = lpNameOf(r, 'other'); launches[k] = (launches[k] || 0) + 1; }
     msgs.push(
       `📊 <b>Elysium, last ${Math.round(span)}h</b>${px ? ` · HYPE $${px.toFixed(2)}` : ''}\n` +
       `New coins: ${Object.entries(launches).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}\n` +
@@ -1098,6 +1113,29 @@ async function main() {
     if ((r.born || 0) < cutoff && !roll[t] && (r.e ?? 0) < 0.05) { delete state.tok[t]; delete state.meta[t]; }
   }
   for (const [k, a] of Object.entries(state.alerted)) if (now() - a.t > 2 * 86400) delete state.alerted[k];
+
+  // the auto-found list stays useful and under AUTO_MAX:
+  // - muted wallets and wallets now named in wallets.json leave it (silenced, or tracked from the repo anyway;
+  //   a muted wallet's alts still go quiet, that only needs it in state.muted)
+  // - bridge duds: bridged in over a day ago and still at most 1 tx sent
+  // - dead wallets: no tx sent for AUTO_DEAD_DAYS (nonce watched, a few wallets per tick); Cielo wallets stay
+  const pruned = { muted: 0, listed: 0, dud: 0, dead: 0 };
+  for (const a of Object.keys(state.auto)) {
+    if (state.muted[a] && !state.manual[a]) { delete state.auto[a]; pruned.muted++; }
+    else if (listed.has(a)) { delete state.auto[a]; pruned.listed++; }
+  }
+  const check = Object.entries(state.auto).filter(([, x]) => x.from !== 'cielo').sort((a, b) => (a[1].ck || 0) - (b[1].ck || 0)).slice(0, 15);
+  await Promise.all(check.map(async ([a, x]) => {
+    try {
+      const n = parseInt(await rpc('eth_getTransactionCount', [a, 'latest'], 2), 16);
+      x.ck = now();
+      if (x.nc !== n) { x.nc = n; x.nct = now(); }
+      const age = now() - (x.t || 0);
+      if (x.from === 'bridge' && age > 86400 && n <= 1) { delete state.auto[a]; pruned.dud++; }
+      else if (age > AUTO_DEAD_DAYS * 86400 && now() - x.nct > AUTO_DEAD_DAYS * 86400) { delete state.auto[a]; pruned.dead++; }
+    } catch {}
+  }));
+  if (Object.values(pruned).some(Boolean)) console.log(`auto list: dropped ${Object.entries(pruned).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ')}, ${Object.keys(state.auto).length} left`);
 
   state.block = head;
   state.runs++;
