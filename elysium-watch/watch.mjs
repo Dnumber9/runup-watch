@@ -131,9 +131,13 @@ const walletLink = (a, label) => `<a href="${ELYXA}/#/portfolio?w=${a}">${label 
 const txLink = (h) => (h ? ` · <a href="${EXPLORER}/transaction/${h}">tx</a>` : '');
 
 let rpcIdx = 0;
+const FAST_MODE = process.argv.includes('--fast');
+const rpcStats = { retries: 0 }; // calls that needed a second try or another RPC (fast lane timing line)
 async function rpc(method, params, tries = 6) {
   let lastErr;
+  if (FAST_MODE) rpcIdx = 0; // the fast lane always starts on the first (fastest) RPC instead of staying on a fallback
   for (let i = 0; i < tries; i++) {
+    if (i > 0) rpcStats.retries++;
     const url = RPCS[(rpcIdx + i) % RPCS.length];
     try {
       const r = await fetch(url, {
@@ -1535,7 +1539,9 @@ async function fastMain() {
     }
   } catch (e) { console.log('fast: pool seed failed:', e.message); }
 
-  const stats = { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now() };
+  const stats = { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now(), tHead: [], tLogs: [], tBuild: [], tSend: [] };
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : 0; };
+  const mx = (a) => (a.length ? Math.max(...a) : 0);
   const blockTime = {};
   const rootOf = (w) => {
     let r = w;
@@ -1549,10 +1555,14 @@ async function fastMain() {
     rpcIdx = 0; // back to the first (fastest) RPC every poll, after a hiccup moved us to a slower one
     try {
       if (now() - refreshedAt >= FAST_REFRESH_S) refresh();
+      let ta = Date.now();
       const head = parseInt(await rpc('eth_blockNumber', [], 3), 16);
+      stats.tHead.push(Date.now() - ta);
       if (head > fst.block) {
         const from = fst.block + 1, to = Math.min(head, from + FAST_RANGE - 1);
+        ta = Date.now();
         const logs = await getLogs({ topics: [[T_TRANSFER, T_SWAP_V4, T_SWAP_V3, T_SWAP_V2, T_INIT_V4]] }, from, to, FAST_RANGE);
+        stats.tLogs.push(Date.now() - ta);
         await fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, rootOf, stats, blockTime });
         stats.blocks += to - from + 1;
         fst.block = to;
@@ -1563,11 +1573,13 @@ async function fastMain() {
     } catch (e) { stats.errs++; if (stats.errs <= 5 || stats.errs % 50 === 0) console.log('fast: poll failed:', e.message); }
     // a summary every 5 min: counts and timings only (the Actions log is public)
     if (Date.now() - stats.at >= 300000) {
-      const l = stats.lags.sort((a, b) => a - b);
-      const med = l.length ? l[Math.floor(l.length / 2)] : null;
       console.log(`fast: ${stats.polls} polls, ${stats.blocks} blocks, ${stats.trades} trades seen, ${stats.alerts} alerts` +
-        (med != null ? `, chain-to-Telegram ${med}s median, ${l[l.length - 1]}s max` : '') + `, ${stats.errs} errors`);
-      Object.assign(stats, { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now() });
+        (stats.lags.length ? `, chain-to-Telegram ${med(stats.lags)}s median, ${mx(stats.lags)}s max` : '') +
+        ` · ms median/max: head ${med(stats.tHead)}/${mx(stats.tHead)}, logs ${med(stats.tLogs)}/${mx(stats.tLogs)}` +
+        (stats.tBuild.length ? `, alert build ${med(stats.tBuild)}/${mx(stats.tBuild)}, telegram ${med(stats.tSend)}/${mx(stats.tSend)}` : '') +
+        ` · rpc retries ${rpcStats.retries}, ${stats.errs} errors`);
+      rpcStats.retries = 0;
+      Object.assign(stats, { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now(), tHead: [], tLogs: [], tBuild: [], tSend: [] });
     }
     await sleep(Math.max(200, FAST_POLL_MS - (Date.now() - t0)));
   }
@@ -1585,6 +1597,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
   }
   const mine = logs.filter((l) => l.topics[0] === T_TRANSFER && l.topics.length === 3 && (W.has(lc(topicAddr(l.topics[1]))) || W.has(lc(topicAddr(l.topics[2])))) && !WHYPE.has(lc(l.address)));
   if (!mine.length) return;
+  const tb = Date.now();
   const hot = new Set(mine.map((l) => l.transactionHash));
   // swaps in the txs we care about: HYPE paid per tx, which addresses are pools, the coin's latest price
   const txBuy = {}, emitters = {}, swapTx = new Set();
@@ -1684,7 +1697,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
   let msgs = [];
   // what each wallet still holds of the coin it traded (last line per wallet+coin gets it)
   const held = {};
-  for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 20)) {
+  await Promise.all([...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 20).map(async (k) => {
     const [, w, t] = k.slice(1, -1).split(':');
     try {
       const meta = await tokenMeta(metaBox, t);
@@ -1692,7 +1705,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
       const price = priceOf(t);
       held[k] = holdLine(bal, meta, price ? bal * price : null, px);
     } catch { held[k] = ''; }
-  }
+  }));
   const lagFrom = [];
   for (const [w, list] of Object.entries(moves)) {
     const seen = new Set();
@@ -1740,13 +1753,25 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     lagFrom.push(null);
   }
   if (!msgs.length) return;
+  const nBefore = msgs.length;
   msgs = dropMutedCoins(msgs, coinMutes({ mutedCoins: { ...(st.mutedCoins || {}) }, unmutedCoins: { ...(st.unmutedCoins || {}) } }));
-  for (const m of msgs) { await tg(m); stats.alerts++; }
-  // chain-to-Telegram delay for the log: from the block of the first trade in each alert to now
-  for (const b of lagFrom.filter((x) => x != null).slice(0, 5)) {
+  if (msgs.length !== nBefore) lagFrom.length = 0; // a muted alert dropped out: skip this batch's timing sample
+  stats.tBuild.push(Date.now() - tb);
+  // send first, time it, then work out the chain-to-Telegram delay (block of the first trade in each 👛 alert → sent)
+  const sentAt = [];
+  for (const m of msgs) {
+    const ts = Date.now();
+    await tg(m);
+    stats.tSend.push(Date.now() - ts);
+    sentAt.push(Date.now() / 1000);
+    stats.alerts++;
+  }
+  for (let i = 0; i < Math.min(lagFrom.length, sentAt.length, 5); i++) {
+    const b = lagFrom[i];
+    if (b == null) continue;
     try {
       blockTime[b] ??= parseInt((await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), false], 2)).timestamp, 16);
-      stats.lags.push(now() - blockTime[b]);
+      stats.lags.push(Math.round(sentAt[i] - blockTime[b]));
     } catch {}
   }
   // housekeeping: dedupe keys for 3 hours, caches bounded
