@@ -1487,5 +1487,240 @@
   "address": "0xdd97993ff13e6e55b69a03e498674997b05d37ac",
   "label": "Ascend? multisig signer 5",
   "group": "ascendteam"
+ },
+ {
+  "address": "0xe6527e621a52b22b9d4ce078d9250960b9bb312a",
+  "label": "Snipe crew lead (19 of 20 coins at launch, best 22.9x)",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x64f3af4ce1f290cde41e0e22cd843f49f332c99f",
+  "label": "Snipe crew 2",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x13c91f4b77c87d46fb4d81865743715dd0d062bc",
+  "label": "Snipe crew 3",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x0167a3c2afd818ed85c19923b5f0e26c0d088ec2",
+  "label": "Snipe crew 4",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x6cc2336816323392617f3d0081ada8be38b1ce27",
+  "label": "Snipe crew 5",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x31782ee2a016be1d4fefb12613e76a05607c7728",
+  "label": "Snipe crew 6",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x17f762287275e6b1f47a26c0bbb7379eeed00e4e",
+  "label": "Snipe crew 7",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x35b10140553470a7ffd7d76594da000b51e540ea",
+  "label": "Snipe crew 8",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x2edb11b2a96c917f26f7a391a2b95b22d9a41cbd",
+  "label": "Snipe crew 9",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0x08d92075bdfa0af6fbcb6c723b8d6512eb59a604",
+  "label": "Snipe crew 10",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xf7f192bd66484760b92826cbd05c5315c7aaed6e",
+  "label": "Snipe crew? (bought BLOB and AGENT K with them)",
+  "group": "snipecrew"
+ },
+ {
+  "address": "0xe8cf1d52017ba8828c72c71f34111f5b3dce4829",
+  "label": "VOLTA crew 1 (128 HYPE into VOLTA at $613K)",
+  "group": "voltacrew"
+ },
+ {
+  "address": "0xbb830b79639932593b1810a9dd93b70671f04306",
+  "label": "VOLTA crew 2 (66 HYPE into VOLTA)",
+  "group": "voltacrew"
+ },
+ {
+  "address": "0xd4145dd72876aa7dbacdb3b91529ef72c869567f",
+  "label": "VOLTA crew 3 (44 HYPE into VOLTA)",
+  "group": "voltacrew"
+ },
+ {
+  "address": "0xf0ce2779ec5d1534abc33d1ed0f42dde4c535416",
+  "label": "VOLTA crew 4 (44 HYPE into VOLTA)",
+  "group": "voltacrew"
+ },
+ {
+  "address": "0x9ce620b31c2b4b52c77db38c3e05b311a9ef40b9",
+  "label": "118 HYPE split 1",
+  "group": "split118"
+ },
+ {
+  "address": "0x039edf54bdf261554dfa5118fe33509f2e3c20e6",
+  "label": "118 HYPE split 2",
+  "group": "split118"
+ },
+ {
+  "address": "0xfd8ea0b56ab4d3712f2477610379dbc1711d2ebe",
+  "label": "118 HYPE split 3",
+  "group": "split118"
+ },
+ {
+  "address": "0xa61d28490dff6797a7a12d87285dd3c66a94d83b",
+  "label": "118 HYPE split 4",
+  "group": "split118"
+ },
+ {
+  "address": "0xe5417fd39aaa2b9ff7b9fe29d6a1f8c906698792",
+  "label": "118 HYPE split 5",
+  "group": "split118"
+ },
+ {
+  "address": "0xe0ff25663733c17389c1fab33f9525114b37d9b2",
+  "label": "118 HYPE split 6 (42 HYPE)",
+  "group": "split118"
+ },
+ {
+  "address": "0x8e717d02336ed5333a78b8d89c0728b552f98e42",
+  "label": "118 HYPE split 6 alt?",
+  "group": "split118"
+ },
+ {
+  "address": "0xabe7c70427659660892f75a23444601a8d38f479",
+  "label": "GOTEM trio 1",
+  "group": "gotemtrio"
+ },
+ {
+  "address": "0x84d5178df762b0fcc358f047a1540e14c9a4adc5",
+  "label": "GOTEM trio 2 (e/acc +33 HYPE)",
+  "group": "gotemtrio"
+ },
+ {
+  "address": "0xbc87ca75ee832c4d6894790958ba8c9d3b48beb6",
+  "label": "GOTEM trio 3 (100 HYPE bridger)",
+  "group": "gotemtrio"
+ },
+ {
+  "address": "0x9e9363c1cf3c9385e2ddb92e16e656916ca4b947",
+  "label": "Twin bridger 1 (AK, EGG)",
+  "group": "twinbridge"
+ },
+ {
+  "address": "0xc5ddff0cc86f0ec5689198095da4cb180c95ce62",
+  "label": "Twin bridger 2 (AK, EGG)",
+  "group": "twinbridge"
+ },
+ {
+  "address": "0x31929f3d62a8de9547ad5f469ba33673b595f0af",
+  "label": "CHAMELEON first-hour holder (in at $45K, 1 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0x5335262975d223f44d704bbcb1d9ae6123ce4068",
+  "label": "CHAMELEON first-hour holder (in at $57K, 3 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0x3b12dc60d35d969763cfd3640e4d35400188d95c",
+  "label": "CHAMELEON first-hour holder (in at $55K, 25 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0xda8ba77f05a1296aec27af5dc2d17fd23e094d7e",
+  "label": "CHAMELEON first-hour holder (in at $97K, 8 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0x790f86ad7b9b1f1c2a8d33fd92de8e6d60d7f6eb",
+  "label": "CHAMELEON first-hour holder (in at $96K, 4 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0x1612af953fb8412d77c8eb31004be4699dd9ae9c",
+  "label": "CHAMELEON first-hour holder (in at $129K, 8 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0xbc57ba62230350ec898ab18035754087913aba5d",
+  "label": "CHAMELEON first-hour holder (in at $185K, 16 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0x2567ecd69c3c6781ccbacdf7cfd650727d58cab6",
+  "label": "CHAMELEON first-hour holder (in at $180K, 7 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0xcdf08ae5dd5f39338cb8a8c72fa1d1113cdf479b",
+  "label": "CHAMELEON first-hour holder (in at $264K, 15 HYPE)",
+  "group": "chameleon1h"
+ },
+ {
+  "address": "0xbd6b8d8fa94f7307840252548549b56a33c98054",
+  "label": "BLOB whale (350 HYPE in, holding)",
+  "group": "blobwhale"
+ },
+ {
+  "address": "0x3a8578a1c75dc2e6df15f08cb4f9f75d981ff0fe",
+  "label": "BLOB whale (132 HYPE in, holding)",
+  "group": "blobwhale"
+ },
+ {
+  "address": "0x02fb3e88e8953f2d860ab135f9982e75c3cc5c1c",
+  "label": "BLOB whale (69 HYPE in, holding)",
+  "group": "blobwhale"
+ },
+ {
+  "address": "0xdea857e0896837a624b810e255f9b3848adc8efe",
+  "label": "Fresh bridger 34 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0x5d312cc0d77ab36464c9d4598fec96872c125830",
+  "label": "Fresh bridger 60 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0x71f9ccd68bf1f5f9b571f509e0765a04ca4ffad2",
+  "label": "Fresh bridger 25 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0xb7ff55bf999c21a441e7833b1346dab299762f1f",
+  "label": "Fresh bridger 32 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0xb3406f9bda559f9ca82b2c895ff098f3490ac053",
+  "label": "Fresh bridger 25 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0xc02fd43a412f404eeda8d1f040533aaf61c31b9e",
+  "label": "Fresh bridger 33 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0xdad0958284b3d20104d14304a5e0ba21b6b3f284",
+  "label": "Fresh bridger 29 HYPE (never traded yet)",
+  "group": "freshbridge"
+ },
+ {
+  "address": "0xaca819e57522fff74386f1a8f3b64b0000000000",
+  "label": "Fresh bridger 61 HYPE (never traded yet)",
+  "group": "freshbridge"
  }
 ]
