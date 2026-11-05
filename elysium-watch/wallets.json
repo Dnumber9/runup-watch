@@ -1615,31 +1615,6 @@
   "group": "split118"
  },
  {
-  "address": "0xabe7c70427659660892f75a23444601a8d38f479",
-  "label": "GOTEM trio 1",
-  "group": "gotemtrio"
- },
- {
-  "address": "0x84d5178df762b0fcc358f047a1540e14c9a4adc5",
-  "label": "GOTEM trio 2 (e/acc +33 HYPE)",
-  "group": "gotemtrio"
- },
- {
-  "address": "0xbc87ca75ee832c4d6894790958ba8c9d3b48beb6",
-  "label": "GOTEM trio 3 (100 HYPE bridger)",
-  "group": "gotemtrio"
- },
- {
-  "address": "0x9e9363c1cf3c9385e2ddb92e16e656916ca4b947",
-  "label": "Twin bridger 1 (AK, EGG)",
-  "group": "twinbridge"
- },
- {
-  "address": "0xc5ddff0cc86f0ec5689198095da4cb180c95ce62",
-  "label": "Twin bridger 2 (AK, EGG)",
-  "group": "twinbridge"
- },
- {
   "address": "0x31929f3d62a8de9547ad5f469ba33673b595f0af",
   "label": "CHAMELEON first-hour holder (in at $45K, 1 HYPE)",
   "group": "chameleon1h"
