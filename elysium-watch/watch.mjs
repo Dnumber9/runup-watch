@@ -8,6 +8,8 @@
 // Alerts go to Telegram: launches that get real traction, volume runs, tracked-wallet moves,
 // a brand-new launchpad appearing, the official mainnet RPC opening, and a digest every few hours.
 // gate.mjs runs on the same blocks every tick to catch Ascend and Signal the moment they go live.
+// `node watch.mjs --fast` is the fast lane beside it: tracked-wallet buys, sells and group buys within seconds
+// (see fastMain below). The scan here then skips the trades that lane already sent.
 
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -715,6 +717,12 @@ async function main() {
     } catch {}
   }
 
+  // trades the fast lane (watch.mjs --fast) already sent: their 👛 lines are skipped here, group buys still count them.
+  // Only trusted while that lane is alive (fast.json written in the last 5 minutes).
+  let fast = null;
+  try { fast = JSON.parse(fs.readFileSync(FAST, 'utf8')); if (now() - (fast.at || 0) > 300) fast = null; } catch {}
+  const fastSent = fast?.sent || {};
+
   // 4. tracked wallets
   if (W.size) {
     const moves = {};
@@ -764,10 +772,11 @@ async function main() {
       if (W.has(to) && !dustIn) {
         const kind = poolOut.has(f) || txBuy[l.transactionHash] || (paidIn[l.transactionHash] && f !== ZERO) ? 'bought' : f === ZERO ? 'minted' : 'received';
         if (kind === 'bought') boughtTx.add(l.transactionHash);
+        const sentFast = kind === 'bought' && !!fastSent[`${l.transactionHash}|${to}|${t}`];
         // plain token transfers (received, minted) are not pinged, only buys
-        if (kind === 'bought') M(to).push(`bought ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
+        if (kind === 'bought' && !sentFast) M(to).push(`bought ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(to, t)}`);
         if (kind === 'bought') {
-          lastBuy[to] = t;
+          if (!sentFast) lastBuy[to] = t;
           const paid = paidH || val || 0;
           for (const g of [G.get(to), '*'].filter(Boolean)) {
             const k = g + '|' + t;
@@ -781,7 +790,7 @@ async function main() {
         const viaRouter = routerCall[l.transactionHash] && routerCall[l.transactionHash] !== t && swapTx.has(l.transactionHash) && !W.has(to) && to !== ZERO && to !== DEAD;
         const kind = poolOut.has(to) || viaRouter ? 'sold' : to === ZERO || to === DEAD ? 'burned' : 'sent';
         const where = W.has(to) ? `${walletLink(to)} (${esc(W.get(to))})` : walletLink(to);
-        if (kind === 'sold') M(f).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
+        if (kind === 'sold' && !fastSent[`${l.transactionHash}|${f}|${t}`]) M(f).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
         else if (kind === 'sent') {
           const c = await isContract(to);
           if (c) M(f).push(`moved ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${valTxt} into a contract ${where} (no swap: LP, lock, bridge or vault) · ${assetLink(t, 'chart')}${txLink(l.transactionHash)}${HOLD(f, t)}`);
@@ -978,6 +987,8 @@ async function main() {
     const prevN = state.alerted[key]?.n || 0;
     if (!due(state, key) && n <= prevN) continue; // re-ping inside the cooldown only when more wallets pile in
     if (g === '*' && Object.keys(byW).every((w) => G.get(w) && G.get(w) === G.get(Object.keys(byW)[0]))) continue; // same group already pinged
+    const fa = fast?.alerted?.[key]; // the fast lane already sent this group buy
+    if (fa && now() - fa.t <= COOLDOWN_H * 3600 && n <= (fa.n || 0)) { state.alerted[key] = { t: fa.t, n: fa.n }; continue; }
     state.alerted[key] = { t: now(), n };
     const tot = Object.values(byW).reduce((a, b) => a + b, 0);
     const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
@@ -1071,7 +1082,7 @@ async function main() {
 
   state.block = head;
   state.runs++;
-  fs.writeFileSync(STATE, JSON.stringify(state));
+  writeAtomic(STATE, JSON.stringify(state)); // the fast lane reads this file while this scan runs
   const cm = coinMutes(state);
   const before = msgs.length;
   msgs = dropMutedCoins(msgs, cm);
@@ -1435,4 +1446,316 @@ function fmtAmt(n) {
   return n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : n.toFixed(2);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// write through a temp file and rename, so the other lane never reads a half-written file
+function writeAtomic(url, text) {
+  const tmp = new URL(url.href + '.tmp');
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, url);
+}
+
+// ── fast lane (node watch.mjs --fast): tracked-wallet buys and sells within seconds ─────────────────────────
+// One long-running process polls every FAST_POLL_MS with a single log query per poll (token transfers, swaps and
+// new pools across the new blocks), keeps the transfers that touch a tracked wallet, and sends the same 👛 trade
+// lines and 🎯 group buys the main scan would. Everything else (HYPE sends, splits, bridging, launches, new alts,
+// exit-group alerts, Stockium) stays with the main scan. The main scan skips the trades this lane already sent,
+// listed in fast.json. This lane only reads state.json (wallets, pools, prices) and only writes fast.json.
+const FAST = new URL('./fast.json', import.meta.url);
+const FAST_POLL_MS = Number(process.env.FAST_POLL_MS || 2000);
+const FAST_RANGE = 1000;          // blocks per log query (the busiest public RPC allows 2,000)
+const FAST_REJOIN = 300;          // further behind than this on start (about 45 s): rejoin at the head, the main scan has those blocks
+const FAST_MINUTES = Number(process.env.FAST_MINUTES || 335);
+const FAST_REFRESH_S = 30;        // re-read the wallet list and the main scan's state this often
+
+// the tracked wallet set exactly as main() builds it (repo list, auto-found, /add, minus muted and their alts)
+function trackedView(st) {
+  let wallets = [];
+  try { wallets = JSON.parse(fs.readFileSync(WALLETS, 'utf8')); } catch {}
+  const okW = wallets.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.address));
+  const W = new Map(okW.map((w) => [lc(w.address), w.label || short(w.address)]));
+  const G = new Map(okW.filter((w) => w.group).map((w) => [lc(w.address), String(w.group)]));
+  const DEVW = new Map(okW.filter((w) => w.watch === 'launch').map((w) => [lc(w.address), new Set((w.coins || []).map(lc))]));
+  const auto = { ...(st.auto || {}) };
+  for (const a of FEE_WALLETS) delete auto[a];
+  for (const [a, x] of Object.entries(auto)) {
+    if (!W.has(a)) W.set(a, x.label);
+    if (x.group && !G.has(a)) G.set(a, x.group);
+  }
+  const manual = st.manual || {};
+  const muted = { ...(st.muted || {}) };
+  try {
+    for (const x of JSON.parse(fs.readFileSync(MUTED, 'utf8'))) {
+      const a = lc(x?.address || x);
+      if (/^0x[0-9a-f]{40}$/.test(a) && !manual[a]) muted[a] ||= 1;
+    }
+  } catch {}
+  for (const [a, x] of Object.entries(manual)) {
+    W.set(a, x.label);
+    if (x.group) G.set(a, x.group); else G.delete(a);
+  }
+  const listed = new Set(okW.map((w) => lc(w.address)));
+  for (let more = true; more;) {
+    more = false;
+    for (const [a, x] of Object.entries(auto)) if (!muted[a] && !manual[a] && !listed.has(a) && muted[x.from]) { muted[a] = 1; more = true; }
+  }
+  for (const a of Object.keys(muted)) { W.delete(a); G.delete(a); }
+  return { W, G, DEVW, auto, muted };
+}
+
+async function fastMain() {
+  await pickRpcs();
+  const stopAt = Date.now() + FAST_MINUTES * 60000;
+  let fst = {};
+  try { fst = JSON.parse(fs.readFileSync(FAST, 'utf8')); } catch {}
+  fst = { block: 0, sent: {}, gbuys: {}, alerted: {}, meta: {}, price: {}, pools: {}, v3: {}, px: null, ...fst };
+  let st = {}, view = null, refreshedAt = 0;
+  const refresh = () => {
+    try { st = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {} // a failed read keeps the last good copy
+    st.tok ||= {}; st.pools ||= {}; st.v3 ||= {}; st.meta ||= {};
+    view = trackedView(st);
+    for (const [t, m] of Object.entries(st.meta)) if (!fst.meta[t]) fst.meta[t] = m;
+    const alertChat = st.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
+    if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
+    if (TRADE_TOKEN && alertChat) TRADE = { token: TRADE_TOKEN, chat: alertChat, trade: true };
+    refreshedAt = now();
+  };
+  refresh();
+  // tokenMeta and hypeUsd read and fill these
+  const metaBox = { meta: fst.meta };
+  const pxBox = { get px() { return fst.px; }, set px(v) { fst.px = v; } };
+  const priceOf = (t) => fst.price[t]?.p || st.tok[t]?.price || null;
+  // pools: the main scan's index plus pools this lane saw created (the main scan can be minutes behind on new coins)
+  const poolOf = (id) => fst.pools[id] || st.pools[id] || null;
+  const head0 = parseInt(await rpc('eth_blockNumber', []), 16);
+  if (!fst.block || head0 - fst.block > FAST_REJOIN) fst.block = head0 - 20;
+  try {
+    const seedFrom = Math.max(1, Math.min(st.block || head0, fst.block) - 50, head0 - 8000);
+    for (const l of await getLogs({ topics: [T_INIT_V4] }, seedFrom, head0, FAST_RANGE)) {
+      const id = lc(l.topics[1]);
+      if (!st.pools[id]) fst.pools[id] = poolEntry({ tok: st.tok }, lc(l.address), lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
+    }
+  } catch (e) { console.log('fast: pool seed failed:', e.message); }
+
+  const stats = { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now() };
+  const blockTime = {};
+  const rootOf = (w) => {
+    let r = w;
+    for (let i = 0; i < 8; i++) { const f = view.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = f; }
+    return r;
+  };
+  console.log(`fast: started at block ${fst.block + 1}, polling every ${FAST_POLL_MS} ms`);
+
+  while (Date.now() < stopAt) {
+    const t0 = Date.now();
+    rpcIdx = 0; // back to the first (fastest) RPC every poll, after a hiccup moved us to a slower one
+    try {
+      if (now() - refreshedAt >= FAST_REFRESH_S) refresh();
+      const head = parseInt(await rpc('eth_blockNumber', [], 3), 16);
+      if (head > fst.block) {
+        const from = fst.block + 1, to = Math.min(head, from + FAST_RANGE - 1);
+        const logs = await getLogs({ topics: [[T_TRANSFER, T_SWAP_V4, T_SWAP_V3, T_SWAP_V2, T_INIT_V4]] }, from, to, FAST_RANGE);
+        await fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, rootOf, stats, blockTime });
+        stats.blocks += to - from + 1;
+        fst.block = to;
+        fst.at = now();
+        writeAtomic(FAST, JSON.stringify(fst));
+      }
+      stats.polls++;
+    } catch (e) { stats.errs++; if (stats.errs <= 5 || stats.errs % 50 === 0) console.log('fast: poll failed:', e.message); }
+    // a summary every 5 min: counts and timings only (the Actions log is public)
+    if (Date.now() - stats.at >= 300000) {
+      const l = stats.lags.sort((a, b) => a - b);
+      const med = l.length ? l[Math.floor(l.length / 2)] : null;
+      console.log(`fast: ${stats.polls} polls, ${stats.blocks} blocks, ${stats.trades} trades seen, ${stats.alerts} alerts` +
+        (med != null ? `, chain-to-Telegram ${med}s median, ${l[l.length - 1]}s max` : '') + `, ${stats.errs} errors`);
+      Object.assign(stats, { polls: 0, blocks: 0, alerts: 0, trades: 0, errs: 0, lags: [], at: Date.now() });
+    }
+    await sleep(Math.max(200, FAST_POLL_MS - (Date.now() - t0)));
+  }
+  console.log('fast: time is up, exiting');
+}
+
+// one batch of new logs: trades by tracked wallets → 👛 lines, and 🎯 group buys
+async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, rootOf, stats, blockTime }) {
+  const { W, G, DEVW } = view;
+  // new pools first, so a coin launched in this batch can be priced and its swaps read
+  for (const l of logs) {
+    if (l.topics[0] !== T_INIT_V4) continue;
+    const id = lc(l.topics[1]);
+    if (!poolOf(id)) fst.pools[id] = poolEntry({ tok: st.tok }, lc(l.address), lc(topicAddr(l.topics[2])), lc(topicAddr(l.topics[3])), parseInt(l.blockNumber, 16));
+  }
+  const mine = logs.filter((l) => l.topics[0] === T_TRANSFER && l.topics.length === 3 && (W.has(lc(topicAddr(l.topics[1]))) || W.has(lc(topicAddr(l.topics[2])))) && !WHYPE.has(lc(l.address)));
+  if (!mine.length) return;
+  const hot = new Set(mine.map((l) => l.transactionHash));
+  // swaps in the txs we care about: HYPE paid per tx, which addresses are pools, the coin's latest price
+  const txBuy = {}, emitters = {}, swapTx = new Set();
+  for (const l of logs) {
+    if (l.topics[0] !== T_SWAP_V4 && l.topics[0] !== T_SWAP_V3 && l.topics[0] !== T_SWAP_V2) continue;
+    const b = parseInt(l.blockNumber, 16);
+    const inHot = hot.has(l.transactionHash);
+    if (inHot) { swapTx.add(l.transactionHash); (emitters[l.transactionHash] ||= new Set()).add(lc(l.address)); }
+    if (l.topics[0] === T_SWAP_V4) {
+      const p = poolOf(lc(l.topics[1]));
+      if (!p) continue;
+      const w = words(l.data);
+      const qd = Number(int256(p.inv ? w[1] : w[0])) / 1e18;
+      const hypeQ = isHype(p.q ?? ZERO);
+      const qPx = hypeQ ? 1 : priceOf(p.q) || 0;
+      if (inHot && qd < 0 && hypeQ) txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + Math.abs(qd);
+      const sqrt = BigInt('0x' + w[2]);
+      if (sqrt > 0n && qPx > 0) {
+        const ratio = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18;
+        if (ratio > 0 && (!fst.price[p.t] || fst.price[p.t].b <= b)) fst.price[p.t] = { p: (p.inv ? ratio : 1 / ratio) * qPx, b, t: now() };
+      }
+    } else if (l.topics[0] === T_SWAP_V3 && inHot) {
+      const pool = lc(l.address);
+      let pi = st.v3[pool] ?? fst.v3[pool];
+      if (pi === undefined) {
+        try {
+          const [t0, t1] = await Promise.all([rpc('eth_call', [{ to: pool, data: '0x0dfe1681' }, 'latest']), rpc('eth_call', [{ to: pool, data: '0xd21220a7' }, 'latest'])]);
+          pi = fst.v3[pool] = { t0: lc(topicAddr(t0)), t1: lc(topicAddr(t1)) };
+        } catch { pi = fst.v3[pool] = null; }
+      }
+      if (!pi || (!WHYPE.has(pi.t0) && !WHYPE.has(pi.t1))) continue;
+      const w = words(l.data);
+      const hypeIsT0 = WHYPE.has(pi.t0);
+      const coin = hypeIsT0 ? pi.t1 : pi.t0;
+      const h = Number(int256(hypeIsT0 ? w[0] : w[1])) / 1e18;
+      if (h > 0) txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h;
+      const sqrt = BigInt('0x' + w[2]);
+      if (sqrt > 0n) {
+        const p01 = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18;
+        if (p01 > 0 && (!fst.price[coin] || fst.price[coin].b <= b)) fst.price[coin] = { p: hypeIsT0 ? 1 / p01 : p01, b, t: now() };
+      }
+    }
+  }
+  // the txs themselves: HYPE sent along by a tracked wallet, and which contract it called (routers)
+  const txs = {};
+  await Promise.all([...hot].slice(0, 60).map(async (h) => { try { txs[h] = await rpc('eth_getTransactionByHash', [h], 3); } catch {} }));
+  const paidIn = {}, routerCall = {};
+  for (const [h, tx] of Object.entries(txs)) {
+    if (!tx?.to || (tx.input || '0x') === '0x' || !W.has(lc(tx.from))) continue;
+    routerCall[h] = lc(tx.to);
+    const v = Number(BigInt(tx.value || '0x0')) / 1e18;
+    if (v > 0) paidIn[h] = v;
+  }
+  const px = await hypeUsd(pxBox);
+  const exitOf = (w) => EXIT_GROUPS.has(String(G.get(w) || '').toLowerCase());
+  const moves = {}, lastBuy = {}, touched = new Set(), firstBlock = {};
+  const usdOf = (h) => (h == null ? null : px ? h * px : h * 50);
+  for (const l of mine) {
+    const f = lc(topicAddr(l.topics[1])), to = lc(topicAddr(l.topics[2]));
+    const t = lc(l.address);
+    const h = l.transactionHash;
+    const em = emitters[h] || new Set();
+    const meta = await tokenMeta(metaBox, t);
+    const amt = Number(BigInt(l.data === '0x' ? '0x0' : l.data)) / 10 ** meta.d;
+    const price = priceOf(t);
+    const val = price ? amt * price : null;
+    const paidH = txBuy[h] || paidIn[h] || null;
+    const b = parseInt(l.blockNumber, 16);
+    if (W.has(to) && (em.has(f) || txBuy[h] || (paidIn[h] && f !== ZERO))) {
+      stats.trades++;
+      const shown = val ?? paidH;
+      const dust = (usdOf(paidH || val) ?? Infinity) < DUST_USD;
+      for (const g of [G.get(to), '*'].filter(Boolean)) (fst.gbuys[g + '|' + t] ||= []).push({ w: to, t: now(), h: paidH || val || 0 });
+      touched.add(t);
+      if (exitOf(to)) continue; // the main scan sends exit-group moves as one alert per group
+      fst.sent[`${h}|${to}|${t}`] = now();
+      if (dust || DEVW.has(to)) continue; // launch-watched devs: their buys count toward group buys but are not pinged
+      (moves[to] ||= []).push(`bought ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${shown != null ? ` (~${px ? usd(shown * px) : hype(shown)})` : ''} · ${assetLink(t, 'chart')}${txLink(h)}${HOLD(to, t)}`);
+      lastBuy[to] = t;
+      firstBlock[to] ??= b;
+    }
+    if (W.has(f)) {
+      const viaRouter = routerCall[h] && routerCall[h] !== t && swapTx.has(h) && !W.has(to) && to !== ZERO && to !== DEAD;
+      if (!em.has(to) && !viaRouter) continue; // not a sale: sends, LP moves and burns stay with the main scan
+      stats.trades++;
+      if (exitOf(f)) continue;
+      fst.sent[`${h}|${f}|${t}`] = now();
+      if ((usdOf(val) ?? Infinity) < DUST_USD) continue;
+      if (DEVW.has(f)) {
+        const own = DEVW.get(f).has(t) || lc(st.tok[t]?.creator || '') === f;
+        if (!own) continue; // launch-watched devs: only sells of their own coins
+      }
+      (moves[f] ||= []).push(`sold ${fmtAmt(amt)} <b>${esc(meta.s)}</b>${val != null ? ` (~${px ? usd(val * px) : hype(val)})` : ''} · ${assetLink(t, 'chart')}${txLink(h)}${HOLD(f, t)}`);
+      firstBlock[f] ??= b;
+    }
+  }
+  let msgs = [];
+  // what each wallet still holds of the coin it traded (last line per wallet+coin gets it)
+  const held = {};
+  for (const k of [...new Set(Object.values(moves).flat().join('').match(/\u0000H:[^\u0000]+\u0000/g) || [])].slice(0, 20)) {
+    const [, w, t] = k.slice(1, -1).split(':');
+    try {
+      const meta = await tokenMeta(metaBox, t);
+      const bal = Number(BigInt(await rpc('eth_call', [{ to: t, data: '0x70a08231' + w.slice(2).padStart(64, '0') }, 'latest'], 3))) / 10 ** meta.d;
+      const price = priceOf(t);
+      held[k] = holdLine(bal, meta, price ? bal * price : null, px);
+    } catch { held[k] = ''; }
+  }
+  const lagFrom = [];
+  for (const [w, list] of Object.entries(moves)) {
+    const seen = new Set();
+    for (let i = list.length - 1; i >= 0; i--) list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
+    const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
+    msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
+    lagFrom.push(firstBlock[w]);
+  }
+  // group buys, the same rules as the main scan (one owner = one buyer, cooldown, re-ping when more pile in)
+  for (const [k, list] of Object.entries(fst.gbuys)) {
+    const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60 && !view.muted[x.w]);
+    if (!recent.length) { delete fst.gbuys[k]; continue; }
+    fst.gbuys[k] = recent.slice(-50);
+    const [g, t] = k.split('|');
+    if (!touched.has(t)) continue;
+    const byW = {};
+    for (const x of recent) byW[x.w] = (byW[x.w] || 0) + x.h;
+    const fam = {};
+    for (const [w, h] of Object.entries(byW)) { const r = rootOf(w); (fam[r] ||= { ws: [], h: 0 }); fam[r].ws.push(w); fam[r].h += h; }
+    const n = Object.keys(fam).length, nW = Object.keys(byW).length;
+    if (n < (g === '*' ? ANY_MIN_WALLETS : GROUP_MIN_WALLETS)) continue;
+    const key = 'g:' + k;
+    const prev = fst.alerted[key] || st.alerted?.[key];
+    if (prev && now() - prev.t <= COOLDOWN_H * 3600 && n <= (prev.n || 0)) continue;
+    if (g === '*' && Object.keys(byW).every((w) => G.get(w) && G.get(w) === G.get(Object.keys(byW)[0]))) continue;
+    fst.alerted[key] = { t: now(), n };
+    const tot = Object.values(byW).reduce((a, b) => a + b, 0);
+    const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
+    const meta = await tokenMeta(metaBox, t);
+    const price = priceOf(t);
+    const mcH = price && meta.supply ? price * meta.supply : null;
+    msgs.push({
+      text: `🎯 <b>${g === '*' ? `${n} tracked ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}` : `${esc(g)} group, ${n} ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}`}</b> bought <b>${esc(meta.s)}</b> within ${span} min\n` +
+        `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
+        Object.entries(fam).map(([r, x]) => {
+          const name = esc(W.get(r) || view.auto[r]?.label || short(r));
+          const amt = x.h > 0 ? ` ${hype(x.h)}` : '';
+          if (x.ws.length === 1) return `• ${walletLink(x.ws[0], esc(W.get(x.ws[0]) || short(x.ws[0])))}${amt}`;
+          const alts = x.ws.filter((w) => w !== r).length;
+          return x.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
+        }).join('\n') +
+        `\n<code>${t}</code>\n${coinLink(st, t)}`,
+      buttons: buyButtons('e', t),
+    });
+    lagFrom.push(null);
+  }
+  if (!msgs.length) return;
+  msgs = dropMutedCoins(msgs, coinMutes({ mutedCoins: { ...(st.mutedCoins || {}) }, unmutedCoins: { ...(st.unmutedCoins || {}) } }));
+  for (const m of msgs) { await tg(m); stats.alerts++; }
+  // chain-to-Telegram delay for the log: from the block of the first trade in each alert to now
+  for (const b of lagFrom.filter((x) => x != null).slice(0, 5)) {
+    try {
+      blockTime[b] ??= parseInt((await rpc('eth_getBlockByNumber', ['0x' + b.toString(16), false], 2)).timestamp, 16);
+      stats.lags.push(now() - blockTime[b]);
+    } catch {}
+  }
+  // housekeeping: dedupe keys for 3 hours, caches bounded
+  for (const [k, t] of Object.entries(fst.sent)) if (now() - t > 3 * 3600) delete fst.sent[k];
+  for (const [k, a] of Object.entries(fst.alerted)) if (now() - a.t > 2 * 86400) delete fst.alerted[k];
+  for (const [t, x] of Object.entries(fst.price)) if (now() - x.t > 6 * 3600) delete fst.price[t];
+  if (Object.keys(fst.meta).length > 4000) for (const k of Object.keys(fst.meta).slice(0, 2000)) delete fst.meta[k];
+  for (const b of Object.keys(blockTime)) if (Object.keys(blockTime).length > 200) delete blockTime[b];
+}
+
+if (process.argv.includes('--fast')) fastMain().catch((e) => { console.error('fast:', e.message); process.exit(1); });
+else main().catch((e) => { console.error(e); process.exit(1); });
