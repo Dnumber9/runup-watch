@@ -377,7 +377,8 @@
  {
   "address": "0x3a9732edd0624b39d006c89a0e327020dc06eb99",
   "label": "STOCKIUM 10 HYPE trader",
-  "group": "smart"
+  "group": "smart",
+  "owner": "0x371903abb32f5f69b536b77495e92adedfea25da"
  },
  {
   "address": "0x6c39d7e6d7689b7a0d81aff7cc8a346fe054ff13",
@@ -1857,5 +1858,28 @@
   "address": "0x1a4fdf8ae9c82b979a0fed2b9665d1e22a4d71c0",
   "label": "Kinetiq Ethereum signer",
   "group": "kinetiq"
+ },
+ {
+  "address": "0xce4ceced412aa9359840c7d52bbd99827a5d42b9",
+  "label": "Elysium L2 upgrade executor (every chain upgrade runs through it)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0xdd45a7a06cc21cfe442cf13dffeb8252b18c1441",
+  "label": "Elysium upgrade executor on HyperEVM (controls the L2 one)",
+  "group": "elyteam"
+ },
+ {
+  "address": "0x23a4604cdfe8e9e2e9cf7c10d7492b0f3f4b4038",
+  "label": "Kinetiq staking operator (quiet: routine key)",
+  "group": "kinetiq",
+  "watch": "launch"
+ },
+ {
+  "address": "0x10affb1fe0dcb8a2a6e34cb6ccfa7cf26e116ce4",
+  "label": "KLEOS dev #1 bot vault (quiet: pings when funded)",
+  "group": "dev",
+  "watch": "launch",
+  "cluster": false
  }
 ]

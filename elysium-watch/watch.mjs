@@ -144,7 +144,7 @@ async function rpc(method, params, tries = 6) {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(FAST_MODE ? 5000 : 20000), // the fast lane gives up on a hung RPC quickly and tries the next
       });
       if (r.status === 429 || r.status >= 500) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
@@ -294,7 +294,7 @@ async function hrpc(method, params) {
   for (let i = 0; i < HYPER_RPCS.length * 2; i++) {
     const url = HYPER_RPCS[(hIdx + i) % HYPER_RPCS.length];
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(15000) });
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(FAST_MODE ? 5000 : 15000) });
       const j = await r.json();
       if (j.error) throw new Error(j.error.message);
       hIdx = (hIdx + i) % HYPER_RPCS.length;
@@ -387,6 +387,7 @@ async function main() {
   // a contract deploy, a bundle split, HYPE bridged in or 25+ HYPE moved, and sells of their own coins. Their routine
   // trading stays quiet; their group still counts toward group buys.
   const DEVW = new Map(okW.filter((w) => w.watch === 'launch').map((w) => [lc(w.address), new Set((w.coins || []).map(lc))]));
+  const { noCluster, owner } = walletLinks(okW);
   // wallets the watcher found on its own (fresh wallets funded by tracked ones) live in state
   state.auto ||= {};
   state.gbuys ||= {};
@@ -782,7 +783,7 @@ async function main() {
         if (kind === 'bought') {
           if (!sentFast) lastBuy[to] = t;
           const paid = paidH || val || 0;
-          for (const g of [G.get(to), '*'].filter(Boolean)) {
+          for (const g of noCluster.has(to) ? [] : [G.get(to), '*'].filter(Boolean)) {
             const k = g + '|' + t;
             (state.gbuys[k] ||= []).push({ w: to, t: now(), h: paid });
           }
@@ -809,10 +810,24 @@ async function main() {
         }
       }
     }
-    // native HYPE moves, deploys and launches: read every block with its transactions
+    // native HYPE moves, deploys and launches: read every block with its transactions.
+    // A reverted tx is still in its block with its value, but nothing moved (a failed buy is not a 4 HYPE send):
+    // ask the receipt for every tracked-wallet tx that would make a line here, and skip the failed ones.
+    const failed = new Set();
+    const toCheck = [];
+    for (const blk of blocks) for (const tx of blk.transactions || []) {
+      const val = BigInt(tx.value || '0x0');
+      if ((W.has(lc(tx.from)) && (val > 0n || !tx.to)) || (W.has(lc(tx.to)) && val > 0n)) toCheck.push(tx.hash);
+    }
+    for (let i = 0; i < Math.min(toCheck.length, 200); i += 10) {
+      await Promise.all(toCheck.slice(i, i + 10).map(async (h) => {
+        try { const rc = await rpc('eth_getTransactionReceipt', [h], 3); if (rc && rc.status === '0x0') failed.add(h); } catch {}
+      }));
+    }
     const funded = []; // tracked wallet → untracked recipient, checked for freshness below
     for (const blk of blocks) {
       for (const tx of blk.transactions || []) {
+        if (failed.has(tx.hash)) continue;
         const f = lc(tx.from);
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
@@ -971,8 +986,8 @@ async function main() {
   // 4b. group buys: 2+ wallets of one group (or 3+ tracked wallets of any group) into the same coin within the window.
   // One owner, one count: a wallet and the alts it funded are one buyer, so a bundler's 15 alts are 1, not 15.
   const rootOf = (w) => {
-    let r = w;
-    for (let i = 0; i < 8; i++) { const f = state.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = f; }
+    let r = owner.get(w) || w;
+    for (let i = 0; i < 8; i++) { const f = state.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = owner.get(f) || f; }
     return r;
   };
   for (const [k, list] of Object.entries(state.gbuys)) {
@@ -1502,7 +1517,15 @@ function trackedView(st) {
     for (const [a, x] of Object.entries(auto)) if (!muted[a] && !manual[a] && !listed.has(a) && muted[x.from]) { muted[a] = 1; more = true; }
   }
   for (const a of Object.keys(muted)) { W.delete(a); G.delete(a); }
-  return { W, G, DEVW, auto, muted };
+  return { W, G, DEVW, auto, muted, ...walletLinks(okW) };
+}
+
+// wallets.json extras: "cluster": false keeps a wallet out of group buys (a trading bot that buys everything),
+// "owner": "0x…" counts a wallet as that wallet in group buys (one person's wallets are one buyer, not several)
+function walletLinks(okW) {
+  const noCluster = new Set(okW.filter((w) => w.cluster === false).map((w) => lc(w.address)));
+  const owner = new Map(okW.filter((w) => /^0x[0-9a-fA-F]{40}$/.test(w.owner || '')).map((w) => [lc(w.address), lc(w.owner)]));
+  return { noCluster, owner };
 }
 
 async function fastMain() {
@@ -1526,6 +1549,8 @@ async function fastMain() {
   // tokenMeta and hypeUsd read and fill these
   const metaBox = { meta: fst.meta };
   const pxBox = { get px() { return fst.px; }, set px(v) { fst.px = v; } };
+  if (!fst.px?.v && st.px?.v) fst.px = { ...st.px }; // start from the main scan's HYPE price, refresh in the background
+  refreshPx(pxBox);
   const priceOf = (t) => fst.price[t]?.p || st.tok[t]?.price || null;
   // pools: the main scan's index plus pools this lane saw created (the main scan can be minutes behind on new coins)
   const poolOf = (id) => fst.pools[id] || st.pools[id] || null;
@@ -1544,8 +1569,8 @@ async function fastMain() {
   const mx = (a) => (a.length ? Math.max(...a) : 0);
   const blockTime = {};
   const rootOf = (w) => {
-    let r = w;
-    for (let i = 0; i < 8; i++) { const f = view.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = f; }
+    let r = view.owner.get(w) || w;
+    for (let i = 0; i < 8; i++) { const f = view.auto[r]?.from; if (!/^0x[0-9a-f]{40}$/.test(f || '') || f === r) break; r = view.owner.get(f) || f; }
     return r;
   };
   console.log(`fast: started at block ${fst.block + 1}, polling every ${FAST_POLL_MS} ms`);
@@ -1584,6 +1609,13 @@ async function fastMain() {
     await sleep(Math.max(200, FAST_POLL_MS - (Date.now() - t0)));
   }
   console.log('fast: time is up, exiting');
+}
+
+let pxBusy = false;
+function refreshPx(box) {
+  if (pxBusy) return;
+  pxBusy = true;
+  hypeUsd(box).catch(() => {}).finally(() => { pxBusy = false; });
 }
 
 // one batch of new logs: trades by tracked wallets → 👛 lines, and 🎯 group buys
@@ -1651,7 +1683,9 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     const v = Number(BigInt(tx.value || '0x0')) / 1e18;
     if (v > 0) paidIn[h] = v;
   }
-  const px = await hypeUsd(pxBox);
+  // the HYPE price never holds up an alert: use the last one and refresh it in the background
+  const px = fst.px?.v || null;
+  if (!fst.px || now() - fst.px.t >= 900) refreshPx(pxBox);
   const exitOf = (w) => EXIT_GROUPS.has(String(G.get(w) || '').toLowerCase());
   const moves = {}, lastBuy = {}, touched = new Set(), firstBlock = {};
   const usdOf = (h) => (h == null ? null : px ? h * px : h * 50);
@@ -1670,7 +1704,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
       stats.trades++;
       const shown = val ?? paidH;
       const dust = (usdOf(paidH || val) ?? Infinity) < DUST_USD;
-      for (const g of [G.get(to), '*'].filter(Boolean)) (fst.gbuys[g + '|' + t] ||= []).push({ w: to, t: now(), h: paidH || val || 0 });
+      for (const g of view.noCluster.has(to) ? [] : [G.get(to), '*'].filter(Boolean)) (fst.gbuys[g + '|' + t] ||= []).push({ w: to, t: now(), h: paidH || val || 0 });
       touched.add(t);
       if (exitOf(to)) continue; // the main scan sends exit-group moves as one alert per group
       fst.sent[`${h}|${to}|${t}`] = now();
