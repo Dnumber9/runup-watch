@@ -35,8 +35,8 @@
 // journal, /stats and the nightly tips beside the bot's own, with a 📒 note question on each buy and each coin closed.
 // Extras, off unless set: take profit, stop loss and trailing stop (/tp /sl /trail), an auto-sell preset on
 //   every buy (/auto), dev and rug guards (/set devsell, /set rug), snipes (/snipe) and copy trading (/copy).
-// Bag watch, on unless /set bagwatch off: the dev and top 10 holders of every coin you hold (bot wallet and /mine
-//   wallets) are watched, and a sell or move of a real part of their bag posts here (/bagwatch lists them).
+// Bag watch, per coin: 👀 on a coin's card (or /bagwatch 0xCOIN) watches its dev and top 10 holders, and a sell or
+//   move of a real part of their bag posts here. /set bagwatch on watches every coin you hold (bot and /mine wallets).
 //
 // Chat (only from OWNER_ID): /help lists every command.
 //
@@ -175,7 +175,7 @@ const cfg = () => ({
   copysells: (state.set.copysells ?? 'on') !== 'off',                   // mirror the copied wallet's sells
   pin: (state.set.pin ?? process.env.PIN_TRADES ?? 'on') !== 'off',      // pinned open-trades panel at the top of the chat
   notes: (state.set.notes ?? process.env.TRADE_NOTES ?? 'on') !== 'off', // 📒 note question on each buy and close in your other wallets
-  bagwatch: (state.set.bagwatch ?? process.env.BAG_WATCH ?? 'on') !== 'off', // 👀 dev and top holder sells on coins you hold
+  bagwatch: (state.set.bagwatch ?? process.env.BAG_WATCH ?? 'off') !== 'off', // 👀 every coin you hold (off: only the coins you arm)
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
@@ -1005,6 +1005,7 @@ const cardButtons = (t) => {
     [...cfg().sizes.map((s) => ({ text: `⚡ ${s}`, callback_data: `b:${h}:${Math.round(Number(s) * 10)}` })), { text: '⚡ X', callback_data: `k:${h}` }],
     [25, 50, 100].map((p) => ({ text: `Sell ${p}%`, callback_data: `s:${h}:${p}` })).concat([{ text: '🔄', callback_data: `r:${h}` }]),
     [{ text: '💰 Initials', callback_data: `i:${h}` }, { text: '🎯 Limit', callback_data: `m:${h}` }, { text: '📋 Orders', callback_data: `l:${h}` }, { text: '📤 Send', callback_data: `g:${h}` }],
+    watchRow(t),
   ];
 };
 
@@ -1469,11 +1470,14 @@ async function guardCoin(t) {
 }
 
 // ── bag watch ──────────────────────────────────────────────────────────────────────────────────────
-// Every coin you hold (the bot wallet and your /mine wallets): its dev and its 10 biggest holders are watched, and a
-// sell or a move of a real part of their bag posts here. Holders come from the coin's Transfer logs since its first
+// Coins you arm (👀 on the card, /bagwatch 0xCOIN), or with /set bagwatch on every coin you hold (the bot wallet and
+// your /mine wallets): its dev and its 10 biggest holders are watched, and a sell or a move of a real part of their
+// bag posts here. A coin armed while you held it is disarmed when the bag closes. Holders come from the coin's Transfer logs since its first
 // pool (at most the last two days, ranked by balanceOf), kept live by one log read every 5 s for all bags together.
 // A wallet a watched holder moves a big part of its bag to is watched too, as "<holder> alt".
 state.bwAlts ||= {};          // coin → { wallet: label } (wallets a watched holder moved its bag to)
+state.bwArm ||= {};           // coin → { at, held } armed by hand (held: you held it then, so it ends with the bag)
+state.bwMute ||= {};          // coin → time: one of your bags taken out of the watch while every bag is watched
 const BW_MAX = 40, BW_TOP = 10;         // coins watched at once (biggest bags first), holders per coin
 const BW_SPAN = 1200000;      // blocks read back at most (about two days)
 const BW_PRE = 20000;         // blocks before the first pool (coins minted before their pool opened)
@@ -1505,14 +1509,35 @@ const moveOf = (l) => {
 };
 const bwAdd = (bal, mv) => { if (!mv.amt) return; bal.set(mv.from, (bal.get(mv.from) || 0n) - mv.amt); bal.set(mv.to, (bal.get(mv.to) || 0n) + mv.amt); };
 const big = (a, b) => (b > a ? 1 : b < a ? -1 : 0);
-// open bags: the bot wallet's and your other wallets', biggest first
-function bagCoins() {
+// open bags: the bot wallet's and your other wallets'
+function heldMap() {
   const out = new Map();
   const add = (t, who, v) => { const x = out.get(t) || { bot: false, who: [], v: 0 }; if (who) x.who.push(who); else x.bot = true; x.v += v || 0; out.set(t, x); };
   for (const [t, p] of Object.entries(state.pos)) if (isOpen(p)) add(t, null, p.now);
   for (const [w, ps] of Object.entries(state.mpos)) for (const [t, p] of Object.entries(ps)) if (p.held > 0 && p.open !== false && !MINE_SKIP.has(t) && !WHYPES.has(t)) add(t, mineName(w), p.now);
-  return new Map([...out].sort((a, b) => b[1].v - a[1].v).slice(0, BW_MAX));
+  return out;
 }
+// the coins watched: armed ones first, then (with /set bagwatch on) every bag, biggest first
+function bagCoins() {
+  const held = heldMap(), out = new Map();
+  for (const [t, a] of Object.entries(state.bwArm)) {
+    if (a.held && !held.has(t)) { delete state.bwArm[t]; save(); continue; } // armed while held: ends with the bag
+    out.set(t, { ...(held.get(t) || { bot: false, who: [], v: 0 }), armed: true });
+  }
+  if (cfg().bagwatch) for (const [t, x] of held) if (!state.bwMute[t] && !out.has(t)) out.set(t, x);
+  for (const t of Object.keys(state.bwMute)) if (!held.has(t)) delete state.bwMute[t];
+  return new Map([...out].sort((a, b) => (b[1].armed ? 1e12 : 0) + b[1].v - (a[1].armed ? 1e12 : 0) - a[1].v).slice(0, BW_MAX));
+}
+function watchedNow(t) { return !!state.bwArm[t] || (cfg().bagwatch && !state.bwMute[t] && heldMap().has(t)); }
+// 👀 / 🔕: arm or disarm one coin; true when it is watched after the tap
+function bwToggle(t) {
+  const on = watchedNow(t), held = heldMap().has(t);
+  if (on) { delete state.bwArm[t]; if (cfg().bagwatch && held) state.bwMute[t] = Date.now(); }
+  else { state.bwArm[t] = { at: Date.now(), held }; delete state.bwMute[t]; }
+  save();
+  return !on;
+}
+const watchRow = (t) => [{ text: watchedNow(t) ? '🔕 Stop holder watch' : '👀 Watch dev + top holders', callback_data: `h:${t.slice(2)}` }];
 // a coin's holders from its Transfer logs, then its top 10 ranked
 async function bwFill(t) {
   bwFilling++;
@@ -1557,7 +1582,6 @@ function watchedOf(t) {
 }
 // every 5 s: new coins read in the background, then one log read for every coin that is ready
 async function bagWatchTick() {
-  if (!cfg().bagwatch) { for (const k of Object.keys(bw)) delete bw[k]; return; }
   const bags = bagCoins();
   for (const t of Object.keys(bw)) if (!bags.has(t)) { delete bw[t]; delete state.bwAlts[t]; for (const k of Object.keys(bwHold)) if (bwHold[k].t === t) delete bwHold[k]; }
   for (const t of bags.keys()) {
@@ -1658,20 +1682,21 @@ async function bwSend(t, hs, bag) {
   }
   save();
   const where = [bag?.bot ? 'the bot wallet' : null, ...(bag?.who || [])].filter(Boolean).join(', ');
-  await say(`👀 <b>Bag watch · ${esc(m.sym)}</b>${where ? ` · you hold it in ${esc(where)}` : ''}\n${lines.join('\n')}\n<code>${t}</code>`, bag?.bot ? cardButtons(t) : undefined);
+  await say(`👀 <b>Bag watch · ${esc(m.sym)}</b>${where ? ` · you hold it in ${esc(where)}` : ''}\n${lines.join('\n')}\n<code>${t}</code>`, bag?.bot ? cardButtons(t) : [watchRow(t)]);
 }
 function bagWatchView() {
-  if (!cfg().bagwatch) return 'Bag watch is off. /set bagwatch on';
-  const bags = bagCoins();
-  if (!bags.size) return '👀 Bag watch: no open bags right now.';
-  const rows = [...bags.keys()].map((t) => {
-    const x = bw[t], sym = esc(x?.sym || meta[t]?.sym || state.pos[t]?.sym || short(t));
-    if (!x?.ready) return `• <b>${sym}</b>: reading its holders…`;
+  const bags = bagCoins(), all = cfg().bagwatch;
+  const head = `👀 <b>Bag watch</b> · ${all ? 'every coin you hold, plus coins you arm' : 'coins you arm (/set bagwatch on watches every coin you hold)'}\n` +
+    `Arm or stop one: 👀 on its card, or /bagwatch 0xCOIN\nPosts when the dev sells ${BW_DEV * 100}%+ of their bag, a top holder ${BW_HOLDER * 100}%+, or either ${BW_BIG * 100}%+ of supply`;
+  if (!bags.size) return `${head}\n\nNothing watched right now.`;
+  const rows = [...bags].map(([t, b]) => {
+    const x = bw[t], sym = esc(x?.sym || meta[t]?.sym || state.pos[t]?.sym || short(t)), tag = b.armed ? ' (armed)' : '';
+    if (!x?.ready) return `• <b>${sym}</b>${tag}: reading its holders…`;
     const tot = (x.top || []).reduce((a, w) => a + (x.bal.get(w) || 0n), 0n), n = Object.keys(state.bwAlts[t] || {}).length;
     const held = x.sup > 0n ? (Number((tot * 10000n) / x.sup) / 100).toFixed(1) + '% of supply' : fmt(num(tot, x.d));
-    return `• <b>${sym}</b>: dev ${x.dev ? `<code>${x.dev}</code>` : 'unknown'} · top ${x.top?.length || 0} hold ${held}${n ? ` · ${n} alt${n > 1 ? 's' : ''}` : ''}`;
+    return `• <b>${sym}</b>${tag}: dev ${x.dev ? `<code>${x.dev}</code>` : 'unknown'} · top ${x.top?.length || 0} hold ${held}${n ? ` · ${n} alt${n > 1 ? 's' : ''}` : ''}`;
   });
-  return `👀 <b>Bag watch</b> · the dev and top ${BW_TOP} holders of each coin you hold\nPosts when the dev sells ${BW_DEV * 100}%+ of their bag, a top holder ${BW_HOLDER * 100}%+, or either ${BW_BIG * 100}%+ of supply\n${rows.join('\n')}`;
+  return `${head}\n\n${rows.join('\n')}`;
 }
 
 // pools the index sees live: Ascend launches are posted, snipes fire
@@ -2538,7 +2563,7 @@ const HELP =
   `/set slip 15 · /set max 5 · /set sizes 1,2,3,5 · /set tax 25 · /set check off · /set stale 5 · /set report quiet|on|off\n` +
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
-  `<b>Bag watch</b> (on): the dev and top 10 holders of every coin you hold, a 👀 post when they sell or move a real part of their bag · /bagwatch · /set bagwatch off\n` +
+  `<b>Bag watch</b>, per coin: 👀 on its card or /bagwatch 0xCOIN watches its dev and top 10 holders, a post when they sell or move a real part of their bag · /bagwatch lists them · /set bagwatch on watches every coin you hold\n` +
   `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
@@ -2566,7 +2591,7 @@ function ordersView(only) {
     else kb.push([{ text: `✖ ${state.pos[t]?.sym || meta[t]?.sym || short(t)}`, callback_data: `z:${t.slice(2)}` }]);
   }
   const c = cfg();
-  const foot = `\nPreset on new buys: ${c.auto === 'off' ? 'off (/auto)' : esc(c.auto)}\nGuards: dev ${c.devsell ? c.devsell + '%' : 'off'} · rug ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'on' : 'off'}`;
+  const foot = `\nPreset on new buys: ${c.auto === 'off' ? 'off (/auto)' : esc(c.auto)}\nGuards: dev ${c.devsell ? c.devsell + '%' : 'off'} · rug ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'every bag' : 'armed coins'}`;
   return { text: (rows.length ? `<b>Orders</b>\n${rows.join('\n')}\n` : only ? 'No orders on this coin. 🤖 Auto-sell adds your preset, or /tp /sl /trail.\n' : 'No open orders.\n') + foot, rows: kb.slice(0, 30) };
 }
 function snipesView() {
@@ -2743,7 +2768,12 @@ async function onMessage(msg) {
   if (cmd === '/pnl') return say(await pnl());
   if (cmd === '/stats') return say(await statsCommand(args));
   if (cmd === '/journal') return say(journalText());
-  if (cmd === '/bagwatch') return say(bagWatchView());
+  if (cmd === '/bagwatch') {
+    const t = addrIn(args[0] || '');
+    if (!t) return say(bagWatchView());
+    const on = bwToggle(t), sym = esc(await symOf(t));
+    return say(on ? `👀 Watching <b>${sym}</b>: its dev and top ${BW_TOP} holders. A post comes when the dev sells ${BW_DEV * 100}%+ of their bag, a top holder ${BW_HOLDER * 100}%+, or either ${BW_BIG * 100}%+ of supply.` : `🔕 Stopped watching <b>${sym}</b>.`, [watchRow(t)]);
+  }
   if (cmd === '/export') return exportJournal();
   if (cmd === '/report') return dailyReport();
   if (cmd === '/nonce') { const n = await resyncNonce(); return say(`Nonce resynced: next is ${n}.`); }
@@ -2767,7 +2797,7 @@ async function onMessage(msg) {
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
-      `Dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'on' : 'off'} · pre-approve ${c.preapprove ? 'on' : 'off'} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · copy cap ${c.copymax}/day`);
+      `Dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'every bag' : 'armed coins'} · pre-approve ${c.preapprove ? 'on' : 'off'} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · copy cap ${c.copymax}/day`);
   }
   if (cmd === '/buy') {
     const t = addrIn(args[0]); const a = Number(args[1]);
@@ -2970,6 +3000,12 @@ async function onCallback(q) {
     ack(`Buying ${h} HYPE…`); // the toast goes out alongside the trade, not before it
     return buy(t, h, reply, kind === 'f', kind === 'f' ? 'override' : srcOf(q.message?.text || ''));
   }
+  if (kind === 'h' && t) {
+    const on = bwToggle(t), sym = await symOf(t);
+    await ack(on ? `👀 Watching ${sym}: dev and top ${BW_TOP} holders` : `🔕 Stopped watching ${sym}`);
+    const rows = q.message?.reply_markup?.inline_keyboard || [];
+    return tg('editMessageReplyMarkup', { chat_id: OWNER, message_id: reply, reply_markup: { inline_keyboard: rows.length > 1 ? cardButtons(t) : [watchRow(t)] } });
+  }
   if (kind === 'k' && t) {
     // ⚡ X: ask for the amount; the reply buys (same sell check and max as the fixed buttons)
     await ack('');
@@ -3038,7 +3074,7 @@ async function main() {
     { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
     { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all [bot|mine]' }, { command: 'journal', description: 'Last 15 trades' },
     { command: 'mine', description: 'Your other wallets, watch-only, for the journal and tips' },
-    { command: 'bagwatch', description: 'Dev and top holders watched on the coins you hold' },
+    { command: 'bagwatch', description: 'Watch a coin\'s dev and top holders: /bagwatch 0xCOIN' },
     { command: 'set', description: 'slip, max, sizes and more' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
     { command: 'send', description: '/send <coin> <amount|50%|all> <address>: move tokens' },
     { command: 'wallet', description: 'Bot wallet address' }, { command: 'nonce', description: 'Resync after a stuck tx' },
@@ -3089,7 +3125,7 @@ async function main() {
       if (cfg().report !== 'off' && d.getUTCHours() === REPORT_HOUR_UTC && state.reportDay !== day) { state.reportDay = day; save(); await dailyReport(cfg().report === 'on').catch((e) => console.error('report', e.message)); }
     }
   })();
-  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${knownPms.size} pool managers, kept live.${(() => { const c = cfg(), n = Object.values(state.orders).reduce((a, l) => a + l.length, 0), x = [n ? `${n} limit order${n > 1 ? 's' : ''}` : '', state.snipes.length ? `${state.snipes.length} snipes` : '', Object.keys(state.copy).length ? `copying ${Object.keys(state.copy).length}` : '', c.auto !== 'off' ? `auto-sell ${esc(c.auto)}` : '', c.devsell ? `dev guard ${c.devsell}%` : '', c.rug ? 'rug guard' : '', c.bagwatch ? 'bag watch' : ''].filter(Boolean); return x.length ? '\n' + x.join(' · ') : ''; })()}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
+  await say(`🟢 ely-router online · <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} across ${knownPms.size} pool managers, kept live.${(() => { const c = cfg(), n = Object.values(state.orders).reduce((a, l) => a + l.length, 0), x = [n ? `${n} limit order${n > 1 ? 's' : ''}` : '', state.snipes.length ? `${state.snipes.length} snipes` : '', Object.keys(state.copy).length ? `copying ${Object.keys(state.copy).length}` : '', c.auto !== 'off' ? `auto-sell ${esc(c.auto)}` : '', c.devsell ? `dev guard ${c.devsell}%` : '', c.rug ? 'rug guard' : '', c.bagwatch ? 'bag watch: every bag' : Object.keys(state.bwArm).length ? `bag watch: ${Object.keys(state.bwArm).length} armed` : ''].filter(Boolean); return x.length ? '\n' + x.join(' · ') : ''; })()}${backlog?.length ? '\nTaps sent while it was offline were skipped.' : ''}`);
   for (;;) {
     const ups = await tg('getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
     if (!ups) { await sleep(2000); continue; }
