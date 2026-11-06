@@ -2856,5 +2856,65 @@
   "address": "0x23b4d495bbcd6dae08f5e18a1bb97072f4e3fa49",
   "label": "Stands dev alt 10 (0.92%, split from the dev Nov 5)",
   "group": "standsteam"
+ },
+ {
+  "address": "0x9332e35e87eac40a0810813a7a12c458e8043184",
+  "label": "KALOS team (testnet: KALOS 125k holders, stKALOS, Kalos Pixels, NFT pad for ElyAnt, DAIMONS, Greek Princesses; active on mainnet, no launch yet)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x78cc8e8ebde76ae71deefb9c176c68285c749a67",
+  "label": "Bunny Launchpad deployer (testnet: 1.09M txs, Bunny Test 4.3k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0xb181fdfe71a0a0f56574d88f22b6bafd142192f6",
+  "label": "Elyziuma deployer (testnet: token and NFT, 6.5k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0xf023d5596cfd40c0ea1b855d054c70b86c7669f3",
+  "label": "8888 launch pad deployer (testnet: Agent K, Chainzy, TestnetWHYPE; 7 contracts on mainnet, no launches yet)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x497f53488fcb22079991682611985d28f73b789a",
+  "label": "Hypurr Testnet NFT deployer (testnet: 16.9k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x1992989135500057ddaf2e34b6e5e055be881269",
+  "label": "HexSwap deployer (testnet: interaction badge 15.7k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0xf7129da0385df3fa7ade02e417541e140c298d3c",
+  "label": "Ely Names deployer (testnet: 11.9k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0xed456e05caab11d66c4c797dd6c1d6f9a7f352b5",
+  "label": "Elysium punks and Hypaww deployer (testnet: 6k holders each)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x3ee73356ceb4c53285e257a021114cb2827ef99d",
+  "label": "Elysians Testnet Pass deployer (testnet: 3.6k holders)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0xe8d1acf42907fdf4b3df0e043333567d06a37875",
+  "label": "hyper pengu deployer (testnet: 566 holders; active on mainnet)",
+  "group": "testnetteam",
+  "watch": "launch"
  }
 ]
