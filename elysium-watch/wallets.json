@@ -32,72 +32,86 @@
  {
   "address": "0x08a16898f9b85308d1316984c1804abc663d86c6",
   "label": "HYpe sig 3 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x13796681a30e658d3dda81edd4807a98122ea370",
   "label": "sighhtsend 2 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x172eefd0f7ff1f42a33a6caf9138d089f2da39be",
   "label": "SIGTH4 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x25ba468940dc817039ada09599a7ff77a46f6cd9",
   "label": "sig2 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x293787c6c6d5594612628c8d15293baa79214acf",
   "label": "SIGTH3 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x29998ebd5be758fdaa06f0ef48d6c890978b65de",
   "label": "SIgna TH1 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x2f2ac368b7768665ee6b942601f8b02ffaec1832",
   "label": "sig alf alt (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x5164fea61d99c1eaf8c5591fd18928b8f61f0995",
   "label": "sigdev (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x58b43b785f55cd6c10eaea76e8db0c8dfc3976a0",
   "label": "sig dev tf (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x689561f167edc0f0bf9ef0985e93a7d6f39cff8f",
   "label": "sig 2 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x7b7bbd8e061f8a72d9ff79ea351f9e33de0969b3",
   "label": "signa alf (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0xe56955435033d3a1f51d95333ef81a00954bbf87",
   "label": "early sign (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0xed0146d729dfbc6d67fab4f2434d5dae031da04a",
   "label": "pezxsignal (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0xf1e74489b9a1e8fdd5f4961a40366fc562936652",
   "label": "signal2 (signal)",
-  "group": "signal"
+  "group": "signal",
+  "watch": "all"
  },
  {
   "address": "0x08e5969ccbb8820f90cf0682202cc1a46e6af5cd",
@@ -1317,127 +1331,152 @@
  {
   "address": "0x2103c69696cb2d3779f5445393808239034e911c",
   "label": "Elysium ops hub (multisig signer, funded the rollup)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xe7cb019b9ea946961207775f11cac8e3dbf1cb8a",
   "label": "Elysium rollup deployer",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xf803f9bb536171bc46a59c225688594748751f67",
   "label": "Elysium batch poster",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x8e87f7c65750c25c6708de33823124cf457676b2",
   "label": "Elysium validator",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x6cbb552855ce5eb70af49b76a8048be8e3799a05",
   "label": "Elysium fee wallet (chain fees)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xc030cee9e03a6dfbda0a817c8bdb4ba44d6d61d0",
   "label": "Elysium upgrade multisig (4 of 11)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xa9fccc53f1c9095da867bd648683f8bdccc78d09",
   "label": "Elysium multisig signer 1 (made the multisig)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xa0c600a6e85bf225958ffacc70b5fddf9a059038",
   "label": "Elysium multisig signer 2",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xefcf0c8fafb425997870f845e26fc6ca6ee6dd5c",
   "label": "Elysium multisig signer 3",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x4d8007a0e9f293e62e2b0f43c6cf4c4b9e135bae",
   "label": "Elysium multisig signer 4",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xf3313c48bd8e17b823d5498d62f37019dfea647d",
   "label": "Elysium multisig signer 5",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xa0737fea60f0601a192e3d2c98865a883ab0bda2",
   "label": "Elysium multisig signer 6",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x81175155d85377c337d92f1fa52da166c3a4e7ac",
   "label": "Elysium multisig signer 7",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x6bb4249858ee19b6abc071ad26bee690baa783a6",
   "label": "Elysium multisig signer 8",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xcdc931935768c0562afe989a366a3dc4d52f4853",
   "label": "Elysium multisig signer 9",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x9402c42db162d5a0927c032136f40cc9c71853f2",
   "label": "Elysium multisig signer 10",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x61d92de7df80c04e8d3bff266ab54231c2c8878e",
   "label": "Elysium ops hub alt (rollup factory deployer)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x2605434db931372990fe6e37959e2cf5c9b675b9",
   "label": "Elysium ops hub alt 2",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xc44f8b8131d9ac389dc4a6618cf5e588c9bdec4e",
   "label": "Elysium ops hub alt 3 (ops multisig signer)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xd840dbe75bd8d70e28e9548b0cdb800413a0142d",
   "label": "Elysium ops hub alt 4 (staking ops)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xcf98c616918434239ae85c50a36ab91486256b57",
   "label": "Elysium ops hub alt 5",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xc3205dd89da0b652df64c273c87501dc206dad06",
   "label": "Elysium ops multisig 2",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x7df2a4a7b374157fcc9edb43e593f941bdda9158",
   "label": "Elysium infra wallet (first user, funded the WHYPE deployer)",
-  "group": "elyinfra"
+  "group": "elyinfra",
+  "watch": "all"
  },
  {
   "address": "0x058bc86a8262670f97e3dbcb3da789f452b2bf91",
   "label": "Elysium infra alt (deployed WHYPE and Uniswap v3)",
-  "group": "elyinfra"
+  "group": "elyinfra",
+  "watch": "all"
  },
  {
   "address": "0x33e233087d04758ee8df32e40433feb36ec988e1",
   "label": "Elysium day-1 deployer (Uniswap v3 set)",
-  "group": "elyinfra"
+  "group": "elyinfra",
+  "watch": "all"
  },
  {
   "address": "0x5fa637713b819d6314e139291de2bfa7b7cd70eb",
@@ -1787,107 +1826,128 @@
  {
   "address": "0x18a82c968b992d28d4d812920eb7b4305306f8f1",
   "label": "Kinetiq governance multisig (4 of 8, HyperEVM)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x64bd77698ab7c3fd0a1f54497b228ed7a02098e3",
   "label": "Kinetiq treasury multisig (4 of 7, HyperEVM)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xba85f851202a0b301f62e9139a74c1c3336e21b2",
   "label": "Kinetiq Ethereum multisig (3 of 6)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xfcaddd4395fbc10fb6fa024a427561c1841a0849",
   "label": "Kinetiq signer on all 3 multisigs (Omnia lead)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x99ed257a514d81a62c3195934d4e63a1c2c3946a",
   "label": "Kinetiq governance signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xf0b3a9bff7b733bbf6b9fdca20cc954de5e8aa77",
   "label": "Kinetiq governance signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xdc1c4b5d08528a25a96ba036ddd6496fa2fb6947",
   "label": "Kinetiq governance signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x64cbed11afe88631b7b6c12d8b50e59e8e07f42e",
   "label": "Kinetiq governance signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x806e5f088a12a86bf1984378a824c224d29c7503",
   "label": "Kinetiq governance signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x07c78968a1be7151ad62a6b95e11321a8a4f77cd",
   "label": "Kinetiq governance signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x9bd23f6e1012d490faee8c81d3bad9d4e4f71624",
   "label": "Kinetiq governance signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xa8480ec8d00e868c1203a9e891f526427b000410",
   "label": "Kinetiq treasury + Ethereum signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x1936bb3b9c72e609149eb2fb65ade52cbb7a76c5",
   "label": "Kinetiq treasury + Ethereum signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x10d1de74a463a29e28b34077375533c030df4a43",
   "label": "Kinetiq treasury signer (active on Hyperliquid)",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x281e60cb094d9636d9f61a6daf9ac8968a7042c2",
   "label": "Kinetiq treasury + Ethereum signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xb2219b9b7712eb034ca73401b6058948139a90d8",
   "label": "Kinetiq treasury signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x809952548c23af49d92b5df2b6bb955a02ed4487",
   "label": "Kinetiq treasury signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x703431394060db77574caa17decb07034403e604",
   "label": "Kinetiq Ethereum signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0x1a4fdf8ae9c82b979a0fed2b9665d1e22a4d71c0",
   "label": "Kinetiq Ethereum signer",
-  "group": "kinetiq"
+  "group": "kinetiq",
+  "watch": "all"
  },
  {
   "address": "0xce4ceced412aa9359840c7d52bbd99827a5d42b9",
   "label": "Elysium L2 upgrade executor (every chain upgrade runs through it)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0xdd45a7a06cc21cfe442cf13dffeb8252b18c1441",
   "label": "Elysium upgrade executor on HyperEVM (controls the L2 one)",
-  "group": "elyteam"
+  "group": "elyteam",
+  "watch": "all"
  },
  {
   "address": "0x23a4604cdfe8e9e2e9cf7c10d7492b0f3f4b4038",
@@ -1905,27 +1965,32 @@
  {
   "address": "0xaf0fdd39e5d92499b0ed9f68693da99c0ec1e92e",
   "label": "KNTQ whale #1 (23.98M KNTQ, HL +$27.8M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xa9b95f2a2e7ef219021efc5c04c32761b8553bbd",
   "label": "KNTQ whale #2 (11.00M KNTQ, HL +$20.4M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xfc667adba8d4837586078f4fdcdc29804337ca06",
   "label": "KNTQ whale #3 (3.21M KNTQ, HL +$48.7M, KoolKrypto?)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x77375a8c9d13bf79afb2a87f1b0ac1dfd5f5bf66",
   "label": "KNTQ whale #4 (3.05M KNTQ, HL +$55.4M, KoolKrypto?)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xbf66cb8b987fee1f6526bb6ee04345d36405f913",
   "label": "KNTQ whale #5 (2.51M KNTQ, not on HL leaderboard)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x549e6dd8453ed87fccdcf4f8b37162b10edc0533",
@@ -1936,47 +2001,56 @@
  {
   "address": "0xe867fbdad3291530e41530301ecb77693850c78e",
   "label": "KNTQ whale #7 (2.00M KNTQ, HL +$62.0M, KoolKrypto?)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x9b28837deb55b014f7a37f2812d6ec042ce87ca1",
   "label": "KNTQ whale #8 (1.95M KNTQ, HL +$2.3M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xa23190045c4aebeb724844ce622465475e539bae",
   "label": "KNTQ whale #9 (1.80M KNTQ, HL +$12.7M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x440f6e1469d8685c64b3445fa220cd683ff24bb0",
   "label": "KNTQ whale #10 (1.51M KNTQ, HL +$2.1M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xfeb63b9e4a871b644816d94a1d19517a87ce5fa0",
   "label": "KNTQ whale #11 (1.45M KNTQ, HL +$393K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x2e32935bfd5b2718f99bc8fdf8b37c16811f7d97",
   "label": "KNTQ whale #12 (1.43M KNTQ, 0xsanuxo, HL +$3.1M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xc2cb60662017a1da2562e9cccea9df74d9d8edf9",
   "label": "KNTQ whale #13 (1.33M KNTQ, HL +$1.9M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x477baede70cb2e7723e010600df84674a4baafaf",
   "label": "KNTQ whale #15 (1.23M KNTQ, HL +$931K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xb1839ea781ed5574801dd6460cf634d81ad06844",
   "label": "KNTQ whale #16 (1.18M KNTQ, HL +$594K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x998195b0c9f8d7528d72afa805db224a5a79c539",
@@ -1987,12 +2061,14 @@
  {
   "address": "0x6981378e696b0dd0e585d4d519c98b8a2c5bc020",
   "label": "KNTQ whale #18 (1.16M KNTQ, HL +$567K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x1e771e1b95c86491299d6e2a5c3b3842d03b552e",
   "label": "KNTQ whale #19 (1.12M KNTQ, HL +$5.0M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xe85458669e58c9440c0045a034edf6d3110609c5",
@@ -2003,32 +2079,38 @@
  {
   "address": "0x0c1f6941fdcde9488dfd36ca16fed6b3bc49672b",
   "label": "KNTQ whale #21 (1.06M KNTQ, HL +$581K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x0871deb34bfd2052b1c10dc4f6c0912a2a47e927",
   "label": "KNTQ whale #22 (1.00M KNTQ, PURRINA, HL +$11.4M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x1858987516bef70d9c3d9208ff7bfc65f00320b4",
   "label": "KNTQ whale #23 (1.00M KNTQ, HL +$432K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x381fe486d87c7f2633c777f1b5be3105a2a51744",
   "label": "KNTQ whale #24 (977K KNTQ, HL +$1.1M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xf3365305d3fe902b4b916ed7785b3751cf40e3a8",
   "label": "KNTQ whale #25 (946K KNTQ, HL +$165K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x9f99eae212a63c0d7d29902b0c6858d1e5eb2da8",
   "label": "KNTQ whale #26 (945K KNTQ, HL +$68K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0xe326375742cf703a3e7037bb7fed1e01e33609e8",
@@ -2039,62 +2121,74 @@
  {
   "address": "0x459387334728fc26b61939b2f27c738f53f88bd8",
   "label": "KNTQ whale #28 (931K KNTQ, HL +$83K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x50f49b9ff9e376d8090ac799ccafdd750e40b920",
   "label": "KNTQ whale #29 (921K KNTQ, HL +$1.0M)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x4b85bf981916936249a62b7e77f30e567997a395",
   "label": "KNTQ whale #30 (828K KNTQ, HL +$347K)",
-  "group": "kntqwhale"
+  "group": "kntqwhale",
+  "watch": "all"
  },
  {
   "address": "0x4e82d47bdc9edc451239495478dbb5a83c30fd39",
   "label": "KNTQ holder #52 on Elysium (534K KNTQ)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x5e5d46747100a6d10797d9432f78380aefc6eebe",
   "label": "KNTQ holder #209 on Elysium (107K KNTQ, HL +$845K)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x4b47dd5e50b039ac280f6d8a92e00e046137dcf4",
   "label": "KNTQ holder #499 on Elysium (26K KNTQ, 59 HYPE here)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x4f66509d41402de9b0c8bf21a2b9116844877702",
   "label": "KNTQ holder #1024 on Elysium (5.4K KNTQ, 101 HYPE here)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x80bffee5c265061934b16fdfb1638d8d232061da",
   "label": "KNTQ holder #1415 on Elysium (3.5K KNTQ, 220 HYPE here, HL +$405K)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0xfa1fe308a3d99c2b6a6bb73eddcf7c550dec7b39",
   "label": "KNTQ holder #347 on Elysium (49K KNTQ, 4 HYPE here)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x119cdaaf1f867339581f9f615614cc26798583ae",
   "label": "KNTQ holder #419 on Elysium (34K KNTQ, 2 HYPE here)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0xa0417a9d8c7c667fab84df7827c567731b6fcf38",
   "label": "KNTQ holder #483 on Elysium (27K KNTQ, 9 HYPE here)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x2112fbd1b0017ca73d9fd80576a0f90b846628fc",
   "label": "KNTQ holder #525 on Elysium (24K KNTQ)",
-  "group": "kntqely"
+  "group": "kntqely",
+  "watch": "all"
  },
  {
   "address": "0x6e06352d624097eb0d2783fbd805d76275f09340",

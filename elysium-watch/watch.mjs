@@ -60,6 +60,15 @@ const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder
 const TREASURIES = {
   // '0xcontract': { token: '0xbacking token', sym: 'KNTQ', name: 'XYZ hook treasury', coin: '0xthe coin' },
 };
+// team multisigs that live on other chains: one ping, ever, when each gets code on Elysium (Safes made with the same
+// factory and salt land at the same address on every chain). Checked once a minute
+const CODE_WATCH = {
+  '0x18a82c968b992d28d4d812920eb7b4305306f8f1': 'Kinetiq governance multisig (4 of 8 on HyperEVM)',
+  '0x64bd77698ab7c3fd0a1f54497b228ed7a02098e3': 'Kinetiq treasury multisig (4 of 7 on HyperEVM)',
+  '0xba85f851202a0b301f62e9139a74c1c3336e21b2': 'Kinetiq Ethereum multisig (3 of 6)',
+  '0xc030cee9e03a6dfbda0a817c8bdb4ba44d6d61d0': 'Elysium upgrade multisig (4 of 11)',
+  '0xc3205dd89da0b652df64c273c87501dc206dad06': 'Elysium ops multisig 2',
+};
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
@@ -157,6 +166,7 @@ const FEE_WALLETS = ['0x4e496d24aa8fe7e026163c481df726e9dc70b433', '0x058bc86a82
 const INFRA = new Set([ZERO, DEAD, ...WHYPE, ...Object.keys(LAUNCHPADS), '0x000000000022d473030f116ddee9f6b43ac78ba3', ...FEE_WALLETS]);
 
 const T_TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const T_SAFE_PROXY = '0x4f51faf6c4561ff95f067657e43439f0f856d97c04d9ec9070a6199ad418e235'; // Safe factory ProxyCreation(address,address)
 const T_SWAP_V3 = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
 const T_SWAP_V4 = '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
 const T_INIT_V4 = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
@@ -509,6 +519,9 @@ async function main() {
   // a contract deploy, a bundle split, HYPE bridged in or 25+ HYPE moved, and sells of their own coins. Their routine
   // trading stays quiet; their group still counts toward group buys.
   const DEVW = new Map(okW.filter((w) => w.watch === 'launch').map((w) => [lc(w.address), new Set((w.coins || []).map(lc))]));
+  // "watch": "all" (team and insider wallets): every normal ping stays, plus the 🛬 first move on Elysium that
+  // launch-watched devs get. Multisig work (a Safe made, a Safe tx executed) pings for every tracked wallet
+  const FIRSTW = new Set(okW.filter((w) => w.watch === 'launch' || w.watch === 'all').map((w) => lc(w.address)));
   const { noCluster, owner } = walletLinks(okW);
   // wallets the watcher found on its own (fresh wallets funded by tracked ones) live in state
   state.auto ||= {};
@@ -881,7 +894,7 @@ async function main() {
   // checked once, so its first move here leads its alert (🛬). 0 = never here yet, 1 = already active when first checked
   state.devHere ||= {};
   if (state.hyper) for (const k of ['tokens', 'nonces', 'at']) delete state.hyper[k]; // left by the old HyperCore/HyperEVM deploy watch
-  for (const a of [...DEVW.keys()].filter((x) => !(x in state.devHere)).slice(0, 8)) {
+  for (const a of [...FIRSTW].filter((x) => !(x in state.devHere)).slice(0, 8)) {
     try {
       const [n, b] = await Promise.all([rpc('eth_getTransactionCount', [a, 'latest']), rpc('eth_getBalance', [a, 'latest'])]);
       state.devHere[a] = parseInt(n, 16) > 0 || BigInt(b || '0x0') > 0n ? 1 : 0;
@@ -991,6 +1004,19 @@ async function main() {
       }));
     }
     const funded = []; // tracked wallet → untracked recipient, checked for freshness below
+    // Safe multisigs made in this range (Safe factory ProxyCreation: the proxy is in the data, or topic 1 on v1.4)
+    const safeMade = {};
+    for (const l of logs) {
+      if (l.topics[0] !== T_SAFE_PROXY) continue;
+      const p = lc('0x' + (l.topics[1] || l.data.slice(0, 66)).slice(-40));
+      (safeMade[l.transactionHash] ||= []).push(p);
+    }
+    const safeShape = async (p) => {
+      try {
+        const [o, t] = await Promise.all([rpc('eth_call', [{ to: p, data: '0xa0e67e2b' }, 'latest']), rpc('eth_call', [{ to: p, data: '0xe75235b8' }, 'latest'])]);
+        return ` (${parseInt(t, 16)} of ${parseInt(o.slice(66, 130), 16)})`;
+      } catch { return ''; }
+    };
     for (const blk of blocks) {
       for (const tx of blk.transactions || []) {
         if (failed.has(tx.hash)) continue;
@@ -998,6 +1024,8 @@ async function main() {
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
+        if (W.has(f) && safeMade[tx.hash]) for (const p of safeMade[tx.hash]) M(f).push(`<b>made a Safe multisig</b> ${walletLink(p)}${await safeShape(p)}${txLink(tx.hash)}`);
+        if (W.has(f) && to && (tx.input || '').startsWith('0x6a761202')) M(f).push(`<b>executed a Safe tx</b> on ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         // HYPE split through a batch contract (Multicall3 aggregate3Value, Disperse disperseEther): one line for the split, then follow each recipient
         const batch = W.has(f) && val > 0 && (tx.input || '0x') !== '0x' ? batchSends(tx.input) : [];
         if (batch.calls) batch.length = 0; // a swap with a bot's fee beside it: a buy, shown from its token logs
@@ -1081,7 +1109,7 @@ async function main() {
     }
     // a dev landing on Elysium for the first time: the alert opens with it and keeps every line (even small receives)
     const landed = new Set();
-    for (const w of DEVW.keys()) {
+    for (const w of FIRSTW) {
       if (!moves[w]?.length || state.devHere[w] !== 0) continue;
       state.devHere[w] = 1;
       landed.add(w);
@@ -1090,7 +1118,7 @@ async function main() {
     for (const [w, own] of DEVW) {
       if (!moves[w] || landed.has(w)) continue;
       moves[w] = moves[w].filter((x) => {
-        if (/^(launched|deployed a contract|<b>split|🌉)/.test(x)) return true;
+        if (/^(launched|deployed a contract|<b>split|🌉|<b>made a Safe|<b>executed a Safe)/.test(x)) return true;
         const big = /^(?:sent|received) ([\d.]+)(K?) HYPE/.exec(x);
         if (big) return Number(big[1]) * (big[2] ? 1000 : 1) >= 25;
         const t = /^sold .*?#\/terminal\/(0x[0-9a-fA-F]{40})/.exec(x)?.[1];
@@ -1219,6 +1247,22 @@ async function main() {
         msgs.push(`📡 <b>The official Elysium mainnet RPC is open</b>\n<code>${OFFICIAL_RPC}</code> now answers for chain ${CHAIN_ID}. Public launch is close.`);
       }
     } catch {}
+  }
+
+  // 5a. team multisigs from other chains appearing on Elysium (CODE_WATCH, one ping each, ever)
+  state.codeSeen ||= {};
+  if (now() - (state.codeCheckedAt || 0) >= 60) {
+    state.codeCheckedAt = now();
+    for (const [a, name] of Object.entries(CODE_WATCH)) {
+      if (state.codeSeen[a]) continue;
+      try {
+        const c = await rpc('eth_getCode', [a, 'latest']);
+        if (!c || c === '0x') continue;
+        state.codeSeen[a] = now();
+        bump('multisig landed');
+        msgs.push(`🏛 <b>${esc(name)}</b> now exists on Elysium\n${walletLink(a)} · the team is setting up its admin keys here`);
+      } catch {}
+    }
   }
 
   // 5b. treasury watch (TREASURIES): the backing leaving its contract
