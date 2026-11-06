@@ -295,20 +295,32 @@ async function sendRaw(tx) {
   try { await broadcast(raw); }
   catch (e) { if (e.nonceLow || e.nonceHigh) await resyncNonce(); throw e; }
   nextNonce = nonce + 1;
-  return keccak256(raw);
+  const hash = keccak256(raw);
+  signed.set(hash, { raw, nonce });
+  if (signed.size > 300) signed.delete(signed.keys().next().value);
+  return hash;
 }
-// receipts: every node is asked for the first 15 s (whichever sees it first), then one at a time. A transaction
-// no node knows after 20 s was dropped: the nonce is resynced so later trades do not queue behind it.
+const signed = new Map(); // hash → the signed tx and its nonce, kept so a lost send can be pushed again
+// receipts: every node is asked for the first 15 s (whichever sees it first), then one at a time. Elysium nodes pass
+// sends on to the sequencer, and one can accept a transaction and lose it on the way, so with no receipt yet the
+// same signed transaction goes to every node again at 4, 9 and 15 s (same hash, it cannot land twice). A
+// transaction no node knows after 20 s, whose nonce is still unused, was dropped: the nonce is resynced so later
+// trades do not queue behind it. If the nonce moved on, it landed and the receipt is on its way.
 async function receipt(hash, maxMs = 2 * 3600 * 1000) {
   const t0 = Date.now();
-  let checked = 0;
+  const s = signed.get(hash);
+  let checked = 0, pushes = 0;
   while (Date.now() - t0 < maxMs) {
     const el = Date.now() - t0;
     try { const r = el < 15000 ? await race('eth_getTransactionReceipt', [hash], 3000) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
+    if (s && pushes < 3 && el > [4000, 9000, 15000][pushes]) { pushes++; broadcast(s.raw).catch(() => {}); }
     if ((el > 20000 && checked === 0) || (el > 60000 && checked === 1)) {
       checked++;
       const seen = await Promise.all(RPCS.map((u) => call1(u, 'eth_getTransactionByHash', [hash], 5000).catch(() => undefined)));
-      if (seen.every((x) => x === null)) { await serial(resyncNonce); return { status: 'dropped' }; }
+      if (seen.every((x) => x === null)) {
+        const used = s ? await rpc('eth_getTransactionCount', [me, 'latest']).then((n) => Number(BigInt(n)) > s.nonce).catch(() => false) : false;
+        if (!used) { await serial(resyncNonce); return { status: 'dropped' }; }
+      }
     }
     await sleep(el < 15000 ? 300 : el < 120000 ? 1500 : 15000);
   }
@@ -1141,9 +1153,14 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   const rcP = receipt(hash);
   const msg = await msgP;
   await edit(msg, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
-  const rc = await rcP;
+  let rc = await rcP;
+  // dropped (its nonce never used, nothing spent): sign it again with a fresh nonce and send once more before giving up
+  if (rc?.status === 'dropped') {
+    await edit(msg, `${head}🔁 Buy of <b>${esc(m.sym)}</b> was dropped by the network, sending it again…`);
+    try { hash = await serial(send); rc = await receipt(hash); } catch (e) { console.error('buy resend', e.message); }
+  }
   if (!rc) { await edit(msg, `${head}⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Check ${txLink(hash)}; /nonce if it never lands.`); return { ok: false }; }
-  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> was dropped by the network; nothing spent. Tap again.`, cardButtons(t)); return { ok: false }; }
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> was dropped by the network twice; nothing spent. Tap again.`, cardButtons(t)); return { ok: false }; }
   if (rc.status !== '0x1') {
     J({ side: 'revert', coin: t, sym: m.sym, hype: hypeAmt, src, slip: Number(slip), route: r.name, hash });
     await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (${opts.revertNote || `price moved past your ${Number(slip) / 100}% slippage?`}) · ${txLink(hash)}`, cardButtons(t));
@@ -1264,14 +1281,19 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   let hashes;
   try { hashes = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; }); }
   catch (e) { await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`, cardButtons(t)); return false; }
-  const hash = hashes[hashes.length - 1];
+  let hash = hashes[hashes.length - 1];
   const sentAt = Date.now();
   const rcP = receipt(hash);
   const msg = await msgP;
   await edit(msg, `${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> for ~${fmtH(num(expect))}${hashes.length > 1 ? ' (approve + sell)' : ''} · ${txLink(hash)}`);
-  const rc = await rcP;
+  let rc = await rcP;
+  // dropped (nonce never used, nothing sold): send it once more with a fresh nonce before giving up
+  if (rc?.status === 'dropped') {
+    await edit(msg, `${head}🔁 Sell of <b>${esc(m.sym)}</b> was dropped by the network, sending it again…`);
+    try { const again = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; }); hash = again[again.length - 1]; rc = await receipt(hash); } catch (e) { console.error('sell resend', e.message); }
+  }
   if (!rc) { await edit(msg, `${head}⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`); return false; }
-  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> was dropped by the network; nothing sold. Tap again.`, cardButtons(t)); return false; }
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> was dropped by the network twice; nothing sold. Tap again.`, cardButtons(t)); return false; }
   if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted (price moved past your slippage?) · ${txLink(hash)}`, cardButtons(t)); return false; }
   const [hNow, left] = await Promise.all([hypeBal(true).catch(() => before), balOf(t, me, true).catch(() => tokBefore)]);
   let got = num(hNow - before), qLine = '';
