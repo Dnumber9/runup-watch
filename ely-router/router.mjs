@@ -189,6 +189,7 @@ const cfg = () => ({
   pin: (state.set.pin ?? process.env.PIN_TRADES ?? 'on') !== 'off',      // pinned open-trades panel at the top of the chat
   notes: (state.set.notes ?? process.env.TRADE_NOTES ?? 'on') !== 'off', // 📒 note question on each buy and close in your other wallets
   bagwatch: (state.set.bagwatch ?? process.env.BAG_WATCH ?? 'off') !== 'off', // 👀 every coin you hold (off: only the coins you arm)
+  inbox: (state.set.inbox ?? process.env.INBOX ?? 'on') !== 'off',            // also post every trade to Elysium's Inbox on HyperEVM
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
@@ -315,12 +316,16 @@ async function sendRaw(tx) {
   if (nextNonce == null) await resyncNonce();
   const nonce = nextNonce;
   const raw = await account.signTransaction({ chainId: CHAIN_ID, type: 'legacy', nonce, to: tx.to, value: BigInt(tx.value || 0), data: tx.data, gas: BigInt(tx.gas), gasPrice: await gasPrice() });
+  // the same signed tx also goes to Elysium's Inbox on HyperEVM, at the same moment (see inboxSend)
+  const viaInbox = inboxQueue(raw).catch((e) => { console.error(e.message); return null; });
   // "nonce too high" while an earlier trade is still landing (an approve and its swap back to back): the earlier one
   // is not in yet, so the same signed tx is offered again every 2 s for up to 30 s instead of failing the trade
   for (let i = 0; ; i++) {
     try { await broadcast(raw); break; }
     catch (e) {
       if (e.nonceHigh && i < 15 && [...inflight.keys()].some((n) => n < nonce)) { await sleep(2000); continue; }
+      // every RPC node refused it for a reason other than its nonce: the Inbox copy alone still lands it
+      if (!e.nonceLow && !e.nonceHigh && (await viaInbox)) break;
       if (e.nonceLow || e.nonceHigh) await resyncNonce();
       throw e;
     }
@@ -332,6 +337,65 @@ async function sendRaw(tx) {
   if (signed.size > 300) signed.delete(signed.keys().next().value);
   return hash;
 }
+
+// ── Inbox route ────────────────────────────────────────────────────────────────────────────────────
+// Elysium also takes transactions through its Inbox contract on HyperEVM (sendL2Message, message type 4 = one signed
+// Elysium tx) and runs them in the order they were posted. Measured Nov 6 on a sniper wallet posting at 50 gwei,
+// they executed 1 to 16 s after the post, while Nadir's RPC buys took 8 to 32 s. Every trade is now sent both
+// ways at once. Both carry the same signed tx (same hash, same nonce), so it lands once, by whichever is faster.
+// HyperEVM gas for the post (about 0.005 HYPE at 50 gwei: a post uses ~93k gas) is paid from this wallet's own address on HyperEVM; with
+// too little HYPE there the post is skipped and trades go by RPC only, as before. /set inbox off turns it off.
+const ELY_INBOX = '0xce59f8b65ad41c9dae4c07a0571a39824bd92cff';
+const HYPER_RPCS = (process.env.HYPER_RPCS || 'https://rpc.hyperliquid.xyz/evm,https://rpc.hypurrscan.io').split(',').map((s) => s.trim()).filter(Boolean);
+const INBOX_GWEI = Number(process.env.INBOX_GWEI || 50);
+const INBOX_GAS = 300000n; // limit; a post uses ~93k (a sniper's, Nov 6)
+const inboxWei = () => BigInt(Math.round(INBOX_GWEI * 1e9));
+const inbox = { nonce: null, bal: null, warned: false, posts: 0, last: null };
+async function hcall(method, params, tries = 6) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return await call1(HYPER_RPCS[i % HYPER_RPCS.length], method, params, 6000); }
+    catch (e) { last = e; await sleep(400 * (i + 1)); }
+  }
+  throw last;
+}
+async function inboxRefresh() {
+  const [b, n] = await Promise.all([hcall('eth_getBalance', [me, 'latest']), hcall('eth_getTransactionCount', [me, 'pending'])]);
+  inbox.bal = BigInt(b);
+  const cn = Number(BigInt(n));
+  if (inbox.nonce == null || cn > inbox.nonce) inbox.nonce = cn;
+}
+const inboxReady = () => cfg().inbox && inbox.bal != null && inbox.bal >= INBOX_GAS * inboxWei();
+async function inboxSend(raw) {
+  if (!cfg().inbox) return null;
+  if (inbox.bal == null || inbox.nonce == null) await inboxRefresh().catch(() => {});
+  if (!inboxReady()) {
+    if (!inbox.warned && inbox.bal != null) {
+      inbox.warned = true;
+      say(`ℹ️ Inbox route is off: the bot wallet has ${fmtH(num(inbox.bal))} on HyperEVM. Send about 0.2 HYPE to <code>${account.address}</code> on <b>HyperEVM</b> (not Elysium) to turn it on; each trade's post costs about 0.005 HYPE there. Trades still go by RPC meanwhile.`).catch(() => {});
+    }
+    return null;
+  }
+  const msg = '04' + raw.slice(2);
+  const len = msg.length / 2;
+  const data = '0xb75436bb' + (32).toString(16).padStart(64, '0') + len.toString(16).padStart(64, '0') + msg.padEnd(Math.ceil(len / 32) * 64, '0');
+  const nonce = inbox.nonce;
+  inbox.nonce = nonce + 1;
+  const htx = await account.signTransaction({ chainId: 999, type: 'legacy', nonce, to: ELY_INBOX, value: 0n, data, gas: INBOX_GAS, gasPrice: inboxWei() });
+  try { await Promise.any(HYPER_RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [htx], 8000))); }
+  catch (agg) {
+    const why = (agg.errors || [agg]).map((e) => e?.message || '').join(' | ');
+    if (/already known|known transaction/i.test(why)) return keccak256(htx);
+    inbox.nonce = null; // resynced from HyperEVM before the next post
+    throw new Error(`inbox post failed: ${why.slice(0, 160)}`);
+  }
+  inbox.bal -= INBOX_GAS * inboxWei(); // worst case; the refresh every few minutes puts the real balance back
+  inbox.posts++; inbox.last = Date.now();
+  return keccak256(htx);
+}
+// posts go out one at a time so their HyperEVM nonces stay in order (an approve's post before its swap's)
+let inboxQ = Promise.resolve();
+const inboxQueue = (raw) => { const p = inboxQ.then(() => inboxSend(raw)); inboxQ = p.catch(() => {}); return p; };
 const signed = new Map(); // hash → the signed tx and its nonce, kept so a lost send can be pushed again
 // receipts: for the first 2 minutes every live node is asked at once and the first node that HAS the receipt wins
 // (a node that has not seen the block yet no longer answers "nothing" for all of them). Elysium can take tens of
@@ -2831,7 +2895,11 @@ async function onMessage(msg) {
     const b = await hypeBal().catch(() => null);
     return say(HELP + `\n\nWallet <code>${account.address}</code>${b != null ? ` · ${fmtH(num(b))}` : ''}\nPools indexed: ${poolCount()} (up to block ${state.poolsBlock})`);
   }
-  if (cmd === '/wallet') return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium. The key only lives on your VPS.`);
+  if (cmd === '/wallet') {
+    await inboxRefresh().catch(() => {});
+    const ib = !cfg().inbox ? 'off (/set inbox on)' : inboxReady() ? `on · ${fmtH(num(inbox.bal))} on HyperEVM for gas · ${inbox.posts} posts since start` : `waiting for gas: ${inbox.bal == null ? 'HyperEVM balance unknown' : fmtH(num(inbox.bal))} on HyperEVM, needs ${fmtH(num(INBOX_GAS * inboxWei()))}+`;
+    return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium for trading. The same address on HyperEVM pays the Inbox route's gas (about 0.2 HYPE lasts a long time).\nInbox route: ${ib}\nThe key only lives on your VPS.`);
+  }
   if (cmd === '/bal') return say(await balances());
   if (cmd === '/pnl') return say(await pnl());
   if (cmd === '/stats') return say(await statsCommand(args));
@@ -2860,8 +2928,9 @@ async function onMessage(msg) {
     else if (k === 'bagwatch' && /^(on|off)$/.test(lv)) state.set.bagwatch = lv;
     else if (k === 'preapprove' && /^(on|off)$/.test(lv)) state.set.preapprove = lv;
     else if (k === 'copymax' && Number(v) >= 0) state.set.copymax = Number(v);
+    else if (k === 'inbox' && /^(on|off)$/.test(lv)) { state.set.inbox = lv; inbox.warned = false; }
     else if (k === 'pin' && /^(on|off)$/.test(lv)) { state.set.pin = lv; if (lv === 'off' && state.pin?.id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: state.pin.id }); state.pin = {}; } }
-    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · copymax 10 · pin on|off');
+    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · copymax 10 · pin on|off · inbox on|off');
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
@@ -3157,6 +3226,10 @@ async function main() {
   setInterval(() => fetchGas().catch(() => {}), 25000);
   await checkHeads().catch(() => {});
   setInterval(() => checkHeads().catch(() => {}), 10000);
+  // Inbox route: HyperEVM balance and nonce read now and every 5 min, so a send never waits on them
+  await inboxRefresh().catch((e) => console.error('inbox refresh', e.message));
+  console.log(`inbox route: ${!cfg().inbox ? 'off' : inboxReady() ? `on (${fmtH(num(inbox.bal))} on HyperEVM)` : `waiting for HyperEVM gas (${inbox.bal == null ? '?' : fmtH(num(inbox.bal))})`}`);
+  setInterval(() => inboxRefresh().catch(() => {}), 300000);
   // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
   // ElysPump WHYPE pools were skipped by older versions: read the chain once more for them (known pools are kept)
   if (!state.wrapIdx) { state.poolsBlock = 0; state.wrapIdx = 1; save(); }
