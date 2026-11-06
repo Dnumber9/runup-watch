@@ -159,6 +159,13 @@ const X_ACCOUNTS = {
   SignalFam: /elysium|kinetiq|ascend|99901/i,
   Kinetiq_xyz: /elysium|mainnet|live|bridge|rpc|chain id|ascend|signal|ecosystem|partner/i,
   Enter_Elysium: /mainnet|live|launch|bridge|rpc|chain|ascend|signal|ecosystem|partner/i,
+  elypetdotfun: /\$PET|\bCA\b|contract|0x[0-9a-f]{6}|live|launch|mainnet/i,
+};
+// projects you asked to track before they have a contract: their site is read every 3 min (title, scripts, chain id,
+// addresses). A new address with code on Elysium alerts at once; one without code yet is watched until it gets code.
+// Elypet (Nov 6): app built for Elysium testnet 99801, every contract address still 0x0, "$PET CA coming soon".
+const WATCH_SITES = {
+  'elypet.fun': 'Elypet (@elypetdotfun)',
 };
 const ELY_RX = /elysium|\b99901\b|0x1863d/i;
 
@@ -690,6 +697,7 @@ async function webChecks(ctx, g, msgs, t0) {
   // servers (live, answer "not found" on their front page). Their RPC on Elysium is probed separately.
   for (const [s, label] of Object.entries(ASCEND_HOSTS)) if (due(g, 'w:site:' + s, 180)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', label)]);
   for (const s of Object.keys(g.web.extra || {})) if (due(g, 'w:site:' + s, 300)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', s)]);
+  for (const [s, label] of Object.entries(WATCH_SITES)) if (due(g, 'w:site:' + s, 180)) jobs.push(['site:' + s, () => checkSite(ctx, g, msgs, 'site:' + s, 'https://' + s + '/', label)]);
   if (due(g, 'w:ascendrpc', 180)) jobs.push(['ascendrpc', () => checkAscendRpc(g, msgs)]);
   if (due(g, 'w:docs', 600)) jobs.push(['docs', () => checkDocs(g, msgs)]);
   const ctIdx = Math.floor(now() / 300) % CT_DOMAINS.length;
@@ -798,6 +806,8 @@ async function checkSite(ctx, g, msgs, key, url, label) {
   if (newA.length) notes.push(`new Elysium contract addresses:\n${newA.slice(0, 8).map((a) => `• <code>${a}</code>`).join('\n')}`);
   // Ascend's own site showing an address before anything is deployed there: watch it for code
   if (key === 'ascend') for (const a of cand.filter((a) => !newA.includes(a))) g.codewatch[a] = 'address shown on Ascend\'s site';
+  // a tracked project's site showing a new address before it has code (its token or game contracts filled in early)
+  if (WATCH_SITES[key.replace(/^site:/, '')]) for (const a of cand.filter((a) => !newA.includes(a))) g.codewatch[a] = `address shown on ${label}'s site`;
   if (now1.ely && b.ely === false) notes.push('the page now mentions Elysium'); // undefined = baseline from before this check existed
   if (now1.chain && !b.chain) notes.push('chain id 99901 appears in its code');
   const newS = now1.scripts.filter((p) => !b.scripts.includes(p));
