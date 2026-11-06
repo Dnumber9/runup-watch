@@ -32,6 +32,21 @@ const TEAM = [
   { a: '0x5164fea61d99c1eaf8c5591fd18928b8f61f0995', label: 'Signal factory owner (HyperEVM)', fam: 'Signal' },
   { a: '0x9c611d6cef58f0353178e981e02461b458acd133', label: 'Signal fee wallet (Ethereum, Base, Robinhood)', fam: 'Signal' },
   { a: '0x2d09d0c2f82c59b19b3c65a48ce2c550bf0921f9', label: 'Signal pool manager owner (HyperEVM contract)', fam: 'Signal', contract: true },
+  // found Nov 6: the key Signal's deploy wrapper used for its v4.2 lanes (Ethereum and Robinhood Oct 25, Base Oct 26),
+  // named in its app's deploy plans, and the owner of Signal's bonding pad on HyperEVM (0x6bfd…f531, ~1,250 coins)
+  { a: '0xaa1a8cb0aac9aa9fcbd86821f345d62e6342ce59', label: 'Signal deploy key (v4.2 on Ethereum, Robinhood, Base)', fam: 'Signal' },
+  { a: '0x7e474e952e69662ac0026b46fbb04ba07fb6dee5', label: 'Signal pad owner (HyperEVM)', fam: 'Signal' },
+];
+// Signal's own app ships its Elysium (99901) v4 lane addresses, pinned from a fork rehearsal on Nov 2 ("mainnet
+// addresses land in one commit on 11-05", status still "planned" on Nov 6). Code at any of them means Signal is live.
+// It plans to use the ownerless PoolManager 0x5c54…37da (already on chain, eleos launches on it), so that one is not here.
+const SIGNAL_ELY_PINS = [
+  ['0x584640ad1e0c24f8544bcd46f25803c5b50322e0', 'factory'], ['0x61b697932b4adb98ebc476c2e673f0c613cb6aec', 'hook'],
+  ['0x0b9e3db04dd8c5c423b2f7c5bb30aabcc4ac20af', 'router'], ['0x908a0a621594034eaae91ffd363ffa88ef180196', 'rules'],
+  ['0x3d163ae9cc86c8e9708be223d76e29581394606f', 'tokens'], ['0x9aba14985867f1501db0672a4612582f9135751b', 'flush (same address on every chain)'],
+  ['0x50d49e4ff96a9c0a7381dcad53ec2f30f9a4604a', 'token implementation'], ['0x90e5944108b939b95fc747fb0736b9e4069eb49e', 'holders implementation'],
+  ['0xb705bb63323b6a9093d98faea779ee890be9e42c', 'universal router'], ['0xc7fa176831fa48a3d43cb44dea415c14318a7a6a', 'quoter'],
+  ['0xd20fa257e38cc0746fd11dde482f0c8ff8965d5f', 'state view'],
 ];
 
 // reference contracts. t = Elysium testnet (99801), h = HyperEVM (999). Signal's HyperEVM set comes from its app.
@@ -314,6 +329,7 @@ function init(state) {
     g.v = 3;
   }
   for (const t of TEAM) if (!g.team[t.a]) g.team[t.a] = { label: t.label, fam: t.fam, testnet: !!t.testnet, contract: !!t.contract, woke: 0, n: null, b: null };
+  for (const [a, k] of SIGNAL_ELY_PINS) g.codewatch[a] ||= `Signal ${k} for Elysium (pinned in its app)`;
   return g;
 }
 const once = (g, key) => { if (g.alerted[key]) return false; g.alerted[key] = now(); return true; };
