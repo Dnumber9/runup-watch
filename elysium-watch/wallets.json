@@ -2916,5 +2916,44 @@
   "label": "hyper pengu deployer (testnet: 566 holders; active on mainnet)",
   "group": "testnetteam",
   "watch": "launch"
+ },
+ {
+  "address": "0x297896460bdb37aa2c9c0d615d126e4339323ee3",
+  "label": "KSTR dev (owns the hook, can withdraw its KNTQ)",
+  "group": "kstrteam",
+  "coins": [
+   "0xb874abb9904678d85babde1ba1a5bde46effdf63"
+  ]
+ },
+ {
+  "address": "0x1976ba8166d28f24266e3ef10ab64cac8fbca5a9",
+  "label": "KSTR team 1.34% (split from STOCK rugger Nov 4)",
+  "group": "kstrteam"
+ },
+ {
+  "address": "0xfb152923a73fa009fda824bbcb1760295013526f",
+  "label": "KSTR team 1.94% (split from STOCK rugger Nov 4)",
+  "group": "kstrteam"
+ },
+ {
+  "address": "0xc9f34eb8ef22d471d9d0004febf051c4c52268ab",
+  "label": "KSTR team 0.30% (split from STOCK rugger Nov 4)",
+  "group": "kstrteam"
+ },
+ {
+  "address": "0xd3fe0797f43759c7d741167d37dafc8476e056d8",
+  "label": "KSTR dev funder",
+  "group": "kstrteam"
+ },
+ {
+  "address": "0xcc1af4dd980ae8b8520c2c1732519cfb5161f891",
+  "label": "STOCK rugger (funded the KSTR dev's funder)",
+  "group": "kstrteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x6ee67bd8c6aaa1181ed688b57f01007be1a0245a",
+  "label": "KSTR keeper (dev's wallet, triggers the KNTQ buys)",
+  "group": "kstrteam"
  }
 ]

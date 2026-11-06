@@ -54,7 +54,13 @@ const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
 const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
 // exit watch: groups that are a team or a cluster you hold against. Their moves come as one 🚨 alert per group with
 // what the whole group still holds, and a coin they send to a fresh wallet is followed (the hop before a sell)
-const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam,letheteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam,letheteam,kstrteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+// treasury watch: a contract holding a coin's backing that its owner can withdraw (a "strategy" hook's buys).
+// Any of that token leaving the contract pings, with who got it and what is left
+const TREASURIES = {
+  // KSTR: the hook buys KNTQ with its 2% fee; the owner (KSTR dev) has an owner-only send of all of it
+  '0x302c1afe9998715dcc00f5e8bf5648874d17a0cc': { token: '0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0', sym: 'KNTQ', name: 'KSTR hook treasury', coin: '0xb874abb9904678d85babde1ba1a5bde46effdf63' },
+};
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
@@ -1214,6 +1220,23 @@ async function main() {
         msgs.push(`📡 <b>The official Elysium mainnet RPC is open</b>\n<code>${OFFICIAL_RPC}</code> now answers for chain ${CHAIN_ID}. Public launch is close.`);
       }
     } catch {}
+  }
+
+  // 5b. treasury watch (TREASURIES): the backing leaving its contract
+  for (const l of logs) {
+    if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
+    const src = lc(topicAddr(l.topics[1])), tr = TREASURIES[src];
+    if (!tr || lc(l.address) !== tr.token) continue;
+    const to = lc(topicAddr(l.topics[2]));
+    const amt = Number(BigInt(l.data)) / 1e18;
+    let left = null;
+    try { left = Number(BigInt(await rpc('eth_call', [{ to: tr.token, data: '0x70a08231' + src.slice(2).padStart(64, '0') }, 'latest']))) / 1e18; } catch {}
+    bump('treasury out');
+    msgs.push(
+      `🏦 <b>${esc(tr.name)}</b>: ${fmtAmt(amt)} ${tr.sym} left the contract\n` +
+      `to ${W.has(to) ? `<b>${esc(W.get(to))}</b> ` : ''}${walletLink(to)}${left != null ? ` · ${fmtAmt(left)} ${tr.sym} left in it` : ''}${txLink(l.transactionHash)}\n` +
+      coinLink(state, tr.coin)
+    );
   }
 
   // 6. digest
