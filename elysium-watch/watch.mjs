@@ -96,6 +96,17 @@ const XCHAINS = [['Base', 'https://base-rpc.publicnode.com'], ['BNB', 'https://b
 // CREATE2 deployers)
 const XCHAIN_SKIP = new Set(['0xca11bde05977b3631167028862be2a173976ca11', '0x000000000022d473030f116ddee9f6b43ac78ba3', '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed', '0x4e59b44847b379578588920ca78fbf26c0b4956c', '0x914d7fec6aac8cd542e72bca78b30650d45643d7', '0x0000000000ffe8b47b3e2130213b802212439497']);
 const MAX_NEW_LP_ALERTS = 3;      // per scan
+// Rug kits: launch contracts that can pull the whole pool back to their owner (an owner-only
+// removeAllLiquidity(address,uint256)). Seen Nov 6 as CITADEL, KALOS, BUNNY and KINAGENT, each on a pool manager of
+// its own and pulled 1 to 2 minutes after launch. They never post as a new launchpad, and every coin they launch is
+// muted, so a tracked wallet buying one stays quiet too.
+const RUG_SELECTORS = ['66e2d97e'];
+async function rugKit(addrs) {
+  for (const a of addrs.filter((x) => x && x !== ZERO)) {
+    try { const c = lc(await rpc('eth_getCode', [a, 'latest'])); if (RUG_SELECTORS.some((sel) => c.includes('63' + sel))) return a; } catch {}
+  }
+  return null;
+}
 async function deployedElsewhere(addrs) {
   const list = [...new Set(addrs.filter((a) => a && a !== ZERO && !XCHAIN_SKIP.has(a)))];
   const hits = new Set(), answered = new Set();
@@ -602,6 +613,12 @@ async function main() {
     const key = lpKeyOf(rec);
     if (oldLp(key) && !state.lpSeen[key]) continue;
     let s = state.lpSeen[key];
+    if (!s) {
+      const addr = key.slice(key.indexOf(':') + 1);
+      const rug = await rugKit([rec.via, addr]);
+      if (rug) { s = state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via || null, rug }; console.log('new-launchpad check: a rug kit (its launch contract can pull the pool), muted'); }
+    }
+    if (s?.rug) { (state.mutedCoins ||= {})[coin] = now(); bump('rug kit muted'); continue; }
     if (!s) {
       const addr = key.slice(key.indexOf(':') + 1);
       // a launch contract that had already created several contracts before this coin has launched coins before: a
