@@ -13,6 +13,7 @@
 //      clearly more than the best pool (a coin whose liquidity moved, leaving a thin pool behind).
 //   3. Bonding-curve launchpads (VEINS and its two copies), before and after a coin graduates to the curve's own pair.
 //   4. Coins only their own router may trade (Elysium Machines), through that router.
+//   5. Single-coin bonding curves (COREPAD): each coin has a curve contract of its own, found from the coin's mint.
 //
 // Safety before every buy:
 //   Sell check: the buy is simulated together with an immediate sell of everything it returns (a tiny
@@ -141,6 +142,12 @@ const CURVES = [
 // out. proof is the whitelist's Merkle proof, empty for everyone else, who pays its 40% sell tax for the first 6 h.
 // An ERC-404 buy mints an NFT per whole unit (about 120k gas each, 22.7M for 158 units at its launch), so trades
 // there use a gas estimate instead of a fixed limit.
+// Single-coin bonding curves (COREPAD, Nov 6): a launch contract gives each coin a curve of its own, minted the whole
+// supply at launch. buy(minOut, deadline) payable and sell(amount, minOut, deadline) after an approve; quoteBuy(hypeIn)
+// and quoteSell(amount) answer (out, fee); graduated() turns true when the coin leaves for a pool (its route is then
+// picked again). The curve is found from the coin's mint: the contract that received the whole supply, carrying
+// these functions.
+const PC = { buy: 'd6febde8', sell: 'd3c9727c', qBuy: '4beb394c', qSell: 'a64190c4', grad: 'e7c2b772' };
 const GATED = {
   '0xf67e8da4251eba24f9679fd3f9e39405bafdc10c': { name: 'Elysium Machines', router: '0xb08fc83f1f00d57d3bd7f2c23cc5acf2f61d51eb', bs: '327d0c86', ss: 'f4dbbf5a' },
 };
@@ -507,18 +514,18 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated';
-const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' ? r.router : ROUTER);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve';
+const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'gated' ? enc(r.bs, minOut, dl, 96, 0) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammBuy : curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'gated' ? enc(r.ss, amt, minOut, dl, 128, 0) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammSell : curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'gated' ? enc(r.bs, minOut, dl, 96, 0) : r.kind === 'pcurve' ? enc(PC.buy, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammBuy : curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'gated' ? enc(r.ss, amt, minOut, dl, 128, 0) : r.kind === 'pcurve' ? enc(PC.sell, amt, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammSell : curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} pair (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} pair (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
@@ -526,6 +533,7 @@ const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ?
 async function v4QuoteBuy(r, t, wei) {
   if (r.kind === 'uni') return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
   if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
+  if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qBuy, wei), {}, undefined, true));
   if (r.kind === 'curve') return r.amm ? ammQuote(r, t, wei, true) : u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
   return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
@@ -561,6 +569,7 @@ async function allowanceSlot(t, spender) {
 async function v4QuoteSell(r, t, amt, slot) {
   if (r.kind === 'uni') return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
+  if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qSell, amt), {}, undefined, true)); // a view
   if (r.kind === 'curve') return r.amm ? ammQuote(r, t, amt, false) : u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
@@ -1043,6 +1052,7 @@ async function findRoute(t, fresh = false) {
     else try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
   }
   // the index is not built yet, or is behind: look for the coin's pool on chain directly
+  if (!route) route = await coinCurve(t).then((r) => r && quote(r)).then((x) => x?.r || null).catch(() => null);
   if (!route) route = await scanV4(t, async (r) => (await quote(r))?.r || null);
   if (route) { state.routes[t] = route; save(); }
   return route;
@@ -1072,6 +1082,22 @@ async function curvePools(t) {
     } catch {}
   }));
   return out;
+}
+// a coin on a single-coin curve (PC): the block it was created in (binary search on its code), and the contract
+// its mint went to
+async function coinCurve(t) {
+  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  let lo = 1, hi = head;
+  while (lo < hi) { const mid = Math.floor((lo + hi) / 2); const c = await rpc('eth_getCode', [t, hex(mid)]); if (c && c.length > 2) hi = mid; else lo = mid + 1; }
+  const logs = await rpc('eth_getLogs', [{ address: t, fromBlock: hex(lo), toBlock: hex(lo), topics: [T_TRANSFER, '0x' + word(ZERO)] }]);
+  for (const l of logs || []) {
+    const c = lc('0x' + l.topics[2].slice(26));
+    const code = lc(await rpc('eth_getCode', [c, 'latest']));
+    if (!Object.values(PC).every((sel) => code.includes('63' + sel))) continue;
+    if (u256(await ethCall(c, '0x' + PC.grad, {}, undefined, true)) !== 0n) return null; // graduated: its pool takes over
+    return { kind: 'pcurve', name: `Curve ${c.slice(0, 6)}`, router: c };
+  }
+  return null;
 }
 // a pool on a PoolManager we have never seen: find its Initialize event (recent blocks first)
 async function scanV4(t, ok) {
@@ -1126,7 +1152,7 @@ async function quoteBuy(r, t, wei) {
 async function quoteSellOut(r, t, amt) {
   if (!isPool(r)) return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
-  if (r.kind === 'uni') return v4QuoteSell(r, t, amt);
+  if (r.kind === 'uni' || r.kind === 'pcurve') return v4QuoteSell(r, t, amt);
   const allowed = u256(await ethCall(t, enc('dd62ed3e', me, routerOf(r))));
   return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, routerOf(r)));
 }
