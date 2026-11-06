@@ -54,7 +54,7 @@ const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
 const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
 // exit watch: groups that are a team or a cluster you hold against. Their moves come as one 🚨 alert per group with
 // what the whole group still holds, and a coin they send to a fresh wallet is followed (the hop before a sell)
-const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam,letheteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
@@ -369,6 +369,34 @@ async function hrpc(method, params) {
     } catch (e) { last = e; await sleep(300); }
   }
   throw new Error(`hyperevm ${method}: ${last?.message}`);
+}
+
+// who really sent a bridge deposit: Elysium only shows the HyperEVM sender aliased, and when that sender is a helper
+// contract (bridge(address,uint256,uint256,uint256) at 0xa401…) the person behind it is lost. The receipt names the
+// HyperEVM block the message came from and the ticket carries its message number, so one log query on Elysium's Inbox
+// finds the HyperEVM tx and its sender. A few lookups per run, cached.
+const ELY_INBOX = '0xce59f8b65ad41c9dae4c07a0571a39824bd92cff';
+const T_INBOX_MSG = '0xff64905f73a67fb594e0f940a8075a860db489ad991e032f48c81123eb52d60b'; // InboxMessageDelivered(uint256,bytes)
+const hsend = new Map();
+let hsendLeft = 12;
+async function hyperSender(tx, blk) {
+  const key = tx.ticketId || tx.hash;
+  if (hsend.has(key)) return hsend.get(key);
+  if (hsendLeft <= 0) return null;
+  hsendLeft--;
+  let who = null;
+  try {
+    // a retry (0x68) points at its ticket (0x69, same block), which holds the message number; a deposit (0x64) holds it itself
+    const sub = tx.ticketId ? ((blk?.transactions || []).find((x) => x.hash === tx.ticketId) || await rpc('eth_getTransactionByHash', [tx.ticketId])) : tx;
+    const rc = await rpc('eth_getTransactionReceipt', [tx.ticketId || tx.hash]);
+    if (sub?.requestId && rc?.l1BlockNumber) {
+      const logs = await hrpc('eth_getLogs', [{ address: ELY_INBOX, fromBlock: rc.l1BlockNumber, toBlock: rc.l1BlockNumber, topics: [T_INBOX_MSG, '0x' + BigInt(sub.requestId).toString(16).padStart(64, '0')] }]);
+      const h = logs?.[0]?.transactionHash;
+      if (h) { const ht = await hrpc('eth_getTransactionByHash', [h]); if (ht?.from) who = lc(ht.from); }
+    }
+  } catch {}
+  hsend.set(key, who);
+  return who;
 }
 
 // socials from BOXA's indexer (description + metadata JSON); best effort, never blocks an alert
@@ -962,7 +990,10 @@ async function main() {
         // a tracked wallet bridging from HyperEVM to a different wallet (a retryable ticket): the sender shows aliased,
         // so the recipient is followed like any fresh wallet it funds (a dev setting up a launch wallet)
         if (bridged && to && val > 0 && ['0x64', '0x68'].includes(String(tx.type).toLowerCase())) {
-          const src = unalias(f);
+          let src = unalias(f);
+          // bridged through a contract on HyperEVM (the bridge UI's helper 0xa401…, used by Mesa's bridge too): the alias
+          // is that contract, so read the HyperEVM tx behind the ticket to see who really sent it
+          if (src !== to && !W.has(src)) src = (await hyperSender(tx, blk)) || src;
           if (src !== to && W.has(src) && !W.has(to) && !INFRA.has(to)) {
             M(src).push(`🌉 <b>bridged ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM to another wallet ${walletLink(to)}${txLink(tx.hash)}`);
             funded.push({ f: src, to, val, hash: tx.hash, via: 'bridge' });

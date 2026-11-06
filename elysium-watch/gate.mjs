@@ -36,6 +36,11 @@ const TEAM = [
   // named in its app's deploy plans, and the owner of Signal's bonding pad on HyperEVM (0x6bfd…f531, ~1,250 coins)
   { a: '0xaa1a8cb0aac9aa9fcbd86821f345d62e6342ce59', label: 'Signal deploy key (v4.2 on Ethereum, Robinhood, Base)', fam: 'Signal' },
   { a: '0x7e474e952e69662ac0026b46fbb04ba07fb6dee5', label: 'Signal pad owner (HyperEVM)', fam: 'Signal' },
+  // the money above them (HyperEVMScan funding plus HyperCore transfers): a launch under a new name would most likely be
+  // paid for from here
+  { a: '0x6f34327c5214fd8652ea288b8e97ffcbcd069cdd', label: 'Signal root (main wallet since 2024)', fam: 'Signal' },
+  { a: '0x20a4970c2d89e65860d972a76622d29b8174618d', label: 'Signal root 2 (funded the factory owner)', fam: 'Signal' },
+  { a: '0x177d4dec87b69900c9c742e10886ed96919c99c1', label: 'Signal pad owner funder', fam: 'Signal' },
 ];
 // Signal's own app ships its Elysium (99901) v4 lane addresses, pinned from a fork rehearsal on Nov 2 ("mainnet
 // addresses land in one commit on 11-05", status still "planned" on Nov 6). Code at any of them means Signal is live.

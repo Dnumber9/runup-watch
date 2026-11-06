@@ -2161,5 +2161,902 @@
   "group": "dev",
   "watch": "launch",
   "coins": []
+ },
+ {
+  "address": "0x6f34327c5214fd8652ea288b8e97ffcbcd069cdd",
+  "label": "Signal root (main wallet since 2024, funded both team funders)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x20a4970c2d89e65860d972a76622d29b8174618d",
+  "label": "Signal root 2 (funded the factory deployer, red and test11)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x177d4dec87b69900c9c742e10886ed96919c99c1",
+  "label": "Signal pad owner funder",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x7e474e952e69662ac0026b46fbb04ba07fb6dee5",
+  "label": "Signal pad owner (owns the pad and 9 legacy pads)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x9c611d6cef58f0353178e981e02461b458acd133",
+  "label": "Signal fee wallet (funded the deploy key and 10 bot wallets)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xaa1a8cb0aac9aa9fcbd86821f345d62e6342ce59",
+  "label": "Signal deploy key (v4.2 on Ethereum, Robinhood, Base)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xf88929028c0d0932c6c6fafe77267f94c97d3e36",
+  "label": "Signal testnet deployer",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x0f8742f1d379cfdc474138f35ebd22998b6b3e38",
+  "label": "Signal fee wallet alt",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xa9c562e341bc54cffe4d24a1fd3bae6ea5603a79",
+  "label": "Signal pad owner funder alt",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x8f4dbccee74252e57c76d21f462513d92f45f3c9",
+  "label": "Signal bot wallet 1 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x1cd30161fb515b7a43f79a1a4975797d6a54796e",
+  "label": "Signal bot wallet 2 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x24ec830368a4b0e0d6e387a364c998013ae60ded",
+  "label": "Signal bot wallet 3 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xeec03bd4191f8e35786f0e0a64c8a24f31918cac",
+  "label": "Signal bot wallet 4 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x27fa4fc7d262f34075ea3afe3b9f7c526bd6d3d4",
+  "label": "Signal bot wallet 5 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x3396c581e53a55117c963ad4b853f1a72dd65efa",
+  "label": "Signal bot wallet 6 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xdcd3320f0fbd1615c66aa3bc1e9896bdf73a1d7c",
+  "label": "Signal bot wallet 7 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x8337ea074fa1260343d286f0565dac9578225a81",
+  "label": "Signal bot wallet 8 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x0cf339f8abf007cb90aa2ef668b72b5cee4a05b0",
+  "label": "Signal bot wallet 9 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x9134e94cddd81c3f64e55a0c1b09db089cf9365b",
+  "label": "Signal bot wallet 10 (funded by the fee wallet Oct 22)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x42e74a92367ca998d860d3fce68cd2b753b7ca30",
+  "label": "Signal team red (#1 on Signal points, funded by root 2)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x05aea4a0b186752f912eb63585ce88ed60d86cfa",
+  "label": "Signal team test11 (#2 on Signal points, funded by root 2)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xe0ce68a937624c0a97406f77fd669cead2e29f54",
+  "label": "Signal root 2 alt",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x29731133217190b1c353689c4575ffe1001bbedb",
+  "label": "Signal root 2 alt",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xc5419de529cb8af1e711c6dc10e0f17e0beba520",
+  "label": "Signal root 2 alt",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x1ae36eadf2cd03a61feff3a9f9b12af348c5aa13",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xf7de80c9a9d5678d89a91b4c9f58998c6fa6733f",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xfaf07cd567a29730277fe0b9a52ddfb15d5d5421",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x67bbeb266665a08455029f6a0c213c6531224f80",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb378cda5af99bf628a72d26f8ddbcaa3e8c35300",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xab4b47ddebb4df73052a9845d64a0fcb04242857",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x1f532bec0cc8ce1af248f54c9e9f953c5fdff860",
+  "label": "Signal HyperCore circle (paid by the pad owner funder)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xa8597bf7ec711fce60d410dfd7b12c76571ed239",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xa822a9ceb6d6cb5b565bd10098abcfa9cf18d748",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xd4df4f981f983ab77fd97bbde539b8a58bf54da0",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x3eb1773a56c1ea3bd7db5857b06ff58569185121",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x2655e9991db193db3f9a9d3df9f1d429c40c6be8",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x8b9564243665632cbb4cb3ceee087c0a5d59f09c",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x075d989e00609c70a2ddb84a19e5de89b304409a",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x8dafbe89302656a7df43c470e9ebcb4c540835c0",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xe6111266afdcdf0b1fe8505028cc1f7419d798a7",
+  "label": "Signal root contact (HyperCore transfers with root)",
+  "group": "signal",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb2524785dae83cf57c368c298c79446957276ecf",
+  "label": "Signal points #4 hyperscouthl",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x6939b9fb5696a559b49154c7feda0f7bcc58a3c6",
+  "label": "Signal points #5 chameleon",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xa50de7be86088083d8443c6a457507855f95e77a",
+  "label": "Signal points #6 himothy",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x6b836364fc6fd23621903fb4bcec30b5bed76e2e",
+  "label": "Signal points #7 cingkok",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xec0da77cf9b8fa5766b062bf18da4da916144587",
+  "label": "Signal points #8 stone",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb5d26158102181dc4ceee75f260a60debd752e45",
+  "label": "Signal points #9 ace_da_book",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xaf2e8c08eb85da2c7835e903941b78245edf8359",
+  "label": "Signal points #10 cryptonut",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x629fe6d73d5ca48c1b5e4ef35bb7319080c4aba5",
+  "label": "Signal points #11 huang",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xf1a06ebabb728773f48ee48be7049bb441faef84",
+  "label": "Signal points #12 fibs",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xbbbeed832e5d40a4f535a80e1547047a2e12a82f",
+  "label": "Signal points #13 green",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x1fd338fc5f4486aab907ed68062466cdaf1f527c",
+  "label": "Signal points #14 hypoorenjooyor",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x514cfa3af9fd82e03ebb7c56e0e50e15f67ed682",
+  "label": "Signal points #15 luckyboy",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x0005672bb8f09655b820a111ce4dcdb7f2374064",
+  "label": "Signal points #16 rabby",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x6e89b986fbb4b985accc9b3cfee4c7b5301d9a5c",
+  "label": "Signal points #18 sakaii",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x907d15eab9b8bd640d921dd62ecd64dc67fe0ca4",
+  "label": "Signal points #19 kongz",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x03d52cb84d90773c280ad77af95ac55807c94790",
+  "label": "Signal points #20 onepumpman",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x1d331b2e8b730b81fa0acb6341a7aab35bfd6d78",
+  "label": "Signal points #21 topsignal",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x48b1651111fc684158ccaebd120b89c21d3dca4d",
+  "label": "Signal points #22 dco",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xdd55ca85e312a4f93347ab5e4a2a81e5c0ff73ca",
+  "label": "Signal points #23 sprucecliff",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb7973c6d5209b1bf5c198789830b67d5fe340dad",
+  "label": "Signal points #24 whalecum",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x3da39bb919fdeef7cfeb5f0089db88467f553ae9",
+  "label": "Signal points #25 xplosive",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x7b03f4ea270f219c725b081565f6d298ca95e3e0",
+  "label": "Signal points #26 ssalbap",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xfa9412aa43a38536fdb4fbf80745816ce35c25f7",
+  "label": "Signal points #27 levi",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xda9ad6284300b15bc802c3fbf6dbbdf7ceb27fe8",
+  "label": "Signal points #28 aoddy",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xdfd8fbcb456daedd2aed1276fd8baad78925d429",
+  "label": "Signal points #29",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x697d8ef233e084dd70e3c6f2b48d24aa9363e30c",
+  "label": "Signal points #30 noice",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xc285f7e39affafbef242880c52f51260ab1989f3",
+  "label": "Signal points #31 manosolar",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x4757cdd70da26c12bf1f618ee569be8892ec1617",
+  "label": "Signal points #32 2d2dasd",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x3f51fe6325c8f7814834a72b5cf9a3b532504277",
+  "label": "Signal points #33 nuanxia",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x16c622466e93997cd6aea0375fc2e4bdbefb0fcc",
+  "label": "Signal points #34 test121",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xf18e30936b6144b36cac59913d43eafc71f255ec",
+  "label": "Signal points #35 jouch",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x67dd185e664117f10bb432aa32ad5164107a45db",
+  "label": "Signal points #36 jean",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xaf465c6ef9bc8015857056ae29e6a826d03c041a",
+  "label": "Signal points #37 microman1",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb3db8d23a98780002b10da5fb082e47b2d22e4f3",
+  "label": "Signal points #38 windyz",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x15b74c81e56e5bf052b76b53b5a948339de40d39",
+  "label": "Signal points #39 lasercat",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x41870f2811bde111efbfa94f84cd30943cef2624",
+  "label": "Signal points #40 hypurrchef",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x74aa4b50a333793b5940f69c5fe1746861116814",
+  "label": "Signal points #41 mulder3705",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xf9de51f17d5ca7c488e490e4ac9f7d502688fea1",
+  "label": "Signal points #42 omg",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x0c91ed981f47110ac6163c5d148851fd54fe198d",
+  "label": "Signal points #43 yowenti",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb641bc63956956ed82a4c74825b0444bf697c23f",
+  "label": "Signal points #44 chameleon_jeff",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xd5a9c4a92dde274e126f82b215fccb511147cd8e",
+  "label": "Signal points #45 xxx",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xd1fc46bda1c20cb2d6a0050b312291e2ef379759",
+  "label": "Signal points #46 garfield",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x042ebedcc3d77fd1484669d7ebf51d3e3caa6534",
+  "label": "Signal points #47 o_rly",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xbe5bf4da2886cd8c60de03708bd410d10684e774",
+  "label": "Signal points #48 artjav22",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x19ba9c35b2f9c7eb60ec7aeccf74946040fe3102",
+  "label": "Signal points #49 kryun",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x62455e778d56b15da8706f2c6b067f0f24d4855d",
+  "label": "Signal points #50 lfs10",
+  "group": "signalfam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x2b8e20ea27d1eeed651d86ee836c5916a4ed3b95",
+  "label": "Mesa deployer (hook, token factory, MESA)",
+  "group": "mesateam",
+  "watch": "launch",
+  "coins": [
+   "0xd1fe265a3a30177a0c5e74f535a2350b5f370197"
+  ]
+ },
+ {
+  "address": "0x25db99d67481aaeb389a57ae097f2a02e48f0e13",
+  "label": "Mesa funder (money came Monero swap, HyperCore, LI.FI, Relay)",
+  "group": "mesateam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0x04cb3d59f600709ab4f38c8798f0363c6ca0f153",
+  "label": "Mesa funder payee",
+  "group": "mesateam",
+  "watch": "launch",
+  "coins": []
+ },
+ {
+  "address": "0xb51a1a112b9713bde904b7853a746456447a34ec",
+  "label": "LETHE dev 3.2%",
+  "group": "letheteam"
+ },
+ {
+  "address": "0x82e4687b3974a3c94ca0581b81cb711d29592a9f",
+  "label": "LETHE pool deployer (funded by dev)",
+  "group": "letheteam"
+ },
+ {
+  "address": "0x7442cf34d4291fe680e35c1676a464e8a1648d84",
+  "label": "LETHE dev funder",
+  "group": "letheteam"
+ },
+ {
+  "address": "0xc81613cbd86d8d20d6c4281190ec5898f8feef24",
+  "label": "LETHE dev alt 1.6% (same funder, 1 min after the dev)",
+  "group": "letheteam"
+ },
+ {
+  "address": "0x1e567c89857245319cebbbd46fc5217ed17dc318",
+  "label": "LETHE cluster funder (3 wallets, 7%)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x30c5dab799615030de580275497a552b2004d759",
+  "label": "LETHE holder 2.5% (cluster 0x1e56)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xb98596e1ba1d66728c33ea8aa66faeaf021eabbb",
+  "label": "LETHE holder 2.4% (cluster 0x1e56)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x8171a1de34efcf3b2d7d65a6539dda3893f8261b",
+  "label": "LETHE holder 2.1% (cluster 0x1e56)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xf5f41ebe5687cd6f6f652eb600d444f9d06711fa",
+  "label": "LETHE cluster funder (2 wallets, 4.1%)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xba352e4c0cd4e51aa5a2223798d20cdbd93e4e62",
+  "label": "LETHE holder 2.7% (cluster 0xf5f4)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xe0cb3d9542a786c60605dd55efb9ef79490a3d6c",
+  "label": "LETHE holder 1.4% (cluster 0xf5f4)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x5daa404b0e4f370cc8eb634df9e5c1ea51674e61",
+  "label": "LETHE holder 2.8%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x75d2ae0861661ef7479e9229a3e3e2cdd14dfb08",
+  "label": "LETHE holder 2.6%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x272c749167e1d552080bc5b478d048db7fb9c540",
+  "label": "LETHE holder 2.4% (bought in the launch minute)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x62ff01f014f0da446e02a62392538f36a83a2659",
+  "label": "LETHE holder 2.3%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x88119ad8b2370593a5104228cbddc3445f5ea3b6",
+  "label": "LETHE holder 2.2%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x6dcae1cda438c81ab1749e558a0687308b1c2712",
+  "label": "LETHE holder 2.1%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x218963cdb202a40a7ed73e7b6dd3497f7df33cff",
+  "label": "LETHE holder 2.0%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xe8c6e62b19120bc79c4bcd9a899d1baa464c6915",
+  "label": "LETHE holder 1.8%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xfd6202c5caf3092255158fe48362b0fe5a599232",
+  "label": "LETHE holder 1.7%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x0171c16c2759d7ae8d61df5d8387a876a375fd15",
+  "label": "LETHE holder 1.5% (early)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xc15729d9fc7f9b07a07dc7c3ba97406430adc5a1",
+  "label": "LETHE holder 1.5%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xd2eaa2dc0257342235d1f7f97f0deb08ffcc8534",
+  "label": "LETHE holder 1.2% (dev of FIREEYES, Sflow, ELIXIR)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x259295c6daae8f68a5851b5def338cc7cb1458cc",
+  "label": "LETHE holder 1.2%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x250143ebb156a803fa57ba88daf0971a21da6fca",
+  "label": "LETHE holder 1.2% (dev of KPURR)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xb65395c5513f3ba93b0ba17eab00d4ce2cc606ac",
+  "label": "LETHE holder 1.2% (dev of MAXIMUS)",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x60ee565347d0415916dde17beda4cfa8c2e43d81",
+  "label": "LETHE holder 1.1%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x790d57e0eb460cf5d973da29906bb53c79aa6afa",
+  "label": "LETHE holder 1.1%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x2c062f744a847c1938af984d00946b88e92bd37a",
+  "label": "LETHE holder 1.0%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x246730c82b24ebe75c285c84b734e7415a0c8d7e",
+  "label": "LETHE holder 1.0%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0xfef259d2bbac52c887a0fc9e022bd94064a2a83a",
+  "label": "LETHE holder 1.0%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
+ },
+ {
+  "address": "0x66212d359c865be1c09580c4e8b8f468c2ff6f1e",
+  "label": "LETHE holder 1.0%",
+  "group": "letheholder",
+  "watch": "launch",
+  "coins": [
+   "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
+  ]
  }
 ]
