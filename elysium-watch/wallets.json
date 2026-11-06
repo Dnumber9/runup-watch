@@ -2150,5 +2150,9 @@
   "address": "0xeeded54b1362532199cca5fa664c31d404123ead",
   "label": "EACCAT fresh 4 (1 HYPE at +18s, only coin so far)",
   "group": "eaccatfresh"
+ },
+ {
+  "address": "0x743db8608f42be6ce0c4eb596a48e64e2df7a3c1",
+  "label": "KNTQ accumulator (136 HYPE dry, small Blob 0xeb05 bag)"
  }
 ]
