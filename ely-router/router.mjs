@@ -2697,14 +2697,15 @@ const FIRE_HELP =
   `<b>/fire</b> keeps sending a call to a contract until it goes through, then stops (for launches that open at a set time).\n` +
   `/fire 0xCONTRACT 1.5 0xDATA · send 1.5 HYPE with that call data\n` +
   `/fire copy 0xTXHASH 1.5 · fire the same call as that transaction (a sniper's failed attempt), from this wallet\n` +
-  `Options: 2s (every 2 s, default) · 15m (stop after 15 min, default) · x2 or x3 (attempts in flight at once; that many could fill)\n` +
+  `Options: 2s (every 2 s, default) · 15m (stop after 15 min, default) · x2 or x3 (attempts in flight at once; that many could fill) · gas=30m (gas limit, default 30m: an ERC-404 buy mints an NFT per unit and used 12 to 23m on MACHINE; a copy uses the copied tx's limit)\n` +
   `/fire · status · /fire stop`;
-const fireText = (f) => `🔫 <b>Firing</b> ${fmtH(num(f.value))} at <code>${f.to}</code>${f.label ? `\n${esc(f.label)}` : ''}\n${f.sent} sent · ${f.failed} failed (normal until it opens) · every ${f.every} s · ${f.k} in flight · ${Math.max(0, Math.ceil((f.until - Date.now()) / 60000))} min left · /fire stop`;
+const fireText = (f) => `🔫 <b>Firing</b> ${fmtH(num(f.value))} at <code>${f.to}</code>${f.label ? `\n${esc(f.label)}` : ''}\n${f.sent} sent · ${f.failed} failed (normal until it opens) · every ${f.every} s · ${f.k} in flight · ${(f.gas / 1e6).toFixed(1)}m gas · ${Math.max(0, Math.ceil((f.until - Date.now()) / 60000))} min left · /fire stop`;
 async function fireStart(o, replyTo) {
   if (fires.size) throw new Error('a /fire is already running (/fire stop first)');
-  const bal = await hypeBal(true);
-  if (bal < o.value + 10n ** 16n) throw new Error(`not enough HYPE: the bot wallet has ${fmtH(num(bal))}`);
-  const f = { id: ++fireSeq, to: o.to, value: o.value, data: o.data, label: o.label || '', every: Math.max(0.5, o.every || 2), until: Date.now() + (o.mins || 15) * 60000, k: Math.min(Math.max(1, o.k || 1), 3), sent: 0, failed: 0, inflight: 0, filled: 0, done: false, t0: Date.now() };
+  const gas = Math.min(Math.max(Number(o.gas) || 30e6, 100000), 32e6);
+  const bal = await hypeBal(true), need = o.value + BigInt(gas) * (await gasPrice()) + 5n * 10n ** 15n;
+  if (bal < need) throw new Error(`not enough HYPE: the bot wallet has ${fmtH(num(bal))}, a ${fmtH(num(o.value))} attempt at ${(gas / 1e6).toFixed(1)}m gas needs ${fmtH(num(need))}`);
+  const f = { id: ++fireSeq, to: o.to, value: o.value, data: o.data, gas, label: o.label || '', every: Math.max(0.5, o.every || 2), until: Date.now() + (o.mins || 15) * 60000, k: Math.min(Math.max(1, o.k || 1), 3), sent: 0, failed: 0, inflight: 0, filled: 0, done: false, t0: Date.now() };
   fires.set(f.id, f);
   f.msg = await say(fireText(f), null, replyTo);
   fireLoop(f).catch((e) => console.error('fire', e.message));
@@ -2715,7 +2716,7 @@ async function fireLoop(f) {
     if (f.inflight < f.k) {
       f.inflight++;
       try {
-        const hash = await serial(() => sendRaw({ to: f.to, value: f.value, data: f.data, gas: 1000000 }, { inbox: false }));
+        const hash = await serial(() => sendRaw({ to: f.to, value: f.value, data: f.data, gas: f.gas }, { inbox: false }));
         f.sent++;
         receipt(hash, 600000).then((rc) => fireLanded(f, hash, rc)).catch(() => {}).finally(() => { f.inflight--; });
       } catch (e) {
@@ -3024,6 +3025,7 @@ async function onMessage(msg) {
       if (/^\d*\.?\d+s$/.test(x)) opt.every = Number(x.slice(0, -1));
       else if (/^\d+m$/.test(x)) opt.mins = Number(x.slice(0, -1));
       else if (/^x[1-3]$/.test(x)) opt.k = Number(x.slice(1));
+      else if (/^gas=\d*\.?\d+[mk]?$/.test(x)) opt.gas = Number(x.slice(4).replace(/[mk]$/, '')) * (x.endsWith('m') ? 1e6 : x.endsWith('k') ? 1e3 : 1);
       else rest.push(a);
     }
     try {
@@ -3037,6 +3039,7 @@ async function onMessage(msg) {
         let data = lc(tx.input || '0x');
         const swapped = data.slice(10).includes(theirs);
         data = data.slice(0, 10) + data.slice(10).split(theirs).join(me.slice(2)); // their address in the call (a recipient) becomes this wallet's
+        if (!args.some((a) => /^gas=/i.test(a))) opt.gas = parseInt(tx.gas, 16);
         return await fireStart({ to: lc(tx.to), value: toWei(String(hype)), data, ...opt, label: `same call as ${short(lc(tx.from))}${swapped ? ' (their address in it swapped for yours)' : ''}` }, reply);
       }
       const to = addrIn(args[0]), hype = Number(rest[0]), data = rest[1];
