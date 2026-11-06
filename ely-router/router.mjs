@@ -313,12 +313,12 @@ async function fetchGas() {
 }
 // refreshed in the background every 25 s, so a send never waits on it
 async function gasPrice() { return gpCache.v && Date.now() - gpCache.t < 120000 ? gpCache.v : fetchGas(); }
-async function sendRaw(tx) {
+async function sendRaw(tx, opts = {}) {
   if (nextNonce == null) await resyncNonce();
   const nonce = nextNonce;
   const raw = await account.signTransaction({ chainId: CHAIN_ID, type: 'legacy', nonce, to: tx.to, value: BigInt(tx.value || 0), data: tx.data, gas: BigInt(tx.gas), gasPrice: await gasPrice() });
   // the same signed tx also goes to Elysium's Inbox on HyperEVM, at the same moment (see inboxSend)
-  const viaInbox = inboxQueue(raw).catch((e) => { console.error(e.message); return null; });
+  const viaInbox = opts.inbox === false ? Promise.resolve(null) : inboxQueue(raw).catch((e) => { console.error(e.message); return null; });
   // "nonce too high" while an earlier trade is still landing (an approve and its swap back to back): the earlier one
   // is not in yet, so the same signed tx is offered again every 2 s for up to 30 s instead of failing the trade
   for (let i = 0; ; i++) {
@@ -2683,6 +2683,79 @@ async function sendToken(t, to, amt) {
   }, () => edit(msg, `⌛ Transfer of ${what} not confirmed after 2 h · ${txLink(hash)}`));
 }
 
+// ── /fire: keep sending one call at a contract until it lands ──────────────────────────────────────
+// For launches that open at a set moment (a router that reverts until the owner calls launch()). Elysium takes
+// transactions in arrival order, so the first buys in are the ones already on their way when it opens: /fire sends
+// the same call again and again (a failure costs only gas, about 0.00001 HYPE) and stops at the first one that goes
+// through. One attempt is in flight at a time by default, so it can never fill twice; x2 or x3 sends more at once
+// (faster, and up to that many could fill). Attempts skip the Inbox route: its HyperEVM gas would add up over
+// hundreds of failures. "/fire copy 0xTX 1" fires the same call someone else is firing (a sniper's failed attempt),
+// with their own address in the call swapped for this wallet's.
+const fires = new Map();
+let fireSeq = 0;
+const FIRE_HELP =
+  `<b>/fire</b> keeps sending a call to a contract until it goes through, then stops (for launches that open at a set time).\n` +
+  `/fire 0xCONTRACT 1.5 0xDATA · send 1.5 HYPE with that call data\n` +
+  `/fire copy 0xTXHASH 1.5 · fire the same call as that transaction (a sniper's failed attempt), from this wallet\n` +
+  `Options: 2s (every 2 s, default) · 15m (stop after 15 min, default) · x2 or x3 (attempts in flight at once; that many could fill)\n` +
+  `/fire · status · /fire stop`;
+const fireText = (f) => `🔫 <b>Firing</b> ${fmtH(num(f.value))} at <code>${f.to}</code>${f.label ? `\n${esc(f.label)}` : ''}\n${f.sent} sent · ${f.failed} failed (normal until it opens) · every ${f.every} s · ${f.k} in flight · ${Math.max(0, Math.ceil((f.until - Date.now()) / 60000))} min left · /fire stop`;
+async function fireStart(o, replyTo) {
+  if (fires.size) throw new Error('a /fire is already running (/fire stop first)');
+  const bal = await hypeBal(true);
+  if (bal < o.value + 10n ** 16n) throw new Error(`not enough HYPE: the bot wallet has ${fmtH(num(bal))}`);
+  const f = { id: ++fireSeq, to: o.to, value: o.value, data: o.data, label: o.label || '', every: Math.max(0.5, o.every || 2), until: Date.now() + (o.mins || 15) * 60000, k: Math.min(Math.max(1, o.k || 1), 3), sent: 0, failed: 0, inflight: 0, filled: 0, done: false, t0: Date.now() };
+  fires.set(f.id, f);
+  f.msg = await say(fireText(f), null, replyTo);
+  fireLoop(f).catch((e) => console.error('fire', e.message));
+}
+async function fireLoop(f) {
+  let shown = 0;
+  while (!f.done && Date.now() < f.until) {
+    if (f.inflight < f.k) {
+      f.inflight++;
+      try {
+        const hash = await serial(() => sendRaw({ to: f.to, value: f.value, data: f.data, gas: 1000000 }, { inbox: false }));
+        f.sent++;
+        receipt(hash, 600000).then((rc) => fireLanded(f, hash, rc)).catch(() => {}).finally(() => { f.inflight--; });
+      } catch (e) {
+        f.inflight--; f.lastErr = e.message;
+        if (/insufficient funds/i.test(e.message)) break;
+        await sleep(1000);
+      }
+    }
+    if (Date.now() - shown > 15000) { shown = Date.now(); edit(f.msg, fireText(f)).catch(() => {}); }
+    await sleep(f.every * 1000);
+  }
+  for (let i = 0; i < 180 && f.inflight > 0; i++) await sleep(1000); // the ones still on their way
+  fires.delete(f.id);
+  if (!f.filled) edit(f.msg, `${fireText(f)}\n${f.stopped ? '⏹ Stopped, nothing filled.' : '⌛ Time is up, nothing filled.'}${f.lastErr ? `\nLast error: ${esc(f.lastErr).slice(0, 160)}` : ''}`).catch(() => {});
+}
+async function fireLanded(f, hash, rc) {
+  if (!rc || rc.status === 'dropped') return;
+  if (rc.status !== '0x1') { f.failed++; return; }
+  f.done = true;
+  f.filled++;
+  // what arrived: ERC-20 transfers to this wallet (3 topics; an ERC-404's NFT transfers have 4)
+  const lines = [];
+  let card = null;
+  for (const l of rc.logs || []) {
+    if (l.topics?.[0] !== T_TRANSFER || l.topics.length !== 3 || lc('0x' + l.topics[2].slice(26)) !== me) continue;
+    const t = lc(l.address), amt = BigInt(l.data || '0x0');
+    const m = await tokenMeta(t).catch(() => ({ sym: '?', d: 18 }));
+    const h = num(f.value), tok = num(amt, m.d);
+    const p = P(t, m.sym);
+    p.hypeIn += h; p.tokIn += tok; p.cIn = (p.cIn ?? 0) + h; p.cTok = (p.cTok ?? 0) + tok; p.cOut ??= 0;
+    p.first ||= Date.now(); p.src ||= 'fire'; p.open = true;
+    J({ side: 'buy', coin: t, sym: m.sym, hype: h, tok, src: 'fire', route: 'fire', hash });
+    lines.push(`${fmt(tok)} <b>${esc(m.sym)}</b>`);
+    card ||= t;
+  }
+  save(); refreshPin();
+  const text = `✅ <b>Fired ${f.filled > 1 ? `call filled again (#${f.filled})` : 'call landed'}</b> after ${f.sent} attempts, ${((Date.now() - f.t0) / 1000).toFixed(0)} s in: ${lines.length ? `got ${lines.join(', ')}` : 'no token transfer to this wallet seen'} for ${fmtH(num(f.value))} · ${txLink(hash)}`;
+  if (f.filled === 1) await edit(f.msg, text, card ? cardButtons(card) : null); else await say(text, card ? cardButtons(card) : null);
+}
+
 const HELP =
   `<b>ely-router</b>\n` +
   `Paste a token address (or a link with one) for a card: ⚡ buy (⚡ X asks for any amount), sell 25/50/100%, 💰 initials, 🎯 limit, 📤 send.\n` +
@@ -2699,7 +2772,8 @@ const HELP =
   `/withdraw &lt;address&gt; &lt;HYPE|all&gt; · /send &lt;coin&gt; &lt;amount|50%|all&gt; &lt;address&gt; moves tokens to another wallet · /nonce if a transaction is stuck\n\n` +
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
   `<b>Bag watch</b>, per coin: 👀 on its card or /bagwatch 0xCOIN watches its dev and top 10 holders, a post when they sell or move a real part of their bag · /bagwatch lists them · /set bagwatch on watches every coin you hold\n` +
-  `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)`;
+  `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)\n` +
+  `<b>/fire</b> keeps sending a buy to a launch contract until it opens and fills (/fire for how)`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
 const addrIn = (s) => (String(s).match(/0x[0-9a-fA-F]{40}/) || [])[0]?.toLowerCase();
@@ -2939,6 +3013,37 @@ async function onMessage(msg) {
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
       `Dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'every bag' : 'armed coins'} · pre-approve ${c.preapprove ? 'on' : 'off'} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · copy cap ${c.copymax}/day`);
+  }
+  if (cmd === '/fire') {
+    const sub = lc(args[0] || '');
+    if (!sub) return say(fires.size ? [...fires.values()].map(fireText).join('\n\n') : FIRE_HELP);
+    if (sub === 'stop') { const n = fires.size; for (const f of fires.values()) { f.done = true; f.stopped = true; } return say(n ? '⏹ Stopping. Attempts already sent still land or fail.' : 'Nothing is firing.'); }
+    const opt = { every: 2, mins: 15, k: 1 }, rest = [];
+    for (const a of args.slice(1)) {
+      const x = lc(a);
+      if (/^\d*\.?\d+s$/.test(x)) opt.every = Number(x.slice(0, -1));
+      else if (/^\d+m$/.test(x)) opt.mins = Number(x.slice(0, -1));
+      else if (/^x[1-3]$/.test(x)) opt.k = Number(x.slice(1));
+      else rest.push(a);
+    }
+    try {
+      if (sub === 'copy') {
+        const h = rest[0], hype = Number(rest[1]);
+        if (!/^0x[0-9a-fA-F]{64}$/.test(h || '') || !(hype >= 0)) return say(FIRE_HELP);
+        if (hype > cfg().max) return say(`Max per buy is ${cfg().max} HYPE (/set max).`);
+        const tx = await rpc('eth_getTransactionByHash', [h]);
+        if (!tx?.to) return say('That transaction was not found, or it is a contract deploy.');
+        const theirs = lc(tx.from).slice(2);
+        let data = lc(tx.input || '0x');
+        const swapped = data.slice(10).includes(theirs);
+        data = data.slice(0, 10) + data.slice(10).split(theirs).join(me.slice(2)); // their address in the call (a recipient) becomes this wallet's
+        return await fireStart({ to: lc(tx.to), value: toWei(String(hype)), data, ...opt, label: `same call as ${short(lc(tx.from))}${swapped ? ' (their address in it swapped for yours)' : ''}` }, reply);
+      }
+      const to = addrIn(args[0]), hype = Number(rest[0]), data = rest[1];
+      if (!to || !(hype >= 0) || !/^0x([0-9a-fA-F]{2})*$/.test(data || '')) return say(FIRE_HELP);
+      if (hype > cfg().max) return say(`Max per buy is ${cfg().max} HYPE (/set max).`);
+      return await fireStart({ to, value: toWei(String(hype)), data: lc(data), ...opt }, reply);
+    } catch (e) { return say(`❌ /fire: ${esc(e.message).slice(0, 200)}`); }
   }
   if (cmd === '/buy') {
     const t = addrIn(args[0]); const a = Number(args[1]);
