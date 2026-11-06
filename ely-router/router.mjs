@@ -9,7 +9,10 @@
 //      ElysPump, and any new launchpad the moment its first pool appears). The bot keeps its own live index
 //      of every pool (Initialize events, re-read every few seconds) and buys through eleos's stateless v4
 //      router on whichever pool gives the most tokens. New launches work from their first block.
-//   2. KyberSwap's aggregator, for everything else it indexes on Elysium (v3 DEXes, WHYPE pairs).
+//   2. KyberSwap's aggregator, for everything else it indexes on Elysium (v3 DEXes, WHYPE pairs), and whenever it pays
+//      clearly more than the best pool (a coin whose liquidity moved, leaving a thin pool behind).
+//   3. Bonding-curve launchpads (VEINS and its two copies), before and after a coin graduates to the curve's own pair.
+//   4. Coins only their own router may trade (Elysium Machines), through that router.
 //
 // Safety before every buy:
 //   Sell check: the buy is simulated together with an immediate sell of everything it returns (a tiny
@@ -123,9 +126,24 @@ const V3FEES = [10000, 3000, 500, 100];
 // bonding-curve launchpads that trade coins before they reach a pool: buy(token, amountIn, minOut, deadline) payable,
 // sell(token, amountIn, minOut, deadline) paying native HYPE, and two views that quote either side. buy() returns
 // nothing, so quotes come from the views.
+// Once a coin graduates, the same contract trades it on its own v2 pair against its own wrapped HYPE: ammBuy and
+// ammSell (token, amountIn, minOut, deadline), returning nothing. info(token) names the pair (word 2, zero while the
+// coin is still on the curve) and fee() is in basis points of the HYPE side (VEINS 125, 0x51d9 100: checked Nov 6
+// against the pairs' reserves). Three contracts run the same code.
+const CURVE_ABI = { buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c', info: '7d0f7a88', ammBuy: '73491ee7', ammSell: 'ddc2953d', fee: 'bf333f2c' };
 const CURVES = [
-  { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c' }, // VEINS
+  { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', ...CURVE_ABI }, // VEINS
+  { name: 'Curve 0x7d19', curve: '0x7d1904bfb2472a0ef97d886139a4236060e064ab', ...CURVE_ABI },
+  { name: 'Curve 0x51d9', curve: '0x51d9243d87ad13d7eca55ab57357b2b5fc8241f2', ...CURVE_ABI },
 ];
+// Coins only their own router can trade: the pool's hook refuses every other caller. Elysium Machines (ERC-404, 4,444
+// units): buy(minOut, deadline, proof) payable and sell(amountIn, minOut, deadline, proof), both returning the amount
+// out. proof is the whitelist's Merkle proof, empty for everyone else, who pays its 40% sell tax for the first 6 h.
+// An ERC-404 buy mints an NFT per whole unit (about 120k gas each, 22.7M for 158 units at its launch), so trades
+// there use a gas estimate instead of a fixed limit.
+const GATED = {
+  '0xf67e8da4251eba24f9679fd3f9e39405bafdc10c': { name: 'Elysium Machines', router: '0xb08fc83f1f00d57d3bd7f2c23cc5acf2f61d51eb', bs: '327d0c86', ss: 'f4dbbf5a' },
+};
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump'], ['0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', 'Uniswap']]);
 // launchpads that sit on someone else's pool manager, named by their hook
 const HOOK_NAMES = { '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'Flaunch' }; // Flaunch fork on the official Uniswap v4
@@ -489,18 +507,18 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni';
-const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' ? r.router : ROUTER);
-const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve)]);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated';
+const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' ? r.router : ROUTER);
+const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'curve' ? enc(curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'curve' ? enc(curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'gated' ? enc(r.bs, minOut, dl, 96, 0) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammBuy : curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'gated' ? enc(r.ss, amt, minOut, dl, 128, 0) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammSell : curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? `${r.name} bonding curve` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} pair (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
@@ -508,9 +526,26 @@ const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ?
 async function v4QuoteBuy(r, t, wei) {
   if (r.kind === 'uni') return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
   if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
-  if (r.kind === 'curve') return u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
+  if (r.kind === 'curve') return r.amm ? ammQuote(r, t, wei, true) : u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
   return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
+}
+// a graduated curve coin: x·y = k on its pair, the fee taken on the HYPE side (in on a buy, out on a sell)
+async function ammQuote(r, t, amt, buy) {
+  const [res, t0] = await Promise.all([ethCall(r.pair, '0x0902f1ac', {}, undefined, true), ethCall(r.pair, '0x0dfe1681', {}, undefined, true)]);
+  const h = strip(res), a = BigInt('0x' + h.slice(0, 64)), b = BigInt('0x' + h.slice(64, 128));
+  const [rT, rW] = lc('0x' + strip(t0).slice(24)) === t ? [a, b] : [b, a];
+  const keep = BigInt(10000 - (r.fee ?? 125));
+  if (buy) { const x = (amt * keep) / 10000n; return (rT * x) / (rW + x); }
+  return ((rW * amt) / (rT + amt)) * keep / 10000n;
+}
+// gas limit: an estimate with room to spare (heavy transfer logic, an ERC-404 minting an NFT per unit), or a
+// generous default when the estimate failed. Only the gas used is charged, so a high limit costs nothing.
+const GAS_DEF = { uni: 3000000, gated: 12000000 }; // gated: about 85 ERC-404 units, when no estimate came back
+const gasFor = (r, est) => Math.min(31000000, est ? Math.max(Math.ceil(est * 1.5) + 100000, 400000) : GAS_DEF[r.kind] || 2000000);
+async function estGas(r, t, wei) {
+  try { return Number(BigInt(await race('eth_estimateGas', [{ from: me, to: routerOf(r), value: hex(wei), data: buyData(r, t, wei, 0, me, deadline()) }]))); }
+  catch { return null; }
 }
 // allowance(me, ROUTER) lives at keccak(spender, keccak(owner, base)); find base once so sells can be quoted before approving
 async function allowanceSlot(t, spender) {
@@ -526,17 +561,17 @@ async function allowanceSlot(t, spender) {
 async function v4QuoteSell(r, t, amt, slot) {
   if (r.kind === 'uni') return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
-  if (r.kind === 'curve') return u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
+  if (r.kind === 'curve') return r.amm ? ammQuote(r, t, amt, false) : u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
   return u256(await ethCall(routerOf(r), data, { from: me }, ov, true));
 }
-async function kyber(path, body) {
-  const r = await fetch(KYBER + path, { method: body ? 'POST' : 'GET', headers: { 'x-client-id': KYBER_ID, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) }).then((x) => x.json());
+async function kyber(path, body, ms = 10000) {
+  const r = await fetch(KYBER + path, { method: body ? 'POST' : 'GET', headers: { 'x-client-id': KYBER_ID, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(ms) }).then((x) => x.json());
   if (r.code !== 0 || !r.data) throw new Error(r.message === 'route not found' || r.message === 'token not found' ? 'no KyberSwap route' : `KyberSwap: ${r.message}`);
   return r.data;
 }
-const kyRoute = (tin, tout, amt) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tout}&amountIn=${amt}`);
+const kyRoute = (tin, tout, amt, ms) => kyber(`/routes?tokenIn=${tin}&tokenOut=${tout}&amountIn=${amt}`, undefined, ms);
 const kyBuild = (sum, slip) => kyber('/route/build', { routeSummary: sum, sender: me, recipient: me, slippageTolerance: Number(slip), deadline: deadline() });
 
 // ── Ascend (PancakeSwap Infinity fork) ───────────────────────────────────────────────────────────────
@@ -980,20 +1015,32 @@ function indexPools() {
 const poolCount = () => Object.values(state.pools).reduce((n, l) => n + l.length, 0);
 
 async function findRoute(t, fresh = false) {
-  if (!fresh && state.routes[t]) return state.routes[t];
+  const kept = state.routes[t];
+  // a KyberSwap route picked although the coin has pools of its own is looked at again after a while: its pools may
+  // only have failed to answer (busy nodes)
+  if (!fresh && kept && !(kept.again && Date.now() > kept.again)) return kept;
   const probe = 10n ** 16n;
+  const kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => BigInt(k.routeSummary.amountOut)).catch(() => 0n); // asked alongside the pools
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   const pools = state.pools[t] || [];
   let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf).flatMap(uniExpand);
   for (const p of pools.filter((x) => x.kind === 'ascend').slice(-2)) { const ar = await ascRouteOf(p).catch(() => null); if (ar) cands.push(ar); }
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
+  const g = GATED[t];
+  if (g) cands.push({ kind: 'gated', name: g.name, router: g.router, bs: g.bs, ss: g.ss });
   cands = cands.concat(await v3Pools(t), await curvePools(t));
   // every pool the coin has, best price wins (a coin can sit on several launchpads)
   const good = (await Promise.all(cands.map(quote))).filter(Boolean).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
   let route = good[0]?.r || null;
+  // KyberSwap reaches pools the index does not trade (other v3 forks, other wrapped-HYPE pairs). It also wins when it
+  // pays clearly more than the best pool (measured Nov 6: one coin's only indexed pool paid half of what its v3 pool
+  // did); that pool still runs the sell check, so a coin that cannot be sold is caught either way
+  const kOut = await kyP;
+  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && kOut > (good[0].out * 103n) / 100n) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
   if (!route) {
-    try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
+    if (kOut > 0n) route = { kind: 'kyber', name: 'KyberSwap', ...(pools.length ? { again: Date.now() + 600000 } : {}) };
+    else try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
   }
   // the index is not built yet, or is behind: look for the coin's pool on chain directly
   if (!route) route = await scanV4(t, async (r) => (await quote(r))?.r || null);
@@ -1015,7 +1062,14 @@ async function v3Pools(t) {
 async function curvePools(t) {
   const out = [];
   await Promise.all(CURVES.map(async (x) => {
-    try { if (u256(await ethCall(x.curve, enc(x.qBuy, t, 10n ** 16n))) > 0n) out.push({ kind: 'curve', name: x.name, router: x.curve }); } catch {}
+    try {
+      const info = x.info ? strip(await ethCall(x.curve, enc(x.info, t), {}, undefined, true).catch(() => '0x')) : '';
+      const pair = info.length >= 192 ? '0x' + info.slice(152, 192) : ZERO;
+      if (pair !== ZERO) {
+        const fee = Number(u256(await ethCall(x.curve, '0x' + x.fee, {}, undefined, true).catch(() => '0x7d')));
+        out.push({ kind: 'curve', name: x.name, router: x.curve, amm: true, pair, fee: fee > 0 && fee < 2000 ? fee : 125 });
+      } else if (u256(await ethCall(x.curve, enc(x.qBuy, t, 10n ** 16n))) > 0n) out.push({ kind: 'curve', name: x.name, router: x.curve });
+    } catch {}
   }));
   return out;
 }
@@ -1209,8 +1263,13 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     return { ok: false, refused: true };
   }
   const wei = toWei(String(hypeAmt));
-  const known = opts.route || state.routes[t];
-  const scP = isPool(known) && known.kind !== 'ascend' ? sellCheck(known, t, wei) : null; // started right away when the route is known
+  const kept = state.routes[t];
+  const known = opts.route || (kept?.again && Date.now() > kept.again ? null : kept); // see findRoute
+  // started right away when the route is known: the sell check (a KyberSwap route runs it on the coin's own pool) and
+  // the gas estimate
+  const scOn = (x) => (isPool(x) && x.kind !== 'ascend' ? x : x?.kind === 'kyber' && x.check ? x.check : null);
+  const scP = scOn(known) ? sellCheck(scOn(known), t, wei) : null;
+  const gasP = isPool(known) && known.kind !== 'ascend' ? estGas(known, t, wei) : null;
   let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   // an Ascend coin whose anti-snipe fee is still up: wait for the second it drops instead of paying it
@@ -1219,44 +1278,58 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     const d = r.ur ? await ascEarly(r, t, wei).catch(() => null) : null;
     if (d) return ascWaitBuy(t, hypeAmt, replyTo, force, src, opts, r, d);
   }
-  if (r.kind !== 'ascend' && bal < wei + 2n * 10n ** 15n) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
+  if (r.kind !== 'ascend' && bal < wei + 2n * 10n ** 15n + (r.kind === 'gated' ? 10n ** 15n : 0n)) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const head = opts.label ? `${opts.label}\n` : '';
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
   // or lose too much on the round trip, and its buy leg is the quote for this exact size.
-  let sc = { note: '' }, expect = null, ascTxs = null;
+  let sc = { note: '' }, expect = null, ascTxs = null, gasEst = null;
+  const refuse = async () => {
+    J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
+    const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).` : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).`;
+    await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
+    return { ok: false, refused: true };
+  };
   if (r.kind === 'ascend') {
     const plan = await ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, bal);
     if (plan.refused) return { ok: false, refused: true };
     ({ sc, expect } = plan);
     ascTxs = plan.txs;
   } else if (isPool(r)) {
-    sc = await (scP && r === known ? scP : sellCheck(r, t, wei));
-    if (cfg().check && !force && sc.ok === false) {
-      J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
-      const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).` : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).`;
-      await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
-      return { ok: false, refused: true };
-    }
+    const same = r === known;
+    [sc, gasEst] = await Promise.all([same && scP ? scP : sellCheck(r, t, wei), same && gasP ? gasP : estGas(r, t, wei)]);
+    if (cfg().check && !force && sc.ok === false) return refuse();
     if (sc.got > 0n) expect = sc.got;
     else {
       expect = await v4QuoteBuy(r, t, wei).catch(() => null);
-      if (expect == null) {
+      // no answer, or nothing out (a pool drained by its dev, a curve that graduated): look for the coin's pool again
+      if (!(expect > 0n)) {
         if (opts.route) throw new Error('no route for this token yet'); // a snipe retries
         r = await findRoute(t, true); // the pool changed: pick again
-        if (!r) throw new Error('no route for this token any more');
-        if (isPool(r)) expect = await v4QuoteBuy(r, t, wei);
+        if (!r) throw new Error('no route for this token any more: its pool is empty or gone (liquidity pulled?)');
+        if (isPool(r)) {
+          [expect, gasEst] = await Promise.all([v4QuoteBuy(r, t, wei), estGas(r, t, wei)]);
+          if (!(expect > 0n)) throw new Error('its pool has no liquidity left (pulled or empty), so there is nothing to buy into');
+        }
       }
     }
+  } else if (r.check) {
+    // KyberSwap pays more than the coin's own pool, but that pool still shows whether the coin can be sold at all
+    // (its round trip there says nothing about KyberSwap's price, so only a blocked sell refuses)
+    sc = await (r === known && scP ? scP : sellCheck(r.check, t, wei));
+    if (cfg().check && !force && sc.blocked) return refuse();
+    sc = { note: 'KyberSwap: better price than the pool' };
   }
   let tx;
   if (ascTxs) tx = ascTxs[ascTxs.length - 1];
-  else if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: r.kind === 'uni' ? 1500000 : 600000 };
+  else if (isPool(r)) tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: gasFor(r, gasEst) };
   else {
     const k = await kyRoute(NATIVE, t, wei);
     const b = await kyBuild(k.routeSummary, slip);
     expect = BigInt(b.amountOut);
-    tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
+    tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 2), 1500000) };
   }
+  // the node wants the whole gas limit covered up front (at 0.4 gwei: 2M gas 0.0008 HYPE, 12M 0.005)
+  if (!ascTxs && bal < BigInt(tx.value || 0) + BigInt(tx.gas) * (await gasPrice())) throw new Error(`not enough HYPE for ${hypeAmt} HYPE plus gas: wallet has ${fmtH(num(bal))}`);
   const waitS = opts.sendAt ? (opts.sendAt - Date.now()) / 1000 : 0;
   const msgP = say(`${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>…${sc.note ? ` (${sc.note})` : ''}${waitS > 0.3 ? `\nSending in ${waitS.toFixed(1)} s, when the fee drops.` : ''}`, null, replyTo);
   let hash;
@@ -1313,7 +1386,7 @@ async function preApprove(t, spender = ROUTER) {
   if (approving.has(t)) return;
   if ((await allowanceOf(t, spender)) >= MAX256 >> 1n) return;
   approving.add(t);
-  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, MAX256), gas: 120000 })); }
+  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, MAX256), gas: 200000 })); }
   catch (e) { approving.delete(t); throw e; }
 }
 
@@ -1340,7 +1413,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
   const head = opts.why ? `${opts.icon || '🎯'} ${opts.why}\n` : '';
   const msgP = say(`${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
-  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 120000 });
+  const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 200000 });
   let txs, expect;
   try {
     if (r.kind === 'ascend' || r.kind === 'uni') {
@@ -1350,10 +1423,13 @@ async function sell(t, pct, replyTo, opts = {}) {
       const backQ = (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
       expect = uni ? backQ : await weiOfQ(r.q, backQ);
       const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
-      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: uni ? 1500000 : 900000 }];
+      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: uni ? 3000000 : 2000000 }];
       if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
     } else if (isPool(r)) {
-      const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: 600000 });
+      // an ERC-404 sell burns an NFT per whole unit: its gas is estimated once the router may pull the coin, and is
+      // otherwise a high limit (only the gas used is charged)
+      const sGas = r.kind === 'gated' && allowed >= amt ? await race('eth_estimateGas', [{ from: me, to: rtr, data: sellData(r, t, amt, 0, me, deadline()) }]).then((g) => Number(BigInt(g))).catch(() => null) : null;
+      const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: r.kind === 'gated' ? gasFor(r, sGas) : 2000000 });
       if (allowed >= amt) {
         expect = (r === r0 && amt === guess && (await qGuess)) || (await v4QuoteSell(r, t, amt, null));
         txs = [swap(expect)];
@@ -1378,11 +1454,17 @@ async function sell(t, pct, replyTo, opts = {}) {
       const b = await kyBuild(k.routeSummary, slip);
       const spender = lc(b.routerAddress);
       expect = BigInt(b.amountOut);
-      const sw = { to: spender, value: BigInt(b.transactionValue || 0), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 1.6), 600000) };
+      const sw = { to: spender, value: BigInt(b.transactionValue || 0), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 2), 1500000) };
       const ka = await allowanceOf(t, spender);
       txs = ka >= amt ? [sw] : [approveTx(spender), sw];
     }
   } catch (e) {
+    // the remembered route may be stale (a curve coin graduated to its pair, a pool emptied): pick again, once
+    if (r0 && !opts.again) {
+      delete state.routes[t]; save();
+      await edit(await msgP, `${head}↻ ${esc(m.sym)}'s route changed, finding it again…`).catch(() => {});
+      return sell(t, pct, replyTo, { ...opts, again: true });
+    }
     await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> failed: ${esc(e.message).slice(0, 200)}`, cardButtons(t));
     return false;
   }
