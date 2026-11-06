@@ -85,17 +85,15 @@ const HOOK_NAMES = {
 };
 // launchpads that were already on Elysium before new-launchpad detection: never "new"
 const OLD_HOOKS = new Set(['0xe0def4221b9840a610d4e7d55812a79a6431a8ec', '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec', '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec']);
-// New launchpads: a pool hook never seen before on a shared PoolManager, or a new PoolManager. The contract the
-// launch transaction called and the hook are looked up on other chains: the same contracts on Base, BNB, Arbitrum,
-// Ethereum or HyperEVM mean an established launchpad moving to Elysium, where the first coins are the play. Its
-// first FIRST_MOVERS coins post the moment they launch; any other new launchpad posts its first coin only.
+// New launchpads: a pool hook never seen before on a shared PoolManager, or a new PoolManager. Only its first coin
+// posts (the signal is a new player arriving on chain); later coins follow the usual rules. The contract the launch
+// transaction called and the hook are looked up on other chains: the same contracts on Base, BNB, Arbitrum,
+// Ethereum or HyperEVM mean an established launchpad moving to Elysium.
 const KNOWN_FACTORIES = { '0xca111dcdd2ce924c3378d6514fdcbc46217bca16': 'Clanker v5' };
 const XCHAINS = [['Base', 'https://base-rpc.publicnode.com'], ['BNB', 'https://bsc-rpc.publicnode.com'], ['Arbitrum', 'https://arbitrum-one-rpc.publicnode.com'], ['Ethereum', 'https://ethereum-rpc.publicnode.com'], ['HyperEVM', 'https://rpc.hyperliquid.xyz/evm']];
 // contracts that sit at the same address on every chain and say nothing about a launchpad (multicall, Permit2,
 // CREATE2 deployers)
 const XCHAIN_SKIP = new Set(['0xca11bde05977b3631167028862be2a173976ca11', '0x000000000022d473030f116ddee9f6b43ac78ba3', '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed', '0x4e59b44847b379578588920ca78fbf26c0b4956c', '0x914d7fec6aac8cd542e72bca78b30650d45643d7', '0x0000000000ffe8b47b3e2130213b802212439497']);
-const FIRST_MOVERS = 3;           // coins posted at launch on a new launchpad that also lives on other chains
-const NEW_LP_WINDOW = 48 * 3600;  // a launchpad counts as new this long after its first coin here
 const MAX_NEW_LP_ALERTS = 3;      // per scan
 async function deployedElsewhere(addrs) {
   const list = [...new Set(addrs.filter((a) => a && a !== ZERO && !XCHAIN_SKIP.has(a)))];
@@ -113,7 +111,6 @@ async function deployedElsewhere(addrs) {
 // a coin's launchpad: its hook on a shared PoolManager, else its PoolManager
 const lpKeyOf = (rec) => (rec?.hook && rec.hook !== ZERO && LAUNCHPADS[rec.lp]?.busy ? 'h:' + rec.hook : 'pm:' + rec?.lp);
 const oldLp = (key) => (key.startsWith('h:') ? OLD_HOOKS.has(key.slice(2)) : !!LAUNCHPADS[key.slice(3)] && !LAUNCHPADS[key.slice(3)].fresh);
-const freshLp = (state, rec) => { const s = state.lpSeen?.[lpKeyOf(rec)]; return !!s && !s.seeded && now() - s.at < NEW_LP_WINDOW; };
 // a launchpad name for a coin: its pool's hook when that hook is a known launchpad, else its PoolManager
 const lpNameOf = (rec, dflt = 'unknown launchpad') => HOOK_NAMES[rec?.hook] || LAUNCHPADS[rec?.lp]?.name || (rec?.lp === 'uniswap' ? 'Uniswap' : dflt);
 // a launch on a busy shared PoolManager needs more traction before 🚀 (about 80 coins an hour launch there)
@@ -446,11 +443,11 @@ async function main() {
   // pool managers the gate identified as Ascend or Signal join the launchpad list
   for (const [pm, x] of Object.entries(gatePms(state))) if (!LAUNCHPADS[pm]) { LAUNCHPADS[pm] = { name: x.name, hook: x.hook }; INFRA.add(pm); }
   // new-launchpad detection, first start: every launchpad already seen counts as known (before this scan adds
-  // anything); Clanker v5 is the one migration already under way (TALOS, its first coin here, Nov 6)
+  // anything), Clanker v5 included (TALOS was its first coin here, Nov 6)
   state.lpSeen ||= {};
   if (state.lpSeedV !== 1) {
     for (const r of Object.values(state.tok)) if (r.lp) state.lpSeen[lpKeyOf(r)] ||= { at: r.born || now(), n: 0, seeded: 1 };
-    state.lpSeen['h:0x3ea9581a32a396f69b177b65b91149cf887beacc'] = { at: 1793951040, n: 1, first: '0x6049c623decec46189ad25994f0a48046162cccc', via: '0xca111dcdd2ce924c3378d6514fdcbc46217bca16', name: 'Clanker v5', chains: ['BNB', 'Monad', 'Robinhood Chain', 'X Layer', 'Arc'], migrated: true };
+    state.lpSeen['h:0x3ea9581a32a396f69b177b65b91149cf887beacc'] ||= { at: now(), n: 0, seeded: 1 };
     state.lpSeedV = 1;
   }
   // PoolManagers found by new-launchpad detection join the list too
@@ -565,8 +562,7 @@ async function main() {
   for (const { coin, tx } of launchTxs.slice(0, 40)) {
     try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); state.tok[coin].via = lc(x?.to); } catch {}
   }
-  // launchpads new to Elysium: the first coin posts at once, and the first few when it is an established
-  // launchpad from other chains (first movers there are the play)
+  // launchpads new to Elysium: their first coin posts at once, nothing after that
   let newLpAlerts = 0;
   for (const { coin } of launchTxs.slice(0, 40)) {
     const rec = state.tok[coin];
@@ -584,16 +580,15 @@ async function main() {
     if (s.seeded) continue;
     s.n++;
     if (firstRun || newLpAlerts >= MAX_NEW_LP_ALERTS) continue;
-    if (!(s.n === 1 || (s.migrated && s.n <= FIRST_MOVERS && now() - s.at < NEW_LP_WINDOW))) continue;
+    if (s.n !== 1) continue;
     newLpAlerts++;
     state.alerted['n:' + coin] = { t: now() };
     const meta = await tokenMeta(state, coin);
     const where = s.name || (key.startsWith('h:') ? `a new hook ${short(key.slice(2))}` : `a new PoolManager ${short(key.slice(3))}`);
-    const nth = s.n === 1 ? 'First coin' : `Coin #${s.n}`;
     const text =
-      `🆕 <b>${s.n === 1 ? 'New launchpad' : 'Early coin on a new launchpad'}: ${esc(where)}</b>\n` +
-      (s.migrated ? `Established elsewhere: ${s.chains.length ? `the same contracts are live on ${s.chains.join(', ')}` : 'a known launchpad factory'}. First movers here are the play.\n` : s.checked === 0 ? 'Could not reach other chains to check where else it lives.\n' : 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: a new team.\n') +
-      `${nth}: <b>${esc(meta.s)}</b> (${esc(meta.n)})${rec.creator ? ` · launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : ''}\n` +
+      `🆕 <b>New launchpad: ${esc(where)}</b>\n` +
+      (s.migrated ? `Established elsewhere: ${s.chains.length ? `the same contracts are live on ${s.chains.join(', ')}` : 'a known launchpad factory'}. A new player arriving on Elysium.\n` : s.checked === 0 ? 'Could not reach other chains to check where else it lives.\n' : 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: a new team.\n') +
+      `First coin: <b>${esc(meta.s)}</b> (${esc(meta.n)})${rec.creator ? ` · launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : ''}\n` +
       `Factory <code>${s.via || '?'}</code>${key.startsWith('h:') ? ` · hook <code>${key.slice(2)}</code>` : ''}\n` +
       `<code>${coin}</code>\n${coinLink(state, coin)}`;
     msgs.push(s.migrated ? { text, buttons: buyButtons('e', coin) } : text);
@@ -704,7 +699,7 @@ async function main() {
     if (age != null && age < LAUNCH_WINDOW_H * 3600 && !rec.launchAlert && !firstRun) {
       const volUsd = toUsd(rec.vol) ?? 0;
       const share = rec.vol ? rec.buyVol / rec.vol : 0;
-      const busy = LAUNCHPADS[rec.lp]?.busy && !freshLp(state, rec); // a new launchpad gets the normal thresholds
+      const busy = LAUNCHPADS[rec.lp]?.busy;
       if (rec.buyers.length >= (busy ? BUSY_MIN_BUYERS : LAUNCH_MIN_BUYERS) && volUsd >= (busy ? BUSY_MIN_USD : LAUNCH_MIN_USD) && share >= LAUNCH_MIN_BUY_SHARE) {
         rec.launchAlert = now();
         state.alerted['c:' + t] = { t: now() };
