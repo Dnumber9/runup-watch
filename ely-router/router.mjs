@@ -79,6 +79,19 @@ const me = account.address.toLowerCase();
 const CHAIN_ID = 99901;
 const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elyspump.com,https://rpc-live.elysp.com')
   .split(',').map((s) => s.trim()).filter(Boolean);
+// sends also go to these relays (never read from): every extra path to the sequencer is a chance to land sooner
+const SEND_RPCS = [...new Set([...RPCS, ...(process.env.ELY_SEND_RPCS ?? 'https://rpc.mesa.cx').split(',').map((s) => s.trim()).filter(Boolean)])];
+// nodes more than ~10 s behind the best head are benched from reads (checked every 10 s): a lagging node answers
+// fastest with stale state, so its quotes are old and it says "no receipt" for a buy that already landed
+let LIVE = RPCS;
+async function checkHeads() {
+  const heads = await Promise.all(RPCS.map((u) => call1(u, 'eth_blockNumber', [], 4000).then((h) => Number(BigInt(h))).catch(() => null)));
+  const top = Math.max(...heads.filter((h) => h != null));
+  const ok = RPCS.filter((u, i) => heads[i] != null && top - heads[i] <= 60);
+  const was = LIVE.join();
+  LIVE = ok.length ? ok : RPCS;
+  if (LIVE.join() !== was) console.log('rpc heads', RPCS.map((u, i) => `${u.replace('https://', '')} ${heads[i] == null ? 'down' : top - heads[i] + ' behind'}`).join(' · '));
+}
 const EXPLORER = process.env.EXPLORER || 'https://www.thekleos.xyz/scan/tx/';
 const KYBER = 'https://aggregator-api.kyberswap.com/elysium/api/v1';
 const KYBER_ID = process.env.KYBER_CLIENT_ID || 'ely-router';
@@ -234,22 +247,27 @@ let rpcIdx = 0;
 async function rpc(method, params, tries = 8) {
   let last;
   for (let i = 0; i < tries; i++) {
-    const url = RPCS[(rpcIdx + i) % RPCS.length];
-    try { const r = await call1(url, method, params); rpcIdx = (rpcIdx + i) % RPCS.length; return r; }
+    const url = LIVE[(rpcIdx + i) % LIVE.length];
+    try { const r = await call1(url, method, params); rpcIdx = (rpcIdx + i) % LIVE.length; return r; }
     catch (e) { if (!transient(e)) throw e; last = e; await sleep(150 * (i + 1)); }
   }
   throw last;
 }
-// Reads a trade waits on go to every node at once and the first answer wins (the fastest node, and a slow or
-// lagging one never holds a trade up). A revert counts once half the nodes agree. Nodes without state
-// override support just drop out of the race.
-function race(method, params, ms = 5000) {
+// Reads a trade waits on go to every live node at once and the first answer wins (the fastest node, and a slow
+// one never holds a trade up). A revert counts once half the nodes agree. Nodes without state override support
+// just drop out of the race. With `found`, an empty answer (null: no receipt there yet) does not win: the race
+// waits for a node that has it, and gives null only when every node said null.
+function race(method, params, ms = 5000, found = false) {
+  const nodes = LIVE;
   return new Promise((resolve, reject) => {
-    let left = RPCS.length, reverts = 0;
-    for (const u of RPCS) call1(u, method, params, ms).then(resolve, (e) => {
+    let left = nodes.length, reverts = 0, empty = false;
+    for (const u of nodes) call1(u, method, params, ms).then((r) => {
+      if (found && r == null) { empty = true; if (!--left) resolve(null); return; }
+      resolve(r);
+    }, (e) => {
       left--;
-      if (reverted(e) && ++reverts >= Math.ceil(RPCS.length / 2)) return reject(e);
-      if (!left) reject(e);
+      if (reverted(e) && ++reverts >= Math.ceil(nodes.length / 2)) return reject(e);
+      if (!left) (empty ? resolve(null) : reject(e));
     });
   });
 }
@@ -261,7 +279,7 @@ async function ethCall(to, data, extra = {}, override, fast = false) {
 }
 // sent to every node at once; the first node to accept it is enough, the rest keep going in the background
 async function broadcast(raw) {
-  try { await Promise.any(RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [raw], 12000))); }
+  try { await Promise.any(SEND_RPCS.map((u) => call1(u, 'eth_sendRawTransaction', [raw], 12000))); }
   catch (agg) {
     const why = (agg.errors || [agg]).map((e) => e?.message || '').join(' | ');
     if (/already known|known transaction|already imported/i.test(why)) return;
@@ -301,28 +319,29 @@ async function sendRaw(tx) {
   return hash;
 }
 const signed = new Map(); // hash → the signed tx and its nonce, kept so a lost send can be pushed again
-// receipts: every node is asked for the first 15 s (whichever sees it first), then one at a time. Elysium nodes pass
-// sends on to the sequencer, and one can accept a transaction and lose it on the way, so with no receipt yet the
-// same signed transaction goes to every node again at 4, 9 and 15 s (same hash, it cannot land twice). A
-// transaction no node knows after 20 s, whose nonce is still unused, was dropped: the nonce is resynced so later
-// trades do not queue behind it. If the nonce moved on, it landed and the receipt is on its way.
-async function receipt(hash, maxMs = 2 * 3600 * 1000) {
+// receipts: for the first 2 minutes every live node is asked at once and the first node that HAS the receipt wins
+// (a node that has not seen the block yet no longer answers "nothing" for all of them). Elysium can take tens of
+// seconds to include a transaction while its sequencer is not public, so a slow one is waited for, never called
+// failed: with no receipt yet the same signed transaction goes to every node and relay again at 4, 10, 20, 40 and
+// 80 s (same hash, it cannot land twice). It counts as dropped only when, after 3 minutes, no node knows it AND
+// the wallet's nonce is still unused; then the nonce is resynced so later trades do not queue behind it.
+// onSlow fires once at 20 s so the chat can say it is still landing.
+async function receipt(hash, maxMs = 2 * 3600 * 1000, onSlow) {
   const t0 = Date.now();
   const s = signed.get(hash);
-  let checked = 0, pushes = 0;
+  let pushes = 0, slow = false, checked = 0;
   while (Date.now() - t0 < maxMs) {
     const el = Date.now() - t0;
-    try { const r = el < 15000 ? await race('eth_getTransactionReceipt', [hash], 3000) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
-    if (s && pushes < 3 && el > [4000, 9000, 15000][pushes]) { pushes++; broadcast(s.raw).catch(() => {}); }
-    if ((el > 20000 && checked === 0) || (el > 60000 && checked === 1)) {
+    try { const r = el < 120000 ? await race('eth_getTransactionReceipt', [hash], 3000, true) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
+    if (s && pushes < 5 && el > [4000, 10000, 20000, 40000, 80000][pushes]) { pushes++; broadcast(s.raw).catch(() => {}); }
+    if (!slow && el > 20000) { slow = true; if (onSlow) await Promise.resolve().then(onSlow).catch(() => {}); } // awaited, so the final edit always comes after it
+    if (el > 180000 && checked === 0) {
       checked++;
-      const seen = await Promise.all(RPCS.map((u) => call1(u, 'eth_getTransactionByHash', [hash], 5000).catch(() => undefined)));
-      if (seen.every((x) => x === null)) {
-        const used = s ? await rpc('eth_getTransactionCount', [me, 'latest']).then((n) => Number(BigInt(n)) > s.nonce).catch(() => false) : false;
-        if (!used) { await serial(resyncNonce); return { status: 'dropped' }; }
-      }
+      const seen = await Promise.all(SEND_RPCS.map((u) => call1(u, 'eth_getTransactionByHash', [hash], 5000).catch(() => undefined)));
+      const used = s ? await rpc('eth_getTransactionCount', [me, 'latest']).then((n) => Number(BigInt(n)) > s.nonce).catch(() => true) : true;
+      if (!used && !seen.some((x) => x)) { await serial(resyncNonce); return { status: 'dropped' }; }
     }
-    await sleep(el < 15000 ? 300 : el < 120000 ? 1500 : 15000);
+    await sleep(el < 30000 ? 300 : el < 120000 ? 1000 : 15000);
   }
   return null;
 }
@@ -1150,17 +1169,12 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   try { hash = await serial(send); }
   catch (e) { await edit(await msgP, `${head}❌ Buy of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`); return { ok: false, error: e.message }; }
   const sentAt = Date.now();
-  const rcP = receipt(hash);
+  const rcP = receipt(hash, undefined, async () => edit(await msgP, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, still landing (Elysium is slow to include right now, do not tap again) · ${txLink(hash)}`));
   const msg = await msgP;
   await edit(msg, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
-  let rc = await rcP;
-  // dropped (its nonce never used, nothing spent): sign it again with a fresh nonce and send once more before giving up
-  if (rc?.status === 'dropped') {
-    await edit(msg, `${head}🔁 Buy of <b>${esc(m.sym)}</b> was dropped by the network, sending it again…`);
-    try { hash = await serial(send); rc = await receipt(hash); } catch (e) { console.error('buy resend', e.message); }
-  }
+  const rc = await rcP;
   if (!rc) { await edit(msg, `${head}⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Check ${txLink(hash)}; /nonce if it never lands.`); return { ok: false }; }
-  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> was dropped by the network twice; nothing spent. Tap again.`, cardButtons(t)); return { ok: false }; }
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> never landed: no node has it after 3 min and the wallet nonce is unused, so nothing was spent. Tap again.`, cardButtons(t)); return { ok: false }; }
   if (rc.status !== '0x1') {
     J({ side: 'revert', coin: t, sym: m.sym, hype: hypeAmt, src, slip: Number(slip), route: r.name, hash });
     await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> reverted (${opts.revertNote || `price moved past your ${Number(slip) / 100}% slippage?`}) · ${txLink(hash)}`, cardButtons(t));
@@ -1281,19 +1295,14 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   let hashes;
   try { hashes = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; }); }
   catch (e) { await edit(await msgP, `${head}❌ Sell of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`, cardButtons(t)); return false; }
-  let hash = hashes[hashes.length - 1];
+  const hash = hashes[hashes.length - 1];
   const sentAt = Date.now();
-  const rcP = receipt(hash);
+  const rcP = receipt(hash, undefined, async () => edit(await msgP, `${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b>, still landing (Elysium is slow to include right now, do not tap again) · ${txLink(hash)}`));
   const msg = await msgP;
   await edit(msg, `${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> for ~${fmtH(num(expect))}${hashes.length > 1 ? ' (approve + sell)' : ''} · ${txLink(hash)}`);
-  let rc = await rcP;
-  // dropped (nonce never used, nothing sold): send it once more with a fresh nonce before giving up
-  if (rc?.status === 'dropped') {
-    await edit(msg, `${head}🔁 Sell of <b>${esc(m.sym)}</b> was dropped by the network, sending it again…`);
-    try { const again = await serial(async () => { const out = []; for (const x of txs) out.push(await sendRaw(x)); return out; }); hash = again[again.length - 1]; rc = await receipt(hash); } catch (e) { console.error('sell resend', e.message); }
-  }
+  const rc = await rcP;
   if (!rc) { await edit(msg, `${head}⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`); return false; }
-  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> was dropped by the network twice; nothing sold. Tap again.`, cardButtons(t)); return false; }
+  if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> never landed: no node has it after 3 min and the wallet nonce is unused, so nothing was sold. Tap again.`, cardButtons(t)); return false; }
   if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted (price moved past your slippage?) · ${txLink(hash)}`, cardButtons(t)); return false; }
   const [hNow, left] = await Promise.all([hypeBal(true).catch(() => before), balOf(t, me, true).catch(() => tokBefore)]);
   let got = num(hNow - before), qLine = '';
@@ -3109,6 +3118,8 @@ async function main() {
   // nonce and gas price ready before the first tap, gas price kept warm
   await Promise.all([resyncNonce().catch(() => {}), gasPrice().catch(() => {})]);
   setInterval(() => fetchGas().catch(() => {}), 25000);
+  await checkHeads().catch(() => {});
+  setInterval(() => checkHeads().catch(() => {}), 10000);
   // pool index: first run reads the whole chain (a minute or two), then every few seconds keeps it live
   // ElysPump WHYPE pools were skipped by older versions: read the chain once more for them (known pools are kept)
   if (!state.wrapIdx) { state.poolsBlock = 0; state.wrapIdx = 1; save(); }
