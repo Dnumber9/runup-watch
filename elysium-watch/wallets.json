@@ -3058,5 +3058,55 @@
   "coins": [
    "0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7"
   ]
+ },
+ {
+  "address": "0x88c9365a2dfebf1f95c09863e9317aed1fd2f415",
+  "label": "Stands dev alt 1 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xeb58ae7d39ab0779c562e6802c19779f959758da",
+  "label": "Stands dev alt 2 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xd73393bf6e78d7862bbd4ae13ba48f844b3dfef4",
+  "label": "Stands dev alt 3 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xda8197417e3906ab344944ac9cdecfabcd64b5fa",
+  "label": "Stands dev alt 4 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xdb4165f7d0047878e5bd10b3a20407c0f8bcfa4e",
+  "label": "Stands dev alt 5 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xb3526a117bfd9cae2dd80c2359c68988cf9e9e76",
+  "label": "Stands dev alt 6 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0x7936e4807c519e6da07764fbe4d0dbf6a6d3cc33",
+  "label": "Stands dev alt 7 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0xe53c3c67d9066823936074b09f4802608402c917",
+  "label": "Stands dev alt 8 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0x70df0119e31baf3e394cb20e52bf8127080ce4e3",
+  "label": "Stands dev alt 9 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
+ },
+ {
+  "address": "0x23b4d495bbcd6dae08f5e18a1bb97072f4e3fa49",
+  "label": "Stands dev alt 10 (0.92%, split from the dev Nov 5)",
+  "group": "standsteam"
  }
 ]
