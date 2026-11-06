@@ -293,9 +293,14 @@ async function broadcast(raw) {
 // one send at a time, nonces handed out locally so an approve and its sell can go back to back
 let nextNonce = null, queue = Promise.resolve(), gpCache = { v: 0n, t: 0 };
 const serial = (fn) => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
+// sent but not landed yet, nonce → time sent. While Elysium is slow to include, the chain's count lags behind what
+// was sent, so a resync never goes below a nonce still in flight (that would reuse it and knock out the first trade)
+const inflight = new Map();
 async function resyncNonce() {
   const [l, p] = await Promise.all([rpc('eth_getTransactionCount', [me, 'latest']), rpc('eth_getTransactionCount', [me, 'pending']).catch(() => '0x0')]);
-  nextNonce = Math.max(Number(BigInt(l)), Number(BigInt(p)));
+  const chain = Math.max(Number(BigInt(l)), Number(BigInt(p)));
+  for (const [n, at] of inflight) if (n < chain || Date.now() - at > 200000) inflight.delete(n);
+  nextNonce = Math.max(chain, ...[...inflight.keys()].map((n) => n + 1));
   return nextNonce;
 }
 async function fetchGas() {
@@ -310,9 +315,18 @@ async function sendRaw(tx) {
   if (nextNonce == null) await resyncNonce();
   const nonce = nextNonce;
   const raw = await account.signTransaction({ chainId: CHAIN_ID, type: 'legacy', nonce, to: tx.to, value: BigInt(tx.value || 0), data: tx.data, gas: BigInt(tx.gas), gasPrice: await gasPrice() });
-  try { await broadcast(raw); }
-  catch (e) { if (e.nonceLow || e.nonceHigh) await resyncNonce(); throw e; }
+  // "nonce too high" while an earlier trade is still landing (an approve and its swap back to back): the earlier one
+  // is not in yet, so the same signed tx is offered again every 2 s for up to 30 s instead of failing the trade
+  for (let i = 0; ; i++) {
+    try { await broadcast(raw); break; }
+    catch (e) {
+      if (e.nonceHigh && i < 15 && [...inflight.keys()].some((n) => n < nonce)) { await sleep(2000); continue; }
+      if (e.nonceLow || e.nonceHigh) await resyncNonce();
+      throw e;
+    }
+  }
   nextNonce = nonce + 1;
+  inflight.set(nonce, Date.now());
   const hash = keccak256(raw);
   signed.set(hash, { raw, nonce });
   if (signed.size > 300) signed.delete(signed.keys().next().value);
@@ -332,14 +346,18 @@ async function receipt(hash, maxMs = 2 * 3600 * 1000, onSlow) {
   let pushes = 0, slow = false, checked = 0;
   while (Date.now() - t0 < maxMs) {
     const el = Date.now() - t0;
-    try { const r = el < 120000 ? await race('eth_getTransactionReceipt', [hash], 3000, true) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) return r; } catch {}
+    try { const r = el < 120000 ? await race('eth_getTransactionReceipt', [hash], 3000, true) : await rpc('eth_getTransactionReceipt', [hash], 3); if (r) { if (s) inflight.delete(s.nonce); return r; } } catch {}
     if (s && pushes < 5 && el > [4000, 10000, 20000, 40000, 80000][pushes]) { pushes++; broadcast(s.raw).catch(() => {}); }
     if (!slow && el > 20000) { slow = true; if (onSlow) await Promise.resolve().then(onSlow).catch(() => {}); } // awaited, so the final edit always comes after it
     if (el > 180000 && checked === 0) {
       checked++;
       const seen = await Promise.all(SEND_RPCS.map((u) => call1(u, 'eth_getTransactionByHash', [hash], 5000).catch(() => undefined)));
       const used = s ? await rpc('eth_getTransactionCount', [me, 'latest']).then((n) => Number(BigInt(n)) > s.nonce).catch(() => true) : true;
-      if (!used && !seen.some((x) => x)) { await serial(resyncNonce); return { status: 'dropped' }; }
+      if (!used && !seen.some((x) => x)) {
+        for (const n of [...inflight.keys()]) if (n >= s.nonce) inflight.delete(n); // anything sent after it is stuck behind the gap
+        await serial(resyncNonce);
+        return { status: 'dropped' };
+      }
     }
     await sleep(el < 30000 ? 300 : el < 120000 ? 1000 : 15000);
   }
@@ -359,6 +377,9 @@ async function tokenMeta(t) {
 }
 const balOf = async (t, w = me, fast = false) => u256(await ethCall(t, enc('70a08231', w), {}, undefined, fast));
 const hypeBal = async (fast = false) => BigInt(await (fast ? race : rpc)('eth_getBalance', [me, 'latest']));
+// as of a given block (a receipt's): a node that does not have that block yet errors and drops out of the race
+const balAt = async (block) => BigInt(await race('eth_getBalance', [me, block]));
+const tokAt = async (t, block, w = me) => u256(await race('eth_call', [{ to: t, data: enc('70a08231', w) }, block]));
 const allowanceOf = async (t, spender = ROUTER) => u256(await ethCall(t, enc('dd62ed3e', me, spender), {}, undefined, true));
 let usdPx = { v: null, t: 0 };
 async function hypeUsd() {
@@ -1108,10 +1129,18 @@ const gotFromLogs = (rc, t) => (rc.logs || []).filter((l) => lc(l.address) === t
 // needs, the sell check that doubles as the quote, the wallet and bag balances, is asked of every node at once
 // in one round trip; then the signed transaction goes to every node and the first acceptance counts. The
 // Telegram message is sent alongside, never before.
+const buyingNow = new Map(); // coin → when a buy of it was sent, until its receipt is in
 async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {}) {
   const { slip, max } = cfg();
   if (!(hypeAmt > 0)) throw new Error('amount must be above 0');
   if (hypeAmt > max) throw new Error(`max per buy is ${max} HYPE (change with /set max)`);
+  // a second tap while a buy of the same coin is still landing is almost always a retry of that buy: it does not buy
+  // twice unless asked (limit orders, snipes and copies are not held back)
+  const busy = buyingNow.get(t);
+  if (busy && !force && !/^(limit|snipe|copy)/.test(src) && Date.now() - busy < 200000) {
+    await say(`⏳ A buy of <b>${esc(meta[t]?.sym || t.slice(0, 10))}</b> sent ${Math.round((Date.now() - busy) / 1000)} s ago is still landing, so this tap did not buy again.`, [[{ text: `Buy ${hypeAmt} more anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }]], replyTo);
+    return { ok: false, refused: true };
+  }
   const wei = toWei(String(hypeAmt));
   const known = opts.route || state.routes[t];
   const scP = isPool(known) && known.kind !== 'ascend' ? sellCheck(known, t, wei) : null; // started right away when the route is known
@@ -1169,10 +1198,12 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   try { hash = await serial(send); }
   catch (e) { await edit(await msgP, `${head}❌ Buy of <b>${esc(m.sym)}</b> not sent: ${esc(e.message).slice(0, 200)}`); return { ok: false, error: e.message }; }
   const sentAt = Date.now();
+  buyingNow.set(t, sentAt);
   const rcP = receipt(hash, undefined, async () => edit(await msgP, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, still landing (Elysium is slow to include right now, do not tap again) · ${txLink(hash)}`));
   const msg = await msgP;
   await edit(msg, `${head}⏳ Buying ${hypeAmt} HYPE of <b>${esc(m.sym)}</b>, expecting ~${fmt(num(expect, m.d))} · ${txLink(hash)}`);
   const rc = await rcP;
+  if (buyingNow.get(t) === sentAt) buyingNow.delete(t);
   if (!rc) { await edit(msg, `${head}⌛ Buy of <b>${esc(m.sym)}</b> not confirmed after 2 h. Check ${txLink(hash)}; /nonce if it never lands.`); return { ok: false }; }
   if (rc.status === 'dropped') { await edit(msg, `${head}❌ Buy of <b>${esc(m.sym)}</b> never landed: no node has it after 3 min and the wallet nonce is unused, so nothing was spent. Tap again.`, cardButtons(t)); return { ok: false }; }
   if (rc.status !== '0x1') {
@@ -1304,11 +1335,17 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
   if (!rc) { await edit(msg, `${head}⌛ Sell of <b>${esc(m.sym)}</b> not confirmed after 2 h · ${txLink(hash)}`); return false; }
   if (rc.status === 'dropped') { await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> never landed: no node has it after 3 min and the wallet nonce is unused, so nothing was sold. Tap again.`, cardButtons(t)); return false; }
   if (rc.status !== '0x1') { J({ side: 'sell-revert', coin: t, sym: m.sym, pct, hash, why: opts.kind }); await edit(msg, `${head}❌ Sell of <b>${esc(m.sym)}</b> reverted (price moved past your slippage?) · ${txLink(hash)}`, cardButtons(t)); return false; }
-  const [hNow, left] = await Promise.all([hypeBal(true).catch(() => before), balOf(t, me, true).catch(() => tokBefore)]);
+  // balances read at the block the sell landed in: a node a block or two behind would still show the bag and the
+  // old HYPE, record a 0 HYPE sell and leave the position open
+  const at = rc.blockNumber;
+  const [hNow, left] = await Promise.all([
+    balAt(at).catch(() => hypeBal(true)).catch(() => before),
+    tokAt(t, at).catch(() => balOf(t, me, true)).catch(() => tokBefore),
+  ]);
   let got = num(hNow - before), qLine = '';
   if (opts.outQ) {
     // an Ascend coin paired with a token (USDC): the proceeds are that token, valued in HYPE
-    const qNow = await balOf(opts.outQ.q, me, true).catch(() => opts.outQ.before);
+    const qNow = await tokAt(opts.outQ.q, at).catch(() => balOf(opts.outQ.q, me, true)).catch(() => opts.outQ.before);
     const gq = qNow > opts.outQ.before ? qNow - opts.outQ.before : 0n;
     got = num(await weiOfQ(opts.outQ.q, gq));
     qLine = ` (${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`;
@@ -2807,7 +2844,7 @@ async function onMessage(msg) {
   }
   if (cmd === '/export') return exportJournal();
   if (cmd === '/report') return dailyReport();
-  if (cmd === '/nonce') { const n = await resyncNonce(); return say(`Nonce resynced: next is ${n}.`); }
+  if (cmd === '/nonce') { inflight.clear(); const n = await resyncNonce(); return say(`Nonce resynced from the chain: next is ${n}.`); }
   if (cmd === '/set') {
     const [k, v] = args;
     const lv = lc(v || '');
