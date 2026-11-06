@@ -1029,7 +1029,7 @@ async function findRoute(t, fresh = false) {
   // only have failed to answer (busy nodes)
   if (!fresh && kept && !(kept.again && Date.now() > kept.again)) return kept;
   const probe = 10n ** 16n;
-  const kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => BigInt(k.routeSummary.amountOut)).catch(() => 0n); // asked alongside the pools
+  const kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => k.routeSummary).catch(() => null); // asked alongside the pools
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   const pools = state.pools[t] || [];
@@ -1045,8 +1045,12 @@ async function findRoute(t, fresh = false) {
   // KyberSwap reaches pools the index does not trade (other v3 forks, other wrapped-HYPE pairs). It also wins when it
   // pays clearly more than the best pool (measured Nov 6: one coin's only indexed pool paid half of what its v3 pool
   // did); that pool still runs the sell check, so a coin that cannot be sold is caught either way
-  const kOut = await kyP;
-  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && kOut > (good[0].out * 103n) / 100n) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
+  const kSum = await kyP, kOut = kSum ? BigInt(kSum.amountOut) : 0n;
+  // ...but never when KyberSwap goes through one of the coin's own pools: it reads that pool's state seconds late, so in
+  // a fast move it looks cheaper than it is (TESTICLES, Nov 6: a buy routed that way reverted on a 5% slippage)
+  const own = new Set([...pools.map((p) => lc(p.id)), ...cands.filter((c) => c.pool).map((c) => lc(c.pool))]);
+  const kPools = (kSum?.route || []).flat().map((h) => lc(h.pool));
+  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && kOut > (good[0].out * 103n) / 100n && !kPools.some((x) => own.has(x))) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
   if (!route) {
     if (kOut > 0n) route = { kind: 'kyber', name: 'KyberSwap', ...(pools.length ? { again: Date.now() + 600000 } : {}) };
     else try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
@@ -1343,7 +1347,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     // (its round trip there says nothing about KyberSwap's price, so only a blocked sell refuses)
     sc = await (r === known && scP ? scP : sellCheck(r.check, t, wei));
     if (cfg().check && !force && sc.blocked) return refuse();
-    sc = { note: 'KyberSwap: better price than the pool' };
+    sc = { note: 'KyberSwap: better price than the pool', poolGot: sc.got || 0n };
   }
   let tx;
   if (ascTxs) tx = ascTxs[ascTxs.length - 1];
@@ -1353,6 +1357,11 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     const b = await kyBuild(k.routeSummary, slip);
     expect = BigInt(b.amountOut);
     tx = { to: lc(b.routerAddress), value: BigInt(b.transactionValue), data: b.data, gas: Math.max(Math.ceil(Number(b.gas) * 2), 1500000) };
+    // the coin's own pool, read fresh for this exact size, still pays about as much: buy there (no aggregator lag)
+    if (r.check && sc.poolGot > 0n && expect * 100n < sc.poolGot * 103n) {
+      r = r.check; expect = sc.poolGot; sc = { note: 'its own pool pays as much as KyberSwap now' };
+      tx = { to: routerOf(r), value: wei, data: buyData(r, t, wei, (expect * (10000n - slip)) / 10000n, me, deadline()), gas: gasFor(r, await estGas(r, t, wei)) };
+    }
   }
   // the node wants the whole gas limit covered up front (at 0.4 gwei: 2M gas 0.0008 HYPE, 12M 0.005)
   if (!ascTxs && bal < BigInt(tx.value || 0) + BigInt(tx.gas) * (await gasPrice())) throw new Error(`not enough HYPE for ${hypeAmt} HYPE plus gas: wallet has ${fmtH(num(bal))}`);
