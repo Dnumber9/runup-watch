@@ -79,8 +79,9 @@ const me = account.address.toLowerCase();
 const CHAIN_ID = 99901;
 const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elyspump.com,https://rpc-live.elysp.com')
   .split(',').map((s) => s.trim()).filter(Boolean);
-// sends also go to these relays (never read from): every extra path to the sequencer is a chance to land sooner
-const SEND_RPCS = [...new Set([...RPCS, ...(process.env.ELY_SEND_RPCS ?? 'https://rpc.mesa.cx').split(',').map((s) => s.trim()).filter(Boolean)])];
+// sends also go to these relays (never read from): every extra path to the sequencer is a chance to land sooner.
+// Montra's own RPC: Montra trades seen on Nov 6 landed about 3 to 4 s after their frontend built them
+const SEND_RPCS = [...new Set([...RPCS, ...(process.env.ELY_SEND_RPCS ?? 'https://rpc.montramarkets.xyz,https://rpc.mesa.cx').split(',').map((s) => s.trim()).filter(Boolean)])];
 // nodes more than ~10 s behind the best head are benched from reads (checked every 10 s): a lagging node answers
 // fastest with stale state, so its quotes are old and it says "no receipt" for a buy that already landed
 let LIVE = RPCS;
@@ -343,13 +344,15 @@ async function sendRaw(tx) {
 // Elysium tx) and runs them in the order they were posted. Measured Nov 6 on a sniper wallet posting at 50 gwei,
 // they executed 1 to 16 s after the post, while Nadir's RPC buys took 8 to 32 s. Every trade is now sent both
 // ways at once. Both carry the same signed tx (same hash, same nonce), so it lands once, by whichever is faster.
-// HyperEVM gas for the post (about 0.005 HYPE at 50 gwei: a post uses ~93k gas) is paid from this wallet's own address on HyperEVM; with
+// HyperEVM gas for the post (a post uses ~93k gas: about 0.019 HYPE at the default 200 gwei) is paid from this wallet's own address on HyperEVM; with
 // too little HYPE there the post is skipped and trades go by RPC only, as before. /set inbox off turns it off.
 const ELY_INBOX = '0xce59f8b65ad41c9dae4c07a0571a39824bd92cff';
 const HYPER_RPCS = (process.env.HYPER_RPCS || 'https://rpc.hyperliquid.xyz/evm,https://rpc.hypurrscan.io').split(',').map((s) => s.trim()).filter(Boolean);
-const INBOX_GWEI = Number(process.env.INBOX_GWEI || 50);
+// HyperEVM gas price for the post. High by default: inside one HyperEVM block, posts are ordered by gas price, so
+// this keeps a buy ahead of other posts in the same block (the sniper seen on Nov 6 pays 50). /set gwei 300 changes it.
+const inboxGwei = () => Number(state.set.gwei ?? process.env.INBOX_GWEI ?? 200);
 const INBOX_GAS = 300000n; // limit; a post uses ~93k (a sniper's, Nov 6)
-const inboxWei = () => BigInt(Math.round(INBOX_GWEI * 1e9));
+const inboxWei = () => BigInt(Math.round(inboxGwei() * 1e9));
 const inbox = { nonce: null, bal: null, warned: false, posts: 0, last: null };
 async function hcall(method, params, tries = 6) {
   let last;
@@ -372,7 +375,7 @@ async function inboxSend(raw) {
   if (!inboxReady()) {
     if (!inbox.warned && inbox.bal != null) {
       inbox.warned = true;
-      say(`ℹ️ Inbox route is off: the bot wallet has ${fmtH(num(inbox.bal))} on HyperEVM. Send about 0.2 HYPE to <code>${account.address}</code> on <b>HyperEVM</b> (not Elysium) to turn it on; each trade's post costs about 0.005 HYPE there. Trades still go by RPC meanwhile.`).catch(() => {});
+      say(`ℹ️ Inbox route is off: the bot wallet has ${fmtH(num(inbox.bal))} on HyperEVM. Send about 0.5 HYPE to <code>${account.address}</code> on <b>HyperEVM</b> (not Elysium) to turn it on; each trade's post costs about ${fmtH(93000 * inboxGwei() / 1e9)} there at ${inboxGwei()} gwei. Trades still go by RPC meanwhile.`).catch(() => {});
     }
     return null;
   }
@@ -2897,8 +2900,8 @@ async function onMessage(msg) {
   }
   if (cmd === '/wallet') {
     await inboxRefresh().catch(() => {});
-    const ib = !cfg().inbox ? 'off (/set inbox on)' : inboxReady() ? `on · ${fmtH(num(inbox.bal))} on HyperEVM for gas · ${inbox.posts} posts since start` : `waiting for gas: ${inbox.bal == null ? 'HyperEVM balance unknown' : fmtH(num(inbox.bal))} on HyperEVM, needs ${fmtH(num(INBOX_GAS * inboxWei()))}+`;
-    return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium for trading. The same address on HyperEVM pays the Inbox route's gas (about 0.2 HYPE lasts a long time).\nInbox route: ${ib}\nThe key only lives on your VPS.`);
+    const ib = !cfg().inbox ? 'off (/set inbox on)' : inboxReady() ? `on at ${inboxGwei()} gwei (about ${fmtH(93000 * inboxGwei() / 1e9)} a trade) · ${fmtH(num(inbox.bal))} on HyperEVM for gas · ${inbox.posts} posts since start` : `waiting for gas: ${inbox.bal == null ? 'HyperEVM balance unknown' : fmtH(num(inbox.bal))} on HyperEVM, needs ${fmtH(num(INBOX_GAS * inboxWei()))}+`;
+    return say(`<code>${account.address}</code>\nFund it with HYPE on Elysium for trading. The same address on HyperEVM pays the Inbox route's gas (0.5 HYPE is about 25 trades at 200 gwei).\nInbox route: ${ib}\nThe key only lives on your VPS.`);
   }
   if (cmd === '/bal') return say(await balances());
   if (cmd === '/pnl') return say(await pnl());
@@ -2929,8 +2932,9 @@ async function onMessage(msg) {
     else if (k === 'preapprove' && /^(on|off)$/.test(lv)) state.set.preapprove = lv;
     else if (k === 'copymax' && Number(v) >= 0) state.set.copymax = Number(v);
     else if (k === 'inbox' && /^(on|off)$/.test(lv)) { state.set.inbox = lv; inbox.warned = false; }
+    else if (k === 'gwei' && Number(v) >= 0.1 && Number(v) <= 2000) { state.set.gwei = Number(v); inbox.warned = false; }
     else if (k === 'pin' && /^(on|off)$/.test(lv)) { state.set.pin = lv; if (lv === 'off' && state.pin?.id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: state.pin.id }); state.pin = {}; } }
-    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · copymax 10 · pin on|off · inbox on|off');
+    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · copymax 10 · pin on|off · inbox on|off · gwei 200 (Inbox post gas price on HyperEVM)');
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
