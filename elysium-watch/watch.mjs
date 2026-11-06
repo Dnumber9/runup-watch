@@ -82,9 +82,10 @@ const HOOK_NAMES = {
   '0x3ea9581a32a396f69b177b65b91149cf887beacc': 'Clanker v5',            // Clanker's own v5 factory, live on Elysium since Nov 4 (TALOS first)
   '0x1bdc2b4dafb0fc46df834559675f8c3308e668cc': 'Boursely',              // one-dev launchpad, fee-sharing hook
   '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'a Flaunch fork',        // VOLTA
+  '0xb67656ce894ac93c0164d8490ad23161a77ee000': 'PerpMe',                // perpme.fun/elysium, live since Nov 3, coins end in 0999 (also launches on Uniswap v3 and Ramses v3)
 };
 // launchpads that were already on Elysium before new-launchpad detection: never "new"
-const OLD_HOOKS = new Set(['0xe0def4221b9840a610d4e7d55812a79a6431a8ec', '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec', '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec']);
+const OLD_HOOKS = new Set(['0xe0def4221b9840a610d4e7d55812a79a6431a8ec', '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec', '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec', '0xb67656ce894ac93c0164d8490ad23161a77ee000']);
 // New launchpads: a pool hook never seen before on a shared PoolManager, or a new PoolManager. Only its first coin
 // posts (the signal is a new player arriving on chain); later coins follow the usual rules. The contract the launch
 // transaction called and the hook are looked up on other chains: the same contracts on Base, BNB, Arbitrum,
@@ -177,7 +178,10 @@ const LP_PAGES = {
   '0x06c63714fbf1f5753017123e2fcfdede4540b2c4': ['BOXA', (t) => `https://boxa.club/asset?address=${t}`],
   '0xb308b5df891c300a5f5a5b8fdbc30108ba842490': ['Kleos', (t) => `https://www.thekleos.xyz/token/${t}`],
   '0x5fb015a49f5b35073f9ce01c2adb287a75f89600': ['ElysPump', (t) => `https://elysp.com/#/token/${t}`],
+  '0xb67656ce894ac93c0164d8490ad23161a77ee000': ['PerpMe', (t) => `https://perpme.fun/elysium/token/${t}`],
 };
+// PerpMe also launches straight into Uniswap v3 and Ramses v3 pools (no hook to go by): its coins all end in 0999
+const PERPME_V3 = (t, r) => r.lp === 'uniswap' && t.endsWith('0999') && LP_PAGES['0xb67656ce894ac93c0164d8490ad23161a77ee000'];
 const ELYXA_PAGE = ['Elyxa', (t) => `${ELYXA}/#/terminal/${t}`];
 let TOKS = {};           // coin → { lp, hook }: the main scan's state.tok (the fast lane's copy of it)
 const LIVE_TOKS = {};    // coins whose pool the fast lane saw open since its last read of state.json
@@ -186,7 +190,7 @@ const noteLaunchpad = (tok, l) => {
   const c0 = lc(topicAddr(l.topics[2])), c1 = lc(topicAddr(l.topics[3])), coin = isHype(c0) ? c1 : isHype(c1) ? c0 : null;
   if (coin && !tok[coin]) LIVE_TOKS[coin] = { lp: lc(l.address), hook: lc('0x' + (words(l.data)[2] || '').slice(24)) };
 };
-const pageOf = (t) => { const r = LIVE_TOKS[t] || TOKS[t]; return (r && (LP_PAGES[r.hook] || LP_PAGES[r.lp])) || ELYXA_PAGE; };
+const pageOf = (t) => { const r = LIVE_TOKS[t] || TOKS[t]; return (r && (LP_PAGES[r.hook] || LP_PAGES[r.lp] || PERPME_V3(t, r))) || ELYXA_PAGE; };
 const assetLink = (t, label = 'chart') => `<a href="${pageOf(t)[1](t)}">${label}</a>`;
 // wallets open on Elyxa's portfolio page; tx links go to Kinetiq's explorer (partner-only until public launch)
 const EXPLORER = 'https://elysium.kinetiq.xyz/explorer';
@@ -555,7 +559,7 @@ async function main() {
       const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
       const hook = lc('0x' + (words(l.data)[2] || '').slice(24)); // Initialize data: fee, tickSpacing, hooks, sqrtPrice, tick
       state.tok[coin] = { lp: pm, hook, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
-      launchTxs.push({ coin, tx: l.transactionHash });
+      launchTxs.push({ coin, tx: l.transactionHash, block: parseInt(l.blockNumber, 16) });
     }
   }
   // who launched each new coin (one tx lookup per launch; ~10 an hour across the chain)
@@ -564,7 +568,7 @@ async function main() {
   }
   // launchpads new to Elysium: their first coin posts at once, nothing after that
   let newLpAlerts = 0;
-  for (const { coin } of launchTxs.slice(0, 40)) {
+  for (const { coin, block } of launchTxs.slice(0, 40)) {
     const rec = state.tok[coin];
     if (!rec) continue;
     const key = lpKeyOf(rec);
@@ -572,6 +576,12 @@ async function main() {
     let s = state.lpSeen[key];
     if (!s) {
       const addr = key.slice(key.indexOf(':') + 1);
+      // a launch contract that had already created several contracts before this coin has launched coins before: a
+      // launchpad the watcher never saw (PerpMe had 243 coins when its first one here posted as "new"), not a new one.
+      // A router or the PoolManager itself stays at nonce 1, so those still count as new.
+      let made = 0;
+      if (rec.via && block > 1) try { made = parseInt(await rpc('eth_getTransactionCount', [rec.via, '0x' + (block - 1).toString(16)]), 16) - 1; } catch {}
+      if (made >= 3) { state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via, seeded: 1, made }; console.log(`new-launchpad check: an established launcher (${made} contracts made before), skipped`); continue; }
       const name = KNOWN_FACTORIES[rec.via] || null;
       const { chains, checked } = await deployedElsewhere([rec.via, addr]);
       s = state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via || null, name, chains, checked, migrated: !!name || chains.length > 0 };
