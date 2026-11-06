@@ -2154,5 +2154,12 @@
  {
   "address": "0x743db8608f42be6ce0c4eb596a48e64e2df7a3c1",
   "label": "KNTQ accumulator (136 HYPE dry, small Blob 0xeb05 bag)"
+ },
+ {
+  "address": "0xe1c1757800c7f3dcd82002b8112b2b9a371aed0f",
+  "label": "Bythos dev (real one, bythos.fun testnet deployer)",
+  "group": "dev",
+  "watch": "launch",
+  "coins": []
  }
 ]
