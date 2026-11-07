@@ -1700,9 +1700,22 @@ async function commands(state, W) {
     if (!state.cmdOwner && String(TG_CHAT || '').startsWith('-') && m.chat.type === 'private') state.cmdOwner = from;
     if (from !== String(TG_CHAT) && chat !== String(TG_CHAT) && from !== state.cmdOwner) continue;
     state.cmdChat = m.chat.id; // alerts follow you to the command bot
+    // whole lines per message: a cut through a <code> tag makes Telegram drop the message (a /bridgers list of 130
+    // wallets got no answer at all, Nov 7). A part Telegram still refuses goes again as plain text.
     const reply = async (text) => {
-      for (let i = 0; i < text.length; i += 3900) {
-        await cmdApi('sendMessage', { chat_id: m.chat.id, text: text.slice(i, i + 3900), parse_mode: 'HTML', disable_web_page_preview: true });
+      const parts = [];
+      let cur = '';
+      for (const line of text.split('\n')) {
+        if (cur && cur.length + line.length + 1 > 3800) { parts.push(cur); cur = ''; }
+        cur += (cur ? '\n' : '') + line;
+      }
+      if (cur) parts.push(cur);
+      for (const p of parts) {
+        const r = await cmdApi('sendMessage', { chat_id: m.chat.id, text: p, parse_mode: 'HTML', disable_web_page_preview: true });
+        if (!r.ok) {
+          console.log('command reply refused:', r.description);
+          await cmdApi('sendMessage', { chat_id: m.chat.id, text: p.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'), disable_web_page_preview: true });
+        }
       }
     };
     try { await reply(runCommand(state, W, m.text.trim())); } catch (e) { console.log('command reply failed:', e.message); }
