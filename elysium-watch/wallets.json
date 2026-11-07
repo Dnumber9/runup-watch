@@ -3010,5 +3010,11 @@
   "label": "hyper pengu deployer (testnet: 566 holders; active on mainnet)",
   "group": "testnetteam",
   "watch": "launch"
+ },
+ {
+  "address": "0xd80f0363d4ddbc69214955fa29c3e5113fae0612",
+  "label": "Kinetiq governance multisig on Elysium (4 of 8, same owners as HyperEVM)",
+  "group": "kinetiq",
+  "watch": "all"
  }
 ]
