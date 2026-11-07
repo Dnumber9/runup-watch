@@ -156,6 +156,13 @@ const PC = { buy: 'd6febde8', sell: 'd3c9727c', qBuy: '4beb394c', qSell: 'a64190
 const GATED = {
   '0xf67e8da4251eba24f9679fd3f9e39405bafdc10c': { name: 'Elysium Machines', router: '0xb08fc83f1f00d57d3bd7f2c23cc5acf2f61d51eb', bs: '327d0c86', ss: 'f4dbbf5a' },
 };
+// Signal's Elysium launchpad (v4 lane 4.2, hook 4.3, deployed Nov 7 by 0x5273…6044): coins paired with WHYPE 0xba87…5e81
+// on eleos's pool manager. Its hook trusts only Signal's router during a launch's gate, so every trade goes through it:
+// buyNative(key, minOut, to, refundTo, deadline) payable and swap(key, zeroForOne, amountIn, minOut, to, unwrap,
+// deadline) after an approve, both returning the amount out (SignalV4RouterV2, verified on Base). A launch can charge a
+// falling anti-snipe fee on buys (up to 90%, linear over up to 600 s), cap one wallet's share and the tokens all buys of
+// one block may take, each for a while after launch; a buy over a cap or the block's budget reverts.
+const SIGNAL = { pm: '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da', hook: '0x601bdb66b0285c199b43479030a9132f6dd8aaec', router: '0x0f8b987553a40ba565eee9a7f6df3d1ecd07d964', factory: '0xd31471cb7044edae748d2a7324648e298346ecaa', whype: V3WHYPE };
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump'], ['0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', 'Uniswap']]);
 // launchpads that sit on someone else's pool manager, named by their hook
 const HOOK_NAMES = { '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'Flaunch' }; // Flaunch fork on the official Uniswap v4
@@ -519,19 +526,24 @@ const encBytesArray = (sel, items) => {
 const wOf = (r) => r.whype || V3WHYPE; // routes saved before forks had their own WHYPE are BOXA v2 / StockiumSwap
 const v3Buy = (r, t, wei, minOut, to, dl) => enc('414bf389', wOf(r), t, r.fee, to, dl, wei, minOut, 0);
 const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('414bf389', t, wOf(r), r.fee, r.router, dl, amt, minOut, 0), enc('49404b7c', minOut, to)]);
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve';
-const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' ? r.router : ROUTER);
-const ROUTERS = new Set([ROUTER, WROUTER, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
+// Signal: the PoolKey inline (currency0, currency1, fee, tickSpacing, hooks); a sell is the coin into WHYPE, unwrapped
+const sigKey = (r, t) => [...(r.qFirst ? [r.q, t] : [t, r.q]), r.fee, r.ts, r.hook];
+const sigBuy = (r, t, minOut, to, dl) => enc('31561a35', ...sigKey(r, t), minOut, to, to, dl);
+const sigSell = (r, t, amt, minOut, to, dl) => enc('38aad789', ...sigKey(r, t), r.qFirst ? 0 : 1, amt, minOut, to, 1, dl);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal';
+const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal' ? r.router : ROUTER);
+const ROUTERS = new Set([ROUTER, WROUTER, SIGNAL.router, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
-const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'gated' ? enc(r.bs, minOut, dl, 96, 0) : r.kind === 'pcurve' ? enc(PC.buy, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammBuy : curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
-const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'gated' ? enc(r.ss, amt, minOut, dl, 128, 0) : r.kind === 'pcurve' ? enc(PC.sell, amt, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammSell : curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
+const buyData = (r, t, wei, minOut, to, dl) => (r.kind === 'signal' ? sigBuy(r, t, minOut, to, dl) : r.kind === 'uni' ? uniBuyData(r, t, wei, minOut, dl) : r.kind === 'gated' ? enc(r.bs, minOut, dl, 96, 0) : r.kind === 'pcurve' ? enc(PC.buy, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammBuy : curveOf(r).buy, t, wei, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, true, wei, minOut, to, dl) : r.kind === 'v3' ? v3Buy(r, t, wei, minOut, to, dl) : v4Buy(r, t, minOut, to, dl));
+const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'signal' ? sigSell(r, t, amt, minOut, to, dl) : r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl) : r.kind === 'gated' ? enc(r.ss, amt, minOut, dl, 128, 0) : r.kind === 'pcurve' ? enc(PC.sell, amt, minOut, dl) : r.kind === 'curve' ? enc(r.amm ? curveOf(r).ammSell : curveOf(r).sell, t, amt, minOut, dl) : r.kind === 'wv4' ? wSwap(r, t, false, amt, minOut, to, dl) : r.kind === 'v3' ? v3Sell(r, t, amt, minOut, to, dl) : v4Sell(r, t, amt, minOut, to, dl));
 // a sell quote is the swap alone (a multicall answers with bytes[]); WHYPE out of a v3 swap = HYPE after the unwrap
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
 const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} ${curveOf(r).v4 ? 'v4 pool' : 'pair'} (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
-const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
+const sigRoute = (p) => ({ kind: 'signal', name: 'Signal', router: SIGNAL.router, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, b: p.b });
+const routeOf = (p) => (p.kind === 'signal' ? sigRoute(p) : p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
@@ -977,6 +989,12 @@ function parseInit(l) {
     if (q) { p.q = q; p.qFirst = q === c0; }
     return { t: q ? (q === c0 ? c1 : c0) : null, p };
   }
+  // a Signal launch: its WHYPE pair on eleos's pool manager, traded through Signal's router
+  const hk = '0x' + d.slice(152, 192);
+  if (pm === SIGNAL.pm && hk === SIGNAL.hook && (c0 === SIGNAL.whype || c1 === SIGNAL.whype)) {
+    const sq = SIGNAL.whype;
+    return { t: sq === c0 ? c1 : c0, p: { pm, kind: 'signal', fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: hk, b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]), q: sq, qFirst: sq === c0 } };
+  }
   let uni = null;
   if (c0 === ZERO) t = c1;
   else if (pm === ELYSPUMP_PM && WRAPPED.has(c0)) { t = c1; q = c0; }
@@ -1055,7 +1073,7 @@ async function findRoute(t, fresh = false) {
   // a fast move it looks cheaper than it is (TESTICLES, Nov 6: a buy routed that way reverted on a 5% slippage)
   const own = new Set([...pools.map((p) => lc(p.id)), ...cands.filter((c) => c.pool).map((c) => lc(c.pool))]);
   const kPools = (kSum?.route || []).flat().map((h) => lc(h.pool));
-  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && kOut > (good[0].out * 103n) / 100n && !kPools.some((x) => own.has(x))) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
+  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && route.kind !== 'signal' && kOut > (good[0].out * 103n) / 100n && !kPools.some((x) => own.has(x))) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
   if (!route) {
     if (kOut > 0n) route = { kind: 'kyber', name: 'KyberSwap', ...(pools.length ? { again: Date.now() + 600000 } : {}) };
     else try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
@@ -1970,6 +1988,7 @@ async function handleFresh() {
       else if (s.k === 'new') { hit = f.newPm || (s.pms || []).includes(f.pm); if (hit && f.newPm) (s.pms ||= []).push(f.pm); }
       else if (s.k === 'dev') hit = (f.from ??= await txFrom(f.tx)) === s.w;
       else if (s.k === 'asc') hit = f.kind === 'ascend';
+      else if (s.k === 'sig') hit = f.kind === 'signal';
       if (!hit) continue;
       (s.got ||= []).push(f.t);
       if (--s.left <= 0) state.snipes = state.snipes.filter((x) => x.id !== s.id);
@@ -1980,6 +1999,7 @@ async function handleFresh() {
 }
 async function snipeBuy(f, s) {
   if (f.kind === 'ascend') return ascSnipe(f, s);
+  if (f.kind === 'signal') return sigSnipe(f, s);
   // a coin that already trades elsewhere is bought on its best pool, not blindly on the new one (anyone can open a
   // thin, mispriced pool for any token)
   const others = (state.pools[f.t] || []).some((p) => p.id !== f.id);
@@ -1995,7 +2015,40 @@ async function snipeBuy(f, s) {
     }
   }
 }
+// /snipe signal: the next Signal launch(es) on Elysium. Every second the round trip (buy, then sell straight back) is
+// simulated at the snipe's size and at half and a quarter of it; the buy goes the first second one of them is within
+// /set tax, at the largest size that is. That waits out the anti-snipe fee, and a size over the launch's wallet cap or
+// its per-block budget (the simulated buy reverts) drops to one that fits. A buy that still reverts is tried again the
+// next second. Gives up after 11 minutes (the longest fee window is 10).
+let snipeOffAt = 0; // /snipe off also stops a Signal snipe that is waiting out a launch's fee
+async function sigSnipe(f, s) {
+  const r = sigRoute(f), t = f.t;
+  const label = `🎯 Signal snipe: new coin <code>${t}</code>`;
+  const sizes = [s.hype, s.hype / 2, s.hype / 4].map((h) => Math.round(h * 1000) / 1000).filter((h) => h >= 0.05);
+  const t0 = Date.now();
+  let last = null, told = false, tries = 0;
+  while (Date.now() - t0 < 11 * 60000) {
+    const scs = await Promise.all(sizes.map((h) => sellCheck(r, t, toWei(String(h))).catch(() => ({ ok: null, note: 'sell check unavailable' }))));
+    last = scs[0];
+    const i = scs.findIndex((x) => x.ok === true);
+    if (i >= 0) {
+      const res = await buy(t, sizes[i], null, false, 'snipe', { route: r, label: label + (i ? `\nBuying ${sizes[i]} HYPE: ${s.hype} is over the launch's wallet cap or block budget right now` : '') })
+        .catch((e) => ({ err: e.message }));
+      if (res?.ok) return res;
+      if (res?.err && !/revert|budget|cap|gated|too little|no route/i.test(res.err)) return say(`${label}\n⚠️ ${esc(res.err).slice(0, 200)}`);
+      if (++tries >= 8) return say(`${label}\n⚠️ Stopped after ${tries} tries: ${esc(res?.err || 'the buy kept reverting').slice(0, 200)}`);
+    } else if (!told && Date.now() - t0 > 1500) {
+      told = true;
+      const l = scs.find((x) => x.loss != null);
+      say(`${label}\n⏱ ${l ? `Buying and selling straight back loses ${(l.loss * 100).toFixed(0)}% right now (limit ${cfg().tax}%)` : 'The simulated buy is refused right now (a gate, cap or block budget)'}: checking every second and buying the moment it fits. /snipe off cancels.`).catch(() => {});
+    }
+    if (snipeOffAt > t0) return say(`${label}\nCancelled (/snipe off) before it bought.`);
+    await sleep(1000);
+  }
+  return say(`${label}\n⚠️ Gave up after 11 minutes: ${esc(last?.note || 'the round trip never came within your limit')}.`);
+}
 function snipeText(s) {
+  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once its anti-snipe fee is within /set tax`;
   if (s.k === 'asc') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Ascend launches' : 'Ascend launch'}, ${ascDelayText()}`;
   return s.k === 'token' ? `${s.hype} HYPE of <code>${short(s.w)}</code> when its pool opens` :
     s.k === 'dev' ? `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' coins' : 'coin'} ${short(s.w)} launches` :
@@ -3213,11 +3266,12 @@ async function onMessage(msg) {
   }
   if (cmd === '/snipe') {
     const sub = lc(args[0] || '');
-    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe off · cancel all';
-    if (sub === 'off') { state.snipes = []; save(); return say('All snipes cancelled.'); }
+    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe signal 1 [count] · the next Signal launch(es) on Elysium, bought once the round trip is within /set tax\n/snipe off · cancel all';
+    if (sub === 'off') { state.snipes = []; snipeOffAt = Date.now(); save(); return say('All snipes cancelled.'); }
     let s;
     if (sub === 'dev') { const w = addrIn(args[1]), h = Number(args[2]); if (!w || !(h > 0)) return say(usage); s = { k: 'dev', w, hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[3]) || 1))) }; }
     else if (sub === 'new') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'new', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
+    else if (sub === 'signal' || sub === 'sig') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'sig', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
     else if (sub === 'ascend' || sub === 'asc') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'asc', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
     else { const t = addrIn(args[0]), h = Number(args[1]); if (!t || !(h > 0)) return say(usage); s = { k: 'token', w: t, hype: h, left: 1 }; }
     if (s.hype > cfg().max) throw new Error(`max per buy is ${cfg().max} HYPE (change with /set max)`);
