@@ -42,6 +42,8 @@ const TEAM = [
   { a: '0x20a4970c2d89e65860d972a76622d29b8174618d', label: 'Signal root 2 (funded the factory owner)', fam: 'Signal' },
   { a: '0x177d4dec87b69900c9c742e10886ed96919c99c1', label: 'Signal pad owner funder', fam: 'Signal' },
 ];
+// wrapped HYPEs on Elysium (eleos/Signal/BOXA v2, ElysPump, Kleos, Obol): never the launched coin
+const WRAPPED_NATIVE = new Set(['0xba876237b0f021a6c6d852d6c26e107997cc5e81', '0x5ab377328592c03b5e7adb09254adb043f91fa11', '0x0269031ace34a7821e9d9980d087c35ce7c19eef', '0x9f041fad8323d7c5bf8f928aade05b610df34b64']);
 // Signal's own app ships its Elysium (99901) v4 lane addresses, pinned from a fork rehearsal on Nov 2 ("mainnet
 // addresses land in one commit on 11-05", status still "planned" on Nov 6). Code at any of them means Signal is live.
 // It plans to use the ownerless PoolManager 0x5c54…37da (already on chain, eleos launches on it), so that one is not here.
@@ -617,7 +619,8 @@ export async function gate(ctx) {
   for (const [h, ls] of Object.entries(byTx)) {
     const f = g.found[lc(ls[0].address)];
     if ((f.launches || 0) >= 30 || (f.first && now() - f.first > 48 * 3600)) continue; // after that the normal alerts take over
-    const minted = logs.filter((l) => l.transactionHash === h && l.topics[0] === T_TRANSFER && l.topics[1] === '0x' + '0'.repeat(64) && !g.found[lc(l.address)]);
+    // the coin is what the launch minted; a wrapped HYPE minted in the same tx (a first buy paid in HYPE) is the quote
+    const minted = logs.filter((l) => l.transactionHash === h && l.topics[0] === T_TRANSFER && l.topics[1] === '0x' + '0'.repeat(64) && !g.found[lc(l.address)] && !WRAPPED_NATIVE.has(lc(l.address)));
     const token = minted.length ? lc(minted[0].address) : null;
     if (!token || !once(g, 'launch:' + token)) continue;
     f.first ||= now();

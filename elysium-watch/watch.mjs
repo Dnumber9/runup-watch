@@ -274,6 +274,15 @@ async function rpc(method, params, tries = 6) {
   throw new Error(`${method} failed on every RPC: ${lastErr?.message}`);
 }
 
+// run fn over items, n at a time (per-coin reads in a launch flood: Nov 7, ~1,000 Montra launches an hour, and one
+// RPC round trip after another put the main scan half an hour behind the chain)
+async function pmap(items, n, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } }));
+  return out;
+}
+
 // keep only RPCs that answer with Elysium mainnet's chain id
 async function pickRpcs() {
   const ok = [];
@@ -598,6 +607,8 @@ async function main() {
     console.log('pools indexed', Object.keys(state.pools).length);
   }
 
+  const tStart = Date.now();
+  let tLogs = 0, tGate = 0, tGateEnd = 0; // where a tick's time goes (the done line), to see a slow phase at once
   let from = firstRun ? Math.max(1, head - FIRST_LOOKBACK) : Math.max(state.block + 1, head - MAX_BLOCKS);
   if (from > head) { console.log('no new blocks'); return; }
   // stay live: skip a stale backlog, and handle at most SCAN_MAX blocks per tick (state.block moves to the window end)
@@ -614,6 +625,7 @@ async function main() {
   console.log(`blocks ${from}..${head} (${head - from + 1}), ${(hours * 60).toFixed(1)} min, rpc ${RPCS[0]}`);
 
   const logs = await getLogs({}, from, head);
+  tLogs = Date.now();
   const px = await hypeUsd(state);
   const toUsd = (h) => (px ? h * px : null);
   let msgs = [];
@@ -668,10 +680,11 @@ Its coins now count as Obol launches.
     state.tok[coin] = { lp: lc(l.address), hook: null, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: lc(topicAddr(l.topics[2])) };
     launchTxs.push({ coin, tx: l.transactionHash, block: b });
   }
-  // who launched each new coin (one tx lookup per launch; ~10 an hour across the chain)
-  for (const { coin, tx } of launchTxs.slice(0, 40)) {
+  // who launched each new coin (one tx lookup per launch, 12 at a time: a flood can bring dozens a tick)
+  const tLaunch = Date.now();
+  await pmap(launchTxs.slice(0, 40), 12, async ({ coin, tx }) => {
     try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); state.tok[coin].via = lc(x?.to); } catch {}
-  }
+  });
   // launchpads new to Elysium: their first coin posts at once, nothing after that
   let newLpAlerts = 0;
   for (const { coin, block } of launchTxs.slice(0, 40)) {
@@ -808,10 +821,10 @@ Its coins now count as Obol launches.
 
   // Obol buys through a router: the curve hands the coin to the router, so the buyer is the sender of the tx
   const obolFrom = {};
-  for (const { t, h } of obolBuys.slice(0, 80)) {
-    if (!(h in obolFrom)) { try { obolFrom[h] = lc((await rpc('eth_getTransactionByHash', [h]))?.from || ''); } catch { obolFrom[h] = ''; } }
-    if (obolFrom[h] && !INFRA.has(obolFrom[h])) roll[t]?.buyers.add(obolFrom[h]);
-  }
+  await pmap([...new Set(obolBuys.slice(0, 80).map((x) => x.h))], 12, async (h) => {
+    try { obolFrom[h] = lc((await rpc('eth_getTransactionByHash', [h]))?.from || ''); } catch { obolFrom[h] = ''; }
+  });
+  for (const { t, h } of obolBuys.slice(0, 80)) if (obolFrom[h] && !INFRA.has(obolFrom[h])) roll[t]?.buyers.add(obolFrom[h]);
   // buyers/sellers from token transfers out of / into pools
   for (const l of logs) {
     if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
@@ -823,7 +836,9 @@ Its coins now count as Obol launches.
     if (poolOut.has(to) && !INFRA.has(f)) roll[t].sellers.add(f);
   }
 
-  // 3. per-coin alerts
+  // 3. per-coin alerts (names and supplies of coins seen for the first time read 16 at a time first)
+  const tRoll = Date.now();
+  await pmap(Object.keys(roll).filter((t) => !WHYPE.has(t) && state.meta[t]?.v !== 2), 16, (t) => tokenMeta(state, t).catch(() => null));
   for (const [t, r] of Object.entries(roll)) {
     if (WHYPE.has(t)) continue;
     const rec = state.tok[t] || (state.tok[t] = { lp: r.lp, born: null, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null });
@@ -1306,8 +1321,10 @@ Its coins now count as Obol launches.
 
   // 4d. Ascend and Signal going live: new contracts fingerprinted, team wallets, their pools, off-chain tells (gate.mjs)
   try {
+    tGate = Date.now();
     await gate({ state, logs, blocks, from, head, rpc, getLogs, hrpc, msgs, known: new Set(Object.keys(LAUNCHPADS)), buttons: (t) => buyButtons('e', t) });
   } catch (e) { console.log('gate failed:', e.message); }
+  tGateEnd = Date.now();
 
   // 4e. LayerZero's Zero being wired ahead of its Nov 30 launch (zero.mjs keeps its own timers)
   try { await zeroWatch({ state, msgs }); } catch (e) { console.log('zero watch failed:', e.message); }
@@ -1443,7 +1460,7 @@ Its coins now count as Obol launches.
   const kinds = Object.entries(tally).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
   const heads = {};
   for (const m of msgs) { const h = [...String(typeof m === 'string' ? m : m.text || '').trim()][0] || '?'; heads[h] = (heads[h] || 0) + 1; }
-  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'}`);
+  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'} · ${head - from + 1} blocks, ${chainHead - head} behind · s logs ${((tLogs - tStart) / 1000).toFixed(1)}, launches ${((tRoll - tLaunch) / 1000).toFixed(1)}, coins+wallets ${(((tGate || tGateEnd || Date.now()) - tRoll) / 1000).toFixed(1)}, gate ${(tGate ? (tGateEnd - tGate) / 1000 : 0).toFixed(1)}, total ${((Date.now() - tStart) / 1000).toFixed(1)}`);
 }
 
 // ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────
