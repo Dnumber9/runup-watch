@@ -2307,7 +2307,7 @@
  },
  {
   "address": "0x0f8742f1d379cfdc474138f35ebd22998b6b3e38",
-  "label": "Signal fee wallet alt",
+  "label": "Signal tester (launched CANARY, its first Robinhood coin; funded on Elysium by the deployer)",
   "group": "signal",
   "watch": "launch",
   "coins": []
@@ -3092,6 +3092,12 @@
  {
   "address": "0x527383ba7f8c112e4f67b341f94b037479856044",
   "label": "Signal Elysium deployer (factory at nonce 10, funded by sigdev)",
+  "group": "signal",
+  "watch": "all"
+ },
+ {
+  "address": "0xebc9fee76b69c7448f7044f481b5fead51ebea9b",
+  "label": "Signal Elysium deployer alt (0.5 HYPE from the deployer)",
   "group": "signal",
   "watch": "all"
  }
