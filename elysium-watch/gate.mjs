@@ -731,12 +731,25 @@ async function checkSignalApp(ctx, g, msgs) {
   st.chains = [...new Set([...(st.chains || []), ...chains])];
   const elyChain = newChains.find((c) => /ely|99901/.test(c));
   if (elyChain && once(g, 'sigchain:' + elyChain)) msgs.push(`🌐 <b>Signal is listing Elysium coins</b>\nIts live coin feed now has chain "${esc(elyChain)}" next to ${esc(chains.filter((c) => c !== elyChain).join(', '))}.`);
-  let ely = null;
+  let ely = null, lane = null;
   const rows = [];
   for (const u of fresh.slice(0, 40)) {
     const t = (await web(u, { accept: '*\/*' }).catch(() => null))?.text || '';
     if (ELY_RX.test(t)) ely ||= u.split('/').pop();
     rows.push(...chainConfigs(t));
+    lane ||= elyLane(t);
+  }
+  // the Elysium lane's status in the app's config: "planned" while the factory waits for Signal's release (Nov 7: the
+  // factory was unpaused on chain at 14:10 and Signal's tester launched CANARY, but the app still said planned and
+  // nobody else could launch). Its switch is the moment public Signal launches on Elysium can start.
+  if (lane) {
+    // the bundle live on Nov 7 already said planned/null and is in st.urls, so that is the baseline when nothing was stored
+    const was = st.lane || { status: 'planned', start: 'null' };
+    st.lane = lane;
+    if ((was.status !== lane.status || was.start !== lane.start) && once(g, 'siglane:' + lane.status + ':' + lane.start)) {
+      const live = lane.status !== 'planned';
+      msgs.push(`${live ? '🟢' : '🌐'} <b>Signal ${live ? 'switched Elysium on in its app' : "changed its Elysium lane"}</b>\nStatus ${esc(was.status)} → <b>${esc(lane.status)}</b>${lane.start !== was.start ? `, start block ${esc(was.start)} → ${esc(lane.start)}` : ''}.${live ? '\nPublic Signal launches on Elysium can start now (its factory has been open since 14:10 on Nov 7).' : ''}`);
+    }
   }
   st.urls = scripts;
   // Signal's live HyperEVM contracts from the app become references too (new versions get picked up)
@@ -753,6 +766,19 @@ async function checkSignalApp(ctx, g, msgs) {
     if (st.at) msgs.push(`🌐 <b>Signal's app now mentions Elysium</b>\nFound in ${esc(ely)} on signal.family.${mainnet.length ? `\nElysium contracts in its config:\n${mainnet.slice(0, 10).map((r) => `• ${esc(r.k)} <code>${r.a}</code>`).join('\n')}\nWatching them for code.` : '\nNo Elysium contract addresses in it yet.'}`);
   }
   st.n = scripts.length;
+}
+
+// Signal's app config for its Elysium lane: { status, start } from `chain:"elysium",chain_id:99901, … status:"planned",
+// start_block:null` in a bundle, or null when the bundle has none
+function elyLane(t) {
+  const i = t.indexOf('chain:"elysium",chain_id:99901');
+  if (i < 0) return null;
+  let seg = t.slice(i, i + 2500);
+  const next = seg.indexOf('chain:"', 10);
+  if (next > 0) seg = seg.slice(0, next);
+  const status = (seg.match(/status:"([a-z_-]+)"/) || [])[1];
+  if (!status) return null;
+  return { status, start: (seg.match(/start_block:([0-9a-fx]+|null)/i) || [])[1] || '?' };
 }
 
 async function checkSignalEly(g, msgs) {
