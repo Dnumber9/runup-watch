@@ -2977,9 +2977,10 @@ async function statsCommand(args) {
   const since = spans[k] === Infinity ? 0 : Date.now() - spans[k];
   const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
   const s = stats(since, who);
-  const t = tips(stats(0, who), num(hb));
+  // tips from the same window as the numbers above them: /stats 24h teaches from the last day's coins only
+  const t = tips(s, num(hb));
   const whoTxt = who === 'all' ? '' : who === 'bot' ? ' · bot wallet' : who === 'mine' ? ' · your wallets' : ` · ${esc(mineName(Object.keys(state.mine).find((w) => w === who || lc(state.mine[w].name) === who)))}`;
-  return statsText(s, (k === 'all' ? 'All time' : `Last ${k}`) + whoTxt, px) + (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '\nTips appear once there are a few trades to learn from.') +
+  return statsText(s, (k === 'all' ? 'All time' : `Last ${k}`) + whoTxt, px) + (t.length ? `\n💡 <b>Tips</b> · from these ${k === 'all' ? 'trades' : k}\n${t.map((x) => '• ' + x).join('\n')}` : `\nNot enough trades ${k === 'all' ? 'yet' : `in the last ${k}`} for tips${k === '24h' || k === '7d' ? `: /stats ${k === '24h' ? '7d' : '30d'} looks further back` : ''}.`) +
     `\n\n/stats 24h · 7d · 30d · all${Object.keys(state.mine).length ? ', then bot, mine or a wallet name (/stats 30d mine)' : ''}`;
 }
 function journalText() {
@@ -3010,7 +3011,7 @@ async function dailyReport(force = true) {
   state.equity = state.equity.filter((e) => e.d !== today).concat([{ d: today, v: value }]).slice(-120);
   save();
   const s = stats(Date.now() - 864e5);
-  let t = tips(stats(0), hype);
+  let t = tips(s, hype); // the last 24h's coins, like the numbers it sits under
   // quiet mode: a tip already shown in the last 3 days is not repeated, and a day with no trades and
   // no new tip sends nothing at all
   state.tipsSeen ||= {};
@@ -3026,7 +3027,7 @@ async function dailyReport(force = true) {
     statsText(s, 'Last 24h', px) +
     (open.length ? `\n<b>Open bags</b>\n${open.slice(0, 8).map((p) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
     (mineOpen.length ? `\n<b>Open bags in your wallets</b> · ${fmtH(mineOpen.reduce((a, x) => a + x.p.now, 0))}\n${mineOpen.slice(0, 8).map(({ w, p }) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)}${Object.keys(state.mine).length > 1 ? ` (${esc(mineName(w))})` : ''} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
-    (t.length ? `\n💡 <b>Tips</b>\n${t.map((x) => '• ' + x).join('\n')}` : '');
+    (t.length ? `\n💡 <b>Tips</b> · from the last 24h\n${t.map((x) => '• ' + x).join('\n')}` : '');
   return say(text);
 }
 
