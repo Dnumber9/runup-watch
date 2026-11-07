@@ -3075,5 +3075,18 @@
   "group": "obol",
   "watch": "launch",
   "cluster": false
+ },
+ {
+  "address": "0xec80c15e7f00db7a38f46ef30ad04b778b4bf823",
+  "label": "ELY dev (built ElyTag .ely names, launched ELY on Montra)",
+  "group": "elytagteam",
+  "coins": [
+   "0xc56e42e340164db34fa6a343614b5dd3d04e249a"
+  ]
+ },
+ {
+  "address": "0x94dc084b4be6965bc4738e1cfa5bab4e5422fe0c",
+  "label": "ELY dev alt (0.1 HYPE from dev on HyperEVM)",
+  "group": "elytagteam"
  }
 ]

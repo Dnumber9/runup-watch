@@ -54,7 +54,7 @@ const GROUP_MIN_WALLETS = 2;     // inside a named group (hewd, marv, signal...)
 const ANY_MIN_WALLETS = 3;       // across all tracked wallets, any group
 // exit watch: groups that are a team or a cluster you hold against. Their moves come as one 🚨 alert per group with
 // what the whole group still holds, and a coin they send to a fresh wallet is followed (the hop before a sell)
-const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam,letheteam,maxteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const EXIT_GROUPS = new Set(String(process.env.EXIT_GROUPS || 'eosteam,eosholder,standsteam,letheteam,maxteam,elytagteam').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 // treasury watch: a contract holding a coin's backing that its owner can withdraw (a "strategy" hook's buys).
 // Any of that token leaving the contract pings, with who got it and what is left
 const TREASURIES = {
