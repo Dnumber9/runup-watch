@@ -3088,5 +3088,11 @@
   "address": "0x94dc084b4be6965bc4738e1cfa5bab4e5422fe0c",
   "label": "ELY dev alt (0.1 HYPE from dev on HyperEVM)",
   "group": "elytagteam"
+ },
+ {
+  "address": "0x527383ba7f8c112e4f67b341f94b037479856044",
+  "label": "Signal Elysium deployer (factory at nonce 10, funded by sigdev)",
+  "group": "signal",
+  "watch": "all"
  }
 ]
