@@ -436,6 +436,24 @@ const ELY_INBOX = '0xce59f8b65ad41c9dae4c07a0571a39824bd92cff';
 const T_INBOX_MSG = '0xff64905f73a67fb594e0f940a8075a860db489ad991e032f48c81123eb52d60b'; // InboxMessageDelivered(uint256,bytes)
 const hsend = new Map();
 let hsendLeft = 12;
+// a tracked wallet's call made from HyperEVM straight into an Elysium contract (a retryable ticket carrying calldata,
+// like sprucecliff buying an NFT on Elysian Fields' marketplace on Nov 7): what it did, from the tokens that reached
+// the wallet in that tx. Not HYPE sent to another wallet.
+async function bridgedCall(state, tx, to, src, val, logs, px) {
+  const got = logs.filter((l) => l.transactionHash === tx.hash && l.topics[0] === T_TRANSFER && l.topics[2] && lc(topicAddr(l.topics[2])) === src);
+  const paid = `${hype(val)}${px ? ` (${usd(val * px)})` : ''}`;
+  const nft = got.find((l) => l.topics.length === 4);
+  if (nft) {
+    const m = await tokenMeta(state, lc(nft.address)).catch(() => null);
+    return `🌉 <b>bought ${esc(m?.n || 'an NFT')} #${BigInt(nft.topics[3]).toString()}</b> for ${paid} straight from HyperEVM (marketplace ${walletLink(to)})`;
+  }
+  const ft = got.find((l) => l.topics.length === 3 && (l.data || '0x') !== '0x');
+  if (ft) {
+    const t = lc(ft.address), m = await tokenMeta(state, t).catch(() => null);
+    return `🌉 <b>bought ${fmtAmt(Number(BigInt(ft.data)) / 10 ** (m?.d ?? 18))} ${esc(m?.s || 'tokens')}</b> for ${paid} straight from HyperEVM · ${coinLink(state, t)}`;
+  }
+  return `🌉 <b>called ${walletLink(to)}</b> with ${paid} straight from HyperEVM (a contract call, not a transfer)`;
+}
 async function hyperSender(tx, blk) {
   const key = tx.ticketId || tx.hash;
   if (hsend.has(key)) return hsend.get(key);
@@ -1135,7 +1153,9 @@ Its coins now count as Obol launches.
           // bridged through a contract on HyperEVM (the bridge UI's helper 0xa401…, used by Mesa's bridge too): the alias
           // is that contract, so read the HyperEVM tx behind the ticket to see who really sent it
           if (src !== to && !W.has(src)) src = (await hyperSender(tx, blk)) || src;
-          if (src !== to && W.has(src) && !W.has(to) && !INFRA.has(to)) {
+          // with calldata it is a call into a contract (a buy, a mint), not HYPE for another wallet
+          if ((tx.input || '0x') !== '0x' && src !== to && W.has(src)) M(src).push(`${await bridgedCall(state, tx, to, src, val, logs, px)}${txLink(tx.hash)}`);
+          else if (src !== to && W.has(src) && !W.has(to) && !INFRA.has(to)) {
             M(src).push(`🌉 <b>bridged ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM to another wallet ${walletLink(to)}${txLink(tx.hash)}`);
             funded.push({ f: src, to, val, hash: tx.hash, via: 'bridge' });
           }
