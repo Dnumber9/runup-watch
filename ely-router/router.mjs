@@ -1983,12 +1983,20 @@ async function handleFresh() {
   for (const f of list) {
     for (const s of [...state.snipes]) {
       if (f.b <= s.b || (s.got || []).includes(f.t)) continue;
+      // a Signal snipe holds a slot while it waits on a coin and spends it only when it buys (sigSnipe, sigDone)
+      if (s.k === 'sig') {
+        if (f.kind !== 'signal' || s.left - (s.wait || []).length <= 0) continue;
+        (s.got ||= []).push(f.t);
+        (s.wait ||= []).push({ f, at: Date.now() });
+        save();
+        sigSnipe(f, s).catch((e) => { console.error('signal snipe', e.message); sigDone(s, f.t, false); });
+        continue;
+      }
       let hit = false;
       if (s.k === 'token') hit = f.t === s.w;
       else if (s.k === 'new') { hit = f.newPm || (s.pms || []).includes(f.pm); if (hit && f.newPm) (s.pms ||= []).push(f.pm); }
       else if (s.k === 'dev') hit = (f.from ??= await txFrom(f.tx)) === s.w;
       else if (s.k === 'asc') hit = f.kind === 'ascend';
-      else if (s.k === 'sig') hit = f.kind === 'signal';
       if (!hit) continue;
       (s.got ||= []).push(f.t);
       if (--s.left <= 0) state.snipes = state.snipes.filter((x) => x.id !== s.id);
@@ -2021,37 +2029,98 @@ async function snipeBuy(f, s) {
 // its per-block budget (the simulated buy reverts) drops to one that fits. A buy that still reverts is tried again the
 // next second. Gives up after 11 minutes (the longest fee window is 10).
 let snipeOffAt = 0; // /snipe off also stops a Signal snipe that is waiting out a launch's fee
-async function sigSnipe(f, s) {
+// a Signal snipe is done with a coin: it leaves the waiting list, and the slot is spent only when it bought
+function sigDone(s, t, bought) {
+  s.wait = (s.wait || []).filter((w) => w.f.t !== t);
+  if (bought) s.left--;
+  if (s.left <= 0 && !s.wait.length) state.snipes = state.snipes.filter((x) => x.id !== s.id);
+  save();
+}
+// t0: when the launch was seen (a wait resumed after a restart keeps its first start, so the 11 minutes still hold)
+async function sigSnipe(f, s, t0 = Date.now(), resumed = false) {
   const r = sigRoute(f), t = f.t;
-  const label = `🎯 Signal snipe: new coin <code>${t}</code>`;
+  const label = `🎯 Signal snipe: new coin <code>${t}</code>${resumed ? ' (resumed after a restart)' : ''}`;
   const sizes = [s.hype, s.hype / 2, s.hype / 4].map((h) => Math.round(h * 1000) / 1000).filter((h) => h >= 0.05);
   const lim = s.tax ?? cfg().tax; // this snipe's limit (set with /snipe signal … tax%) or /set tax
   const fits = (x) => x.got > 0n && x.back > 0n && x.loss * 100 <= lim; // a coin that cannot be sold back never fits
-  const t0 = Date.now();
-  let last = null, told = false, tries = 0;
-  while (Date.now() - t0 < 11 * 60000) {
-    const scs = await Promise.all(sizes.map((h) => sellCheck(r, t, toWei(String(h))).catch(() => ({ ok: null, note: 'sell check unavailable' }))));
-    last = scs[0];
-    const i = scs.findIndex(fits);
-    if (i >= 0) {
-      // checked just now against this snipe's own limit, so buy() does not refuse it again on /set tax
-      const res = await buy(t, sizes[i], null, s.tax != null, 'snipe', { route: r, label: label + (i ? `\nBuying ${sizes[i]} HYPE: ${s.hype} is over the launch's wallet cap or block budget right now` : '') })
-        .catch((e) => ({ err: e.message }));
-      if (res?.ok) return res;
-      if (res?.err && !/revert|budget|cap|gated|too little|no route/i.test(res.err)) return say(`${label}\n⚠️ ${esc(res.err).slice(0, 200)}`);
-      if (++tries >= 8) return say(`${label}\n⚠️ Stopped after ${tries} tries: ${esc(res?.err || 'the buy kept reverting').slice(0, 200)}`);
-    } else if (!told && Date.now() - t0 > 1500) {
-      told = true;
-      const l = scs.find((x) => x.loss != null);
-      say(`${label}\n⏱ ${l ? `Buying and selling straight back loses ${(l.loss * 100).toFixed(0)}% right now (limit ${lim}%)` : 'The simulated buy is refused right now (a gate, cap or block budget)'}: checking every second and buying the moment it fits. /snipe off cancels.`).catch(() => {});
+  const gone = () => snipeOffAt > t0 || !state.snipes.some((x) => x.id === s.id); // /snipe off, or ✖ on this snipe
+  let last = null, told = false, tries = 0, bought = false;
+  try {
+    while (Date.now() - t0 < 11 * 60000) {
+      if (gone()) return say(`${label}\nCancelled before it bought.`);
+      const scs = await Promise.all(sizes.map((h) => sellCheck(r, t, toWei(String(h))).catch(() => ({ ok: null, note: 'sell check unavailable' }))));
+      last = scs[0];
+      const i = scs.findIndex(fits);
+      if (i >= 0 && !gone()) {
+        // checked just now against this snipe's own limit, so buy() does not refuse it again on /set tax
+        const res = await buy(t, sizes[i], null, s.tax != null, 'snipe', { route: r, label: label + (i ? `\nBuying ${sizes[i]} HYPE: ${s.hype} is over the launch's wallet cap or block budget right now` : '') })
+          .catch((e) => ({ err: e.message }));
+        if (res?.ok) { bought = true; return res; }
+        if (res?.err && !/revert|budget|cap|gated|too little|no route/i.test(res.err)) return say(`${label}\n⚠️ ${esc(res.err).slice(0, 200)}\nThe slot is kept for the next Signal launch.`);
+        if (++tries >= 8) return say(`${label}\n⚠️ Stopped after ${tries} tries: ${esc(res?.err || 'the buy kept reverting').slice(0, 200)}\nThe slot is kept for the next Signal launch.`);
+      } else if (!told && Date.now() - t0 > 1500) {
+        told = true;
+        const l = scs.find((x) => x.loss != null);
+        say(`${label}\n⏱ ${l ? `Buying and selling straight back loses ${(l.loss * 100).toFixed(0)}% right now (limit ${lim}%)` : 'The simulated buy is refused right now (a gate, cap or block budget)'}: checking every second and buying the moment it fits. /snipe off cancels.`).catch(() => {});
+      }
+      await sleep(1000);
     }
-    if (snipeOffAt > t0) return say(`${label}\nCancelled (/snipe off) before it bought.`);
-    await sleep(1000);
+    return say(`${label}\n⚠️ Gave up after 11 minutes: ${esc(last?.note || 'the round trip never came within your limit')}.\nThe slot is kept for the next Signal launch.`);
+  } finally {
+    sigDone(s, t, bought);
   }
-  return say(`${label}\n⚠️ Gave up after 11 minutes: ${esc(last?.note || 'the round trip never came within your limit')}.`);
+}
+// Signal launches read straight from its factory: launchCount() asked of every node, and two read-only ones, every
+// 0.4 s while a Signal snipe is armed. The highest answer wins, so one node in step is enough to see a launch while the
+// others lag (Nov 7: three of four nodes 74 to 85 blocks behind at times). Its pool comes from launches(i) (the pool
+// id) and the hook's poolKey(id), read from the node that saw it. The pool index still adds it again from its
+// Initialize log later; that is a duplicate and skipped.
+const WATCH_RPCS = [...new Set([...RPCS, ...(process.env.ELY_WATCH_RPCS ?? 'https://rpc.montramarkets.xyz,https://rpc.elytag.com').split(',').map((x) => x.trim()).filter(Boolean)])];
+let sigCount = null; // Signal launches seen so far; null until the first read after a snipe is armed (or a restart)
+let sigBusy = false, sigPending = null;
+async function sigWatch() {
+  if (!state.snipes.some((x) => x.k === 'sig')) { sigCount = null; return; }
+  const ask = (u, ms) => call1(u, 'eth_call', [{ to: SIGNAL.factory, data: '0x27cca59f' }, 'latest'], ms).then((v) => Number(BigInt(v)));
+  if (sigCount == null) {
+    // the starting point is the highest count any node gives, so launches from before never fire
+    const ns = (await Promise.all(WATCH_RPCS.map((u) => ask(u, 3000).catch(() => null)))).filter((v) => v != null);
+    if (ns.length) sigCount = Math.max(...ns);
+    return;
+  }
+  // after that, any node that answers higher starts the snipe at once, without waiting on the slow or lagging ones
+  await Promise.all(WATCH_RPCS.map((u) => ask(u, 1500).then((n) => sigNew(u, n)).catch(() => {})));
+}
+async function sigNew(url, n) {
+  if (sigCount == null || n <= sigCount) return;
+  if (sigBusy) { if (!sigPending || n > sigPending.n) sigPending = { url, n }; return; }
+  sigBusy = true;
+  try {
+    const head = Number(BigInt(await call1(url, 'eth_blockNumber', [], 2500)));
+    for (let i = sigCount; i < n; i++) {
+      const id = lc('0x' + strip(await call1(url, 'eth_call', [{ to: SIGNAL.factory, data: enc('7b443a76', i) }, 'latest'], 3000)).slice(0, 64));
+      const w = strip(await call1(url, 'eth_call', [{ to: SIGNAL.hook, data: '0xca266dfe' + strip(id) }, 'latest'], 3000)).match(/.{64}/g) || [];
+      if (w.length < 5) throw new Error('pool key not readable yet'); // read again on the next tick
+      const c0 = lc('0x' + w[0].slice(24)), c1 = lc('0x' + w[1].slice(24));
+      sigCount = i + 1;
+      if (c0 !== SIGNAL.whype && c1 !== SIGNAL.whype) continue; // paired with another asset, not HYPE: not traded here
+      const p = { pm: SIGNAL.pm, kind: 'signal', fee: Number(BigInt('0x' + w[2])), ts: Number(BigInt.asIntN(24, BigInt('0x' + w[3]))), hook: lc('0x' + w[4].slice(24)), b: head, id, q: SIGNAL.whype, qFirst: c0 === SIGNAL.whype };
+      const t = p.qFirst ? c1 : c0;
+      const list = (state.pools[t] ||= []);
+      if (!list.some((y) => y.id === id)) { list.push(p); delete state.routes[t]; }
+      fresh.push({ t, ...p, tx: '', newPm: false });
+      console.log(`signal launch ${i}: ${t} (seen first on ${url.replace('https://', '')})`);
+    }
+    save();
+    await handleFresh();
+  } finally {
+    sigBusy = false;
+    const nx = sigPending;
+    sigPending = null;
+    if (nx) sigNew(nx.url, nx.n).catch((e) => console.error('signal watch', e.message));
+  }
 }
 function snipeText(s) {
-  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once the round trip loses ${s.tax ?? cfg().tax}% or less`;
+  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once the round trip loses ${s.tax ?? cfg().tax}% or less${s.wait?.length ? ` (waiting on ${s.wait.length} now)` : ''}`;
   if (s.k === 'asc') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Ascend launches' : 'Ascend launch'}, ${ascDelayText()}`;
   return s.k === 'token' ? `${s.hype} HYPE of <code>${short(s.w)}</code> when its pool opens` :
     s.k === 'dev' ? `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' coins' : 'coin'} ${short(s.w)} launches` :
@@ -3536,6 +3605,15 @@ async function main() {
   await indexPools().catch((e) => console.error('index', e.message));
   for (const l of Object.values(state.pools)) for (const p of l) knownPms.add(p.pm);
   live = true; // from here on, new pools are live events for snipes
+  // Signal snipes that were waiting on a coin when the bot stopped carry on, inside their first 11 minutes
+  for (const s of state.snipes.filter((x) => x.k === 'sig')) {
+    for (const w of [...(s.wait || [])]) {
+      if (Date.now() - w.at < 11 * 60000) sigSnipe(w.f, s, w.at, true).catch((e) => { console.error('signal snipe', e.message); sigDone(s, w.f.t, false); });
+      else sigDone(s, w.f.t, false);
+    }
+  }
+  // Signal's factory, every 0.4 s while a Signal snipe is armed (sigWatch)
+  (async () => { for (;;) { await sleep(400); await sigWatch().catch((e) => console.error('signal watch', e.message)); } })();
   // the index tails the chain every 1.5 s, every 0.4 s while a snipe is armed
   (async () => { for (;;) { await sleep(state.snipes.length ? 400 : 1500); await indexPools().catch(() => {}); await handleFresh().catch((e) => console.error('snipes', e.message)); } })();
   // orders and guards every 2 s; copied wallets every second
