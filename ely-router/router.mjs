@@ -686,7 +686,7 @@ const uniRoute = (p, h) => {
 const uniExpand = (r) => {
   if (r.kind !== 'uni') return [r];
   if (r.mode === 'hop') return uniLegs(r).map((h) => ({ ...r, h }));
-  if (r.mode === 'pair') return [...uniLegs(r).map((h) => uniRoute({ ...r, uni: 'hop' }, h)), uniRoute({ ...r, uni: 'token' })];
+  if (r.mode === 'pair') return [...uniLegs(r).map((h) => uniRoute({ ...r, uni: 'hop' }, h)), uniRoute({ ...r, uni: 'token' })].map((v) => ({ ...v, pair: true }));
   return [r];
 };
 // Simulation helper (hand-assembled, only ever placed at SIM through a state override). Calldata words: router,
@@ -762,9 +762,9 @@ async function ascRate(q) {
   const m = await tokenMeta(q);
   let v = null;
   if (/usd/i.test(m.sym)) { const px = await hypeUsd(); if (px) v = (BigInt(Math.round(px * 1e6)) * 10n ** BigInt(m.d)) / 10n ** 6n; }
-  if (!v) { try { v = BigInt((await kyRoute(NATIVE, q, 10n ** 18n)).routeSummary.amountOut); } catch {} }
-  // a token KyberSwap does not price (BOXA): what its own best route pays for 0.1 HYPE
+  // what the token's own best route pays for 0.1 HYPE (the pools the bot trades it on), else KyberSwap's price
   if (!v) { try { const qr = state.routes[q] || (await findRoute(q)); if (qr && !tokRoute(qr)) { const o = await quoteBuy(qr, q, 10n ** 17n); if (o > 0n) v = o * 10n; } } catch {} }
+  if (!v) { try { v = BigInt((await kyRoute(NATIVE, q, 10n ** 18n)).routeSummary.amountOut); } catch {} }
   if (!v) throw new Error(`no HYPE price for ${m.sym}`);
   ascRates[q] = { v, t: Date.now() };
   return v;
@@ -1107,16 +1107,32 @@ function indexPools() {
 }
 const poolCount = () => Object.values(state.pools).reduce((n, l) => n + l.length, 0);
 
+// a coin paired with a token: every way to trade it (through each HYPE pool that token has on the same manager, or
+// through the token bought on its own best route), quoted at this exact size (HYPE in for a buy, coins for a sell)
+const isPair = (t, r) => r?.kind === 'uni' && (r.pair || (state.pools[t] || []).some((p) => p.uni === 'pair' && p.pm === r.pm && p.hook === r.hook));
+async function pairBest(t, r, amt, sell) {
+  const pp = (state.pools[t] || []).find((p) => p.uni === 'pair' && p.pm === r.pm && p.hook === r.hook && p.fee === r.fee && p.ts === r.ts);
+  if (!pp) return r;
+  const vs = uniExpand(routeOf(pp));
+  const outs = await Promise.all(vs.map((v) => (sell ? v4QuoteSell(v, t, amt) : v4QuoteBuy(v, t, amt)).catch(() => 0n)));
+  let best = null, bo = 0n;
+  outs.forEach((o, i) => { if (o > bo) { bo = o; best = vs[i]; } });
+  return best || r;
+}
 async function findRoute(t, fresh = false) {
   const kept = state.routes[t];
   // a KyberSwap route picked although the coin has pools of its own is looked at again after a while: its pools may
   // only have failed to answer (busy nodes)
-  if (!fresh && kept && !(kept.again && Date.now() > kept.again)) return kept;
-  const probe = 10n ** 16n;
-  const kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => k.routeSummary).catch(() => null); // asked alongside the pools
+  // (a token-paired coin's route saved before routes were compared at 1 HYPE is picked again)
+  if (!fresh && kept && !(kept.again && Date.now() > kept.again) && !(isPair(t, kept) && !kept.pair)) return kept;
+  // a coin paired with a token is compared at 1 HYPE: a near-empty HYPE pool of that token looks fine at 0.01 HYPE
+  // and costs 90%+ at a real size (BMB, Nov 7: Uniswap's BOXA pool paid 24x less than BOXA's own)
+  let probe = (state.pools[t] || []).some((p) => p.uni === 'pair') ? 10n ** 18n : 10n ** 16n;
+  let kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => k.routeSummary).catch(() => null); // asked alongside the pools
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   const pools = state.pools[t] || [];
+  if (probe < 10n ** 18n && pools.some((p) => p.uni === 'pair')) { probe = 10n ** 18n; kyP = kyRoute(NATIVE, t, probe, 2500).then((k) => k.routeSummary).catch(() => null); }
   await Promise.all(pools.filter((p) => p.uni === 'pair').map((p) => tokenMeta(p.q).catch(() => null)));
   let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf).flatMap(uniExpand);
   for (const p of pools.filter((x) => x.kind === 'ascend').slice(-2)) { const ar = await ascRouteOf(p).catch(() => null); if (ar) cands.push(ar); }
@@ -1205,7 +1221,8 @@ async function scanV4(t, ok) {
         // a token pair: the coin is the one asked about
         const pp = addPairPool(t, x.p.c0 === t ? x.p.c1 : x.p.c0, x.p, null);
         await tokenMeta(pp.q).catch(() => {});
-        for (const v of uniExpand(routeOf(pp))) { const r = await ok(v); if (r) return r; }
+        const best = await pairBest(t, uniExpand(routeOf(pp))[0], 10n ** 18n, false).catch(() => null);
+        if (best && (await ok(best))) return best;
         continue;
       }
       if (!x || x.t !== t) continue;
@@ -1396,6 +1413,8 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   if (!r) throw new Error('no route for this token');
   // the token a coin is paired with is bought on a route of its own that takes HYPE (never two pairs deep)
   if (opts.convert && tokRoute(r)) throw new Error(`no direct HYPE route for ${m.sym}`);
+  // a coin paired with a token: the best way in for this exact size
+  if (isPair(t, r)) { const b = await pairBest(t, r, wei, false).catch(() => r); if (b !== r) { r = b; state.routes[t] = r; save(); } }
   // an Ascend coin whose anti-snipe fee is still up: wait for the second it drops instead of paying it
   if (r.kind === 'ascend' && opts.ascTime == null) {
     r.ur ||= await ascRouterFor(r.pm).catch(() => null);
@@ -1548,6 +1567,8 @@ async function sell(t, pct, replyTo, opts = {}) {
   if (opts.amt != null) { amt = opts.amt > bal ? bal : opts.amt; pct = bal > 0n ? Number((amt * 1000n) / bal) / 10 : 0; }
   else { pct = Math.min(100, Math.max(1, Math.round(pct))); amt = (bal * BigInt(pct)) / 100n; }
   if (amt === 0n) throw new Error(`you hold no ${m.sym}`);
+  // a coin paired with a token: the best way out for this exact size
+  if (isPair(t, r)) r = await pairBest(t, r, amt, true).catch(() => r);
   const head = opts.why ? `${opts.icon || '🎯'} ${opts.why}\n` : '';
   const msgP = say(`${head}⏳ Selling ${pct}% of <b>${esc(m.sym)}</b> (${fmt(num(amt, m.d))})…`, null, replyTo);
   const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 200000 });
