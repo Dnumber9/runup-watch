@@ -130,12 +130,17 @@ const V3FEES = [10000, 3000, 500, 100];
 // Once a coin graduates, the same contract trades it on its own v2 pair against its own wrapped HYPE: ammBuy and
 // ammSell (token, amountIn, minOut, deadline), returning nothing. info(token) names the pair (word 2, zero while the
 // coin is still on the curve) and fee() is in basis points of the HYPE side (VEINS 125, 0x51d9 100: checked Nov 6
-// against the pairs' reserves). Three contracts run the same code.
+// against the pairs' reserves). These are Obol's curves (deployer 0x48ad71ab6467b0d0d9c5e23caf77452a343cdeeb; Elyxa
+// calls the venue Obol and its wrapped HYPE 0x9f041fad "WHYPE (Obol)").
+// The fourth (0x4de0, Nov 4, an upgradeable proxy, fee 200) graduates a coin into a Uniswap v4 pool that uses the
+// curve as its hook: info word 2 is then the PoolManager, not a v2 pair, so there are no reserves to read. Its own
+// qBuy/qSell views quote the graduated pool too (checked on CACHE Nov 7), and ammBuy/ammSell still trade it (v4: true).
 const CURVE_ABI = { buy: '1622dbe4', sell: '92cdbac5', qBuy: '0d7a94f6', qSell: 'd98b2f5c', info: '7d0f7a88', ammBuy: '73491ee7', ammSell: 'ddc2953d', fee: 'bf333f2c' };
 const CURVES = [
-  { name: 'Curve 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', ...CURVE_ABI }, // VEINS
-  { name: 'Curve 0x7d19', curve: '0x7d1904bfb2472a0ef97d886139a4236060e064ab', ...CURVE_ABI },
-  { name: 'Curve 0x51d9', curve: '0x51d9243d87ad13d7eca55ab57357b2b5fc8241f2', ...CURVE_ABI },
+  { name: 'Obol 0xfee8', curve: '0xfee823be55ee12b8c3a76aff0bd69470afaf2348', ...CURVE_ABI }, // VEINS
+  { name: 'Obol 0x7d19', curve: '0x7d1904bfb2472a0ef97d886139a4236060e064ab', ...CURVE_ABI },
+  { name: 'Obol 0x51d9', curve: '0x51d9243d87ad13d7eca55ab57357b2b5fc8241f2', ...CURVE_ABI },
+  { name: 'Obol', curve: '0x4de07902f28d00736e29aa5739dea2d4ce98aacc', ...CURVE_ABI, v4: true }, // CACHE
 ];
 // Coins only their own router can trade: the pool's hook refuses every other caller. Elysium Machines (ERC-404, 4,444
 // units): buy(minOut, deadline, proof) payable and sell(amountIn, minOut, deadline, proof), both returning the amount
@@ -525,7 +530,7 @@ const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'uni' ? uniSellData(
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} pair (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} ${curveOf(r).v4 ? 'v4 pool' : 'pair'} (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const routeOf = (p) => (p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
@@ -534,7 +539,7 @@ async function v4QuoteBuy(r, t, wei) {
   if (r.kind === 'uni') return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
   if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
   if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qBuy, wei), {}, undefined, true));
-  if (r.kind === 'curve') return r.amm ? ammQuote(r, t, wei, true) : u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
+  if (r.kind === 'curve') return r.amm && !curveOf(r).v4 ? ammQuote(r, t, wei, true) : u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
   return u256(await ethCall(routerOf(r), data, { from: SIM, value: hex(wei) }, { [SIM]: { balance: hex(wei + 10n ** 21n) } }));
 }
@@ -570,7 +575,7 @@ async function v4QuoteSell(r, t, amt, slot) {
   if (r.kind === 'uni') return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
   if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
   if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qSell, amt), {}, undefined, true)); // a view
-  if (r.kind === 'curve') return r.amm ? ammQuote(r, t, amt, false) : u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
+  if (r.kind === 'curve') return r.amm && !curveOf(r).v4 ? ammQuote(r, t, amt, false) : u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
   const ov = slot ? { [t]: { stateDiff: { [slot]: '0x' + 'f'.repeat(64) } } } : undefined;
   return u256(await ethCall(routerOf(r), data, { from: me }, ov, true));
