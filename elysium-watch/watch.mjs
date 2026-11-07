@@ -108,6 +108,8 @@ const T_OBOL_AMM = '0x290ae2862e8e7543cd14f560071d8cabd86c52a8308a8f155a759d1e18
 const OBOL_SELS = ['1622dbe4', '92cdbac5', '0d7a94f6', '7d0f7a88']; // buy, sell, quoteBuy, info: a new Obol curve has them all
 const addObol = (a, pair = false) => { OBOL[a] ||= { pair }; LAUNCHPADS[a] ||= { name: 'Obol', hook: null, busy: true }; };
 for (const a of Object.keys(OBOL)) addObol(a, OBOL[a].pair);
+// Obol deployer: takes 1% of the tokens on every trade through Obol's router, so that leg of a sell is a fee, not a move
+const FEE_TAKERS = new Set(['0x48ad71ab6467b0d0d9c5e23caf77452a343cdeeb']);
 const HOOK_NAMES = {
   '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'Ascend',                // app.ascendlaunch.xyz (CHAMELEON, e/acc, NMEOWS, YUM)
   '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'Montra',                // montramarkets.xyz, HOBBES and ~80 launches an hour
@@ -994,7 +996,7 @@ Its coins now count as Obol launches.
     const exitOf = (w) => (EXIT_GROUPS.has(String(G.get(w) || '').toLowerCase()) ? G.get(w) : null);
     const exitAgg = {}, hops = [], exitRows = {};
     // txs with a swap in them (v2, v3, v4 pools, a curve sell, or WHYPE unwrapped): a token leaving there was sold
-    const SWAPS = new Set([T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, T_SOLD, T_WITHDRAW]);
+    const SWAPS = new Set([T_SWAP_V2, T_SWAP_V3, T_SWAP_V4, T_SOLD, T_WITHDRAW, T_OBOL_TRADE, T_OBOL_AMM]);
     const swapTx = new Set(logs.filter((l) => SWAPS.has(l.topics[0])).map((l) => l.transactionHash));
     // recipient is a contract or a plain wallet (asked once per address per scan)
     const codeCache = {};
@@ -1042,7 +1044,7 @@ Its coins now count as Obol launches.
           }
         }
       }
-      if (W.has(f) && !dustOut) {
+      if (W.has(f) && !dustOut && !(FEE_TAKERS.has(to) && swapTx.has(l.transactionHash))) {
         // sold: into a pool, or through a router call in a tx that has a swap. Otherwise, by where it went:
         // into a contract (LP, locker, bridge, vault) or to a plain wallet (often a dev moving supply to an alt)
         const viaRouter = routerCall[l.transactionHash] && routerCall[l.transactionHash] !== t && swapTx.has(l.transactionHash) && !W.has(to) && to !== ZERO && to !== DEAD;
@@ -2054,7 +2056,7 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
       lastBuy[to] = t;
       firstBlock[to] ??= b;
     }
-    if (W.has(f)) {
+    if (W.has(f) && !(FEE_TAKERS.has(to) && swapTx.has(h))) {
       const viaRouter = routerCall[h] && routerCall[h] !== t && swapTx.has(h) && !W.has(to) && to !== ZERO && to !== DEAD;
       if (!em.has(to) && !viaRouter) continue; // not a sale: sends, LP moves and burns stay with the main scan
       stats.trades++;
