@@ -1987,6 +1987,9 @@ async function handleFresh() {
       if (s.k === 'sig') {
         if (f.kind !== 'signal' || s.left - (s.wait || []).length <= 0) continue;
         (s.got ||= []).push(f.t);
+        save();
+        const why = await sigSkip(f).catch(() => null);
+        if (why) { say(`🎯 Signal snipe skipped <code>${f.t}</code>: ${why}. The slot stays for the next launch.`).catch(() => {}); continue; }
         (s.wait ||= []).push({ f, at: Date.now() });
         save();
         sigSnipe(f, s).catch((e) => { console.error('signal snipe', e.message); sigDone(s, f.t, false); });
@@ -2028,6 +2031,20 @@ async function snipeBuy(f, s) {
 // the snipe's own limit (or /set tax), at the largest size that is. That waits out the anti-snipe fee, and a size over the launch's wallet cap or
 // its per-block budget (the simulated buy reverts) drops to one that fits. A buy that still reverts is tried again the
 // next second. Gives up after 11 minutes (the longest fee window is 10).
+// Signal's own test launches are skipped: its first coins on Robinhood Chain (Oct 26) were CANARY (launched by its
+// tester 0x0f87…3e38, 3 holders), then TOS, NMSS and EGGSFUN with 2 holders each. Signal's Elysium deployer funded
+// that same tester on Elysium on Nov 7, minutes after deploying the lane.
+const SIG_TESTERS = new Set(['0x0f8742f1d379cfdc474138f35ebd22998b6b3e38']);
+async function sigSkip(f) {
+  const [cr, nm, m] = await Promise.all([
+    ethCall(SIGNAL.hook, '0xff94e4f3' + strip(f.id), {}, undefined, true).then((r) => lc('0x' + strip(r).slice(24, 64))).catch(() => null), // creatorOf(id)
+    ethCall(f.t, '0x06fdde03', {}, undefined, true).then(decStr).catch(() => ''),
+    tokenMeta(f.t),
+  ]);
+  if (cr && SIG_TESTERS.has(cr)) return `<b>${esc(m.sym)}</b> was launched by Signal's test wallet ${short(cr)}, most likely a test coin`;
+  if (/canary|\btest/i.test(`${m.sym} ${nm}`)) return `<b>${esc(m.sym)}</b> (${esc(nm)}) reads like a test coin`;
+  return null;
+}
 let snipeOffAt = 0; // /snipe off also stops a Signal snipe that is waiting out a launch's fee
 // a Signal snipe is done with a coin: it leaves the waiting list, and the slot is spent only when it bought
 function sigDone(s, t, bought) {
