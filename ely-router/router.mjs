@@ -2968,20 +2968,30 @@ function statsText(s, label, px) {
 }
 async function statsCommand(args) {
   await valuePositions();
-  const spans = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6, all: Infinity };
+  // any window: 6h, 48h, 3d, 2w, 45d (h, d or w, with hr/hrs/day/days/wk/week/weeks also read), or all
+  const unitMs = { h: 36e5, d: 864e5, w: 6048e5 };
+  const span = (x) => {
+    if (x === 'all') return { k: 'all', ms: Infinity };
+    const m = /^(\d+(?:\.\d+)?)(h|hr|hrs|hours?|d|days?|w|wk|wks|weeks?)$/.exec(x);
+    if (!m || !(+m[1] > 0)) return null;
+    const u = m[2][0];
+    return { k: `${+m[1]}${u}`, ms: +m[1] * unitMs[u] };
+  };
   const words = args.map(lc).filter(Boolean);
-  const k = words.find((x) => spans[x]) || '7d';
-  const rest = words.filter((x) => !spans[x]).join(' ');
+  const win = words.map(span).find(Boolean) || span('7d');
+  const k = win.k;
+  const rest = words.filter((x) => !span(x)).join(' ');
   const who = !rest ? 'all' : rest === 'bot' || rest === 'mine' ? rest : addrIn(rest) || rest;
   if (who !== 'all' && who !== 'bot' && who !== 'mine' && !Object.entries(state.mine).some(([w, x]) => w === who || lc(x.name) === who)) return `No wallet called <code>${esc(rest)}</code>. /mine lists yours.`;
-  const since = spans[k] === Infinity ? 0 : Date.now() - spans[k];
+  const since = win.ms === Infinity ? 0 : Date.now() - win.ms;
+  const wider = win.ms < unitMs.w ? '7d' : win.ms < 30 * unitMs.d ? '30d' : win.ms < Infinity ? 'all' : '';
   const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
   const s = stats(since, who);
   // tips from the same window as the numbers above them: /stats 24h teaches from the last day's coins only
   const t = tips(s, num(hb));
   const whoTxt = who === 'all' ? '' : who === 'bot' ? ' · bot wallet' : who === 'mine' ? ' · your wallets' : ` · ${esc(mineName(Object.keys(state.mine).find((w) => w === who || lc(state.mine[w].name) === who)))}`;
-  return statsText(s, (k === 'all' ? 'All time' : `Last ${k}`) + whoTxt, px) + (t.length ? `\n💡 <b>Tips</b> · from these ${k === 'all' ? 'trades' : k}\n${t.map((x) => '• ' + x).join('\n')}` : `\nNot enough trades ${k === 'all' ? 'yet' : `in the last ${k}`} for tips${k === '24h' || k === '7d' ? `: /stats ${k === '24h' ? '7d' : '30d'} looks further back` : ''}.`) +
-    `\n\n/stats 24h · 7d · 30d · all${Object.keys(state.mine).length ? ', then bot, mine or a wallet name (/stats 30d mine)' : ''}`;
+  return statsText(s, (k === 'all' ? 'All time' : `Last ${k}`) + whoTxt, px) + (t.length ? `\n💡 <b>Tips</b> · from these ${k === 'all' ? 'trades' : k}\n${t.map((x) => '• ' + x).join('\n')}` : `\nNot enough trades ${k === 'all' ? 'yet' : `in the last ${k}`} for tips${wider ? `: /stats ${wider} looks further back` : ''}.`) +
+    `\n\n/stats 24h · 48h · 7d · 30d · all, or any span like 6h, 3d, 2w${Object.keys(state.mine).length ? ', then bot, mine or a wallet name (/stats 30d mine)' : ''}`;
 }
 function journalText() {
   const last = state.journal.slice(-15).reverse();
@@ -3733,7 +3743,7 @@ async function main() {
     { command: 'limit', description: '/limit <coin> 1 20k · /limit sell <coin> 50 100k' }, { command: 'orders', description: 'Limit orders: see and cancel' },
     { command: 'initials', description: '/initials <coin>: sell just enough to take your HYPE back' },
     { command: 'bal', description: 'Wallet balance and bags' }, { command: 'pnl', description: 'Profit and loss of bot trades' },
-    { command: 'stats', description: 'Performance and tips: /stats 24h|7d|30d|all [bot|mine]' }, { command: 'journal', description: 'Last 15 trades' },
+    { command: 'stats', description: 'Performance and tips: /stats 24h|48h|7d|2w|all [bot|mine]' }, { command: 'journal', description: 'Last 15 trades' },
     { command: 'mine', description: 'Your other wallets, watch-only, for the journal and tips' },
     { command: 'bagwatch', description: 'Watch a coin\'s dev and top holders: /bagwatch 0xCOIN' },
     { command: 'set', description: 'slip, max, sizes and more' }, { command: 'withdraw', description: '/withdraw <address> <HYPE|all>' },
