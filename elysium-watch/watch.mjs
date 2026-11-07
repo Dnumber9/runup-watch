@@ -592,6 +592,14 @@ async function main() {
     }
   } catch {}
   try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
+  // the auto-found bridgers, every 20 minutes at the end of the done line (the run log shows only each tick's last
+  // line), for reviews of who turned out a plain trader
+  let bridgerDump = '';
+  if (now() - (state.bridgerDump || 0) > 1200) {
+    state.bridgerDump = now();
+    const bl = Object.entries(state.auto || {}).filter(([, x]) => x.from === 'bridge').map(([a, x]) => [a, Math.round(x.hype || 0), x.t || 0, x.nc ?? null]);
+    bridgerDump = ' · bridgers ' + JSON.stringify(bl);
+  }
   const alertChat = state.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
   if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
   if (TRADE_TOKEN && alertChat) TRADE = { token: TRADE_TOKEN, chat: alertChat, trade: true };
@@ -1480,7 +1488,7 @@ Its coins now count as Obol launches.
   const kinds = Object.entries(tally).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
   const heads = {};
   for (const m of msgs) { const h = [...String(typeof m === 'string' ? m : m.text || '').trim()][0] || '?'; heads[h] = (heads[h] || 0) + 1; }
-  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'} · ${head - from + 1} blocks, ${chainHead - head} behind · s logs ${((tLogs - tStart) / 1000).toFixed(1)}, launches ${((tRoll - tLaunch) / 1000).toFixed(1)}, coins+wallets ${(((tGate || tGateEnd || Date.now()) - tRoll) / 1000).toFixed(1)}, gate ${(tGate ? (tGateEnd - tGate) / 1000 : 0).toFixed(1)}, total ${((Date.now() - tStart) / 1000).toFixed(1)}`);
+  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'} · ${head - from + 1} blocks, ${chainHead - head} behind · s logs ${((tLogs - tStart) / 1000).toFixed(1)}, launches ${((tRoll - tLaunch) / 1000).toFixed(1)}, coins+wallets ${(((tGate || tGateEnd || Date.now()) - tRoll) / 1000).toFixed(1)}, gate ${(tGate ? (tGateEnd - tGate) / 1000 : 0).toFixed(1)}, total ${((Date.now() - tStart) / 1000).toFixed(1)}${bridgerDump}`);
 }
 
 // ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────
@@ -1759,6 +1767,11 @@ function runCommand(state, W, text) {
       .concat([...cm.addrs].map((k) => `• ${state.meta?.[k]?.s ? `<b>${esc(state.meta[k].s)}</b> ` : ''}<code>${k}</code>${cm.repo.has(k) ? ' · repo list' : ''}`));
     return all.length ? `🔇 Muted coins (${all.length})\n${all.join('\n')}\n\n/unmutecoin to bring one back.` : 'No muted coins. /mutecoin SYMBOL or /mutecoin 0x… to add one.';
   }
+  if (cmd === '/bridgers') {
+    const bl = Object.entries(state.auto || {}).filter(([, x]) => x.from === 'bridge').sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+    if (!bl.length) return 'No auto-found bridgers right now.';
+    return `🌉 Auto-found bridgers (${bl.length}), newest first\n` + bl.map(([a, x]) => `• ${esc(x.label)} · ${Math.round(x.hype || 0)} HYPE · ${x.nc ?? '?'} txs <code>${a}</code>`).join('\n') + '\n\n/remove 0x… 0x… drops any of them (several in one message is fine).';
+  }
   if (cmd === '/list') {
     const by = {};
     for (const [a, x] of Object.entries(state.manual)) (by[x.group || 'no group'] ||= []).push(`• ${esc(x.label)} <code>${a}</code>`);
@@ -1770,7 +1783,7 @@ function runCommand(state, W, text) {
     const rows = Object.entries(state.manual).map(([a, x]) => JSON.stringify({ address: a, label: x.label, ...(x.group ? { group: x.group } : {}) }));
     return rows.length ? `<code>${esc(rows.join(',\n'))}</code>` : 'Nothing added from Telegram yet.';
   }
-  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/export  (backup in wallets.json format)\n/mutecoin SYMBOL or 0x…  (no more alerts for that coin)\n/unmutecoin SYMBOL or 0x…\n/mutedcoins';
+  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/bridgers  (auto-found wallets that bridged in a lot)\n/export  (backup in wallets.json format)\n/mutecoin SYMBOL or 0x…  (no more alerts for that coin)\n/unmutecoin SYMBOL or 0x…\n/mutedcoins';
 }
 
 // Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
