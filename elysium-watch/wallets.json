@@ -3064,5 +3064,11 @@
   "address": "0x478108daf3e7879fedda77718b78983804ae00f4",
   "label": "MAX early cluster lead alt",
   "group": "maxteam"
+ },
+ {
+  "address": "0x48ad71ab6467b0d0d9c5e23caf77452a343cdeeb",
+  "label": "Obol deployer (made all four Obol curves and ObolBridge)",
+  "group": "obol",
+  "watch": "launch"
  }
 ]

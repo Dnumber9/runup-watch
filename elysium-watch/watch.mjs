@@ -89,6 +89,25 @@ const LAUNCHPADS = {
   // the official Uniswap v4 PoolManager: several launchpads share it, told apart by their pool hook (HOOK_NAMES)
   '0xe2e105d3f7209a9da11f83ccf3e7398a753823f1': { name: 'Uniswap v4', hook: null, busy: true },
 };
+// Obol: a bonding-curve launchpad (deployer 0x48ad71ab6467b0d0d9c5e23caf77452a343cdeeb; Elyxa names the venue Obol).
+// A coin lives on one of its curve contracts until the curve sells out, with no pool, so pool-based launch alerts
+// never saw it: CACHE went from 65 to 870 HYPE market cap on the curve (Nov 7, 05:25 to 06:19) before its first alert.
+// Every curve emits TokenCreated(token, creator, …) and Trade(token, trader, isBuy, hype, tokens, fee, reserveHype,
+// reserveTokens). The three older curves graduate a coin into a v2 pair of their own and then emit AmmTrade(token,
+// trader, isBuy, hype, tokens); 0x4de0 graduates into a Uniswap v4 pool with itself as hook (read as v4 swaps).
+// The curves join the launchpad table: a token leaving one is a buy, and the busy-launchpad bar applies.
+const OBOL = {
+  '0x51d9243d87ad13d7eca55ab57357b2b5fc8241f2': { pair: true },
+  '0x7d1904bfb2472a0ef97d886139a4236060e064ab': { pair: true },
+  '0xfee823be55ee12b8c3a76aff0bd69470afaf2348': { pair: true }, // VEINS
+  '0x4de07902f28d00736e29aa5739dea2d4ce98aacc': { pair: false }, // CACHE
+};
+const T_OBOL_CREATE = '0x4cd0a4d462d6b9c3511654dab03f7e5b54c5b9197caf767152c81cbe388b4e7b';
+const T_OBOL_TRADE = '0x2c76e7a47fd53e2854856ac3f0a5f3ee40d15cfaa82266357ea9779c486ab9c3';
+const T_OBOL_AMM = '0x290ae2862e8e7543cd14f560071d8cabd86c52a8308a8f155a759d1e18765c1e';
+const OBOL_SELS = ['1622dbe4', '92cdbac5', '0d7a94f6', '7d0f7a88']; // buy, sell, quoteBuy, info: a new Obol curve has them all
+const addObol = (a, pair = false) => { OBOL[a] ||= { pair }; LAUNCHPADS[a] ||= { name: 'Obol', hook: null, busy: true }; };
+for (const a of Object.keys(OBOL)) addObol(a, OBOL[a].pair);
 const HOOK_NAMES = {
   '0xe0def4221b9840a610d4e7d55812a79a6431a8ec': 'Ascend',                // app.ascendlaunch.xyz (CHAMELEON, e/acc, NMEOWS, YUM)
   '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec': 'Montra',                // montramarkets.xyz, HOBBES and ~80 launches an hour
@@ -97,9 +116,10 @@ const HOOK_NAMES = {
   '0x1bdc2b4dafb0fc46df834559675f8c3308e668cc': 'Boursely',              // one-dev launchpad, fee-sharing hook
   '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'a Flaunch fork',        // VOLTA
   '0xb67656ce894ac93c0164d8490ad23161a77ee000': 'PerpMe',                // perpme.fun/elysium, live since Nov 3, coins end in 0999 (also launches on Uniswap v3 and Ramses v3)
+  '0x4de07902f28d00736e29aa5739dea2d4ce98aacc': 'Obol',                  // Obol's v4 curve: graduated coins trade on a pool it hooks (CACHE)
 };
 // launchpads that were already on Elysium before new-launchpad detection: never "new"
-const OLD_HOOKS = new Set(['0xe0def4221b9840a610d4e7d55812a79a6431a8ec', '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec', '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec', '0xb67656ce894ac93c0164d8490ad23161a77ee000']);
+const OLD_HOOKS = new Set(['0xe0def4221b9840a610d4e7d55812a79a6431a8ec', '0x6b1216a40b65c83e9c9e18a562c446697b8cf8ec', '0xe928f2336051cbd5b9d4531c25eadd13f9a82aec', '0xb67656ce894ac93c0164d8490ad23161a77ee000', '0x4de07902f28d00736e29aa5739dea2d4ce98aacc']);
 // New launchpads: a pool hook never seen before on a shared PoolManager, or a new PoolManager. Only its first coin
 // posts (the signal is a new player arriving on chain); later coins follow the usual rules. The contract the launch
 // transaction called and the hook are looked up on other chains: the same contracts on Base, BNB, Arbitrum,
@@ -143,7 +163,7 @@ const lpNameOf = (rec, dflt = 'unknown launchpad') => HOOK_NAMES[rec?.hook] || L
 const BUSY_MIN_BUYERS = 25;
 const BUSY_MIN_USD = 5000;
 const BOXA_PM = '0x06c63714fbf1f5753017123e2fcfdede4540b2c4';
-const LP_NAMES = Object.values(LAUNCHPADS).map((x) => x.name).join(', ');
+const LP_NAMES = [...new Set(Object.values(LAUNCHPADS).map((x) => x.name))].join(', ');
 const WHYPE = new Set([
   '0x0269031ace34a7821e9d9980d087c35ce7c19eef', // Kleos v3
   '0xba876237b0f021a6c6d852d6c26e107997cc5e81', // Uniswap, BOXA v2, StockiumSwap
@@ -500,6 +520,8 @@ async function main() {
   TOKS = (state.tok ||= {}); // coin links open on each coin's own launchpad
   // pool managers the gate identified as Ascend or Signal join the launchpad list
   for (const [pm, x] of Object.entries(gatePms(state))) if (!LAUNCHPADS[pm]) { LAUNCHPADS[pm] = { name: x.name, hook: x.hook }; INFRA.add(pm); }
+  // Obol curves found in earlier runs (a new curve contract with the same code)
+  for (const [a, x] of Object.entries(state.obolSeen || {})) if (x) { addObol(a, !!x.pair); INFRA.add(a); }
   // new-launchpad detection, first start: every launchpad already seen counts as known (before this scan adds
   // anything), Clanker v5 included (TALOS was its first coin here, Nov 6)
   state.lpSeen ||= {};
@@ -619,6 +641,31 @@ async function main() {
       launchTxs.push({ coin, tx: l.transactionHash, block: parseInt(l.blockNumber, 16) });
     }
   }
+  // 1b. Obol coins: born on a curve with no pool. A new curve contract (an Obol log from an address with Obol's code)
+  // joins the list once and posts once.
+  state.obolSeen ||= {};
+  for (const a of [...new Set(logs.filter((l) => l.topics[0] === T_OBOL_CREATE || l.topics[0] === T_OBOL_TRADE).map((l) => lc(l.address)))]) {
+    if (OBOL[a] || a in state.obolSeen) continue;
+    let code = '';
+    try { code = lc(await rpc('eth_getCode', [a, 'latest'])); } catch { continue; }
+    const ok = OBOL_SELS.every((sel) => code.includes('63' + sel));
+    state.obolSeen[a] = ok ? { at: now(), pair: false } : 0;
+    if (!ok) continue;
+    addObol(a); INFRA.add(a);
+    bump('obol new curve');
+    if (!firstRun) msgs.push(`🧪 <b>Obol has a new curve contract</b>
+Its coins now count as Obol launches.
+<code>${a}</code>`);
+  }
+  for (const l of logs) {
+    if (l.topics[0] !== T_OBOL_CREATE || l.topics.length < 3 || !OBOL[lc(l.address)]) continue;
+    const coin = lc(topicAddr(l.topics[1]));
+    if (state.tok[coin]) continue;
+    const b = parseInt(l.blockNumber, 16);
+    const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
+    state.tok[coin] = { lp: lc(l.address), hook: null, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: lc(topicAddr(l.topics[2])) };
+    launchTxs.push({ coin, tx: l.transactionHash, block: b });
+  }
   // who launched each new coin (one tx lookup per launch; ~10 an hour across the chain)
   for (const { coin, tx } of launchTxs.slice(0, 40)) {
     try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); state.tok[coin].via = lc(x?.to); } catch {}
@@ -683,6 +730,7 @@ async function main() {
   const poolOut = new Set([...Object.keys(LAUNCHPADS)]); // token leaves a PoolManager/pool → a buyer receives it
   const v3Pools = {};
   const txBuy = {}; // tx hash → HYPE paid into pools in that tx (buys routed through routers/multicall too)
+  const obolBuys = []; // Obol curve buys: the buyer is the tx sender (a router in between would hide them)
   for (const l of logs) {
     if (l.topics[0] === T_SWAP_V4) {
       const p = state.pools[lc(l.topics[1])];
@@ -702,6 +750,26 @@ async function main() {
       if (sqrt > 0n && qPx > 0) {
         const ratio = Number((sqrt * sqrt * 10n ** 18n) >> 192n) / 1e18; // currency1 per currency0
         if (ratio > 0) r.price = (p.inv ? ratio : 1 / ratio) * qPx;        // HYPE per coin
+      }
+    } else if ((l.topics[0] === T_OBOL_TRADE || l.topics[0] === T_OBOL_AMM) && l.topics.length === 3 && OBOL[lc(l.address)]) {
+      // an Obol curve trade (or a trade on an older curve's own pair after graduation; 0x4de0's graduated coins
+      // trade on a v4 pool and are read there instead)
+      const curve = lc(l.address);
+      if (l.topics[0] === T_OBOL_AMM && !OBOL[curve].pair) continue;
+      const t = lc(topicAddr(l.topics[1]));
+      const w = words(l.data);
+      const isBuy = BigInt('0x' + (w[0] || '0')) === 1n;
+      const h = Number(BigInt('0x' + (w[1] || '0'))) / 1e18;
+      const r = R(t);
+      r.lp ||= curve;
+      r.vol += h; r.swaps++;
+      if (isBuy) { r.buyVol += h; r.buys++; txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h; obolBuys.push({ t, h: l.transactionHash }); }
+      if (l.topics[0] === T_OBOL_TRADE && w[5]) {
+        const rh = Number(BigInt('0x' + w[4])), rt = Number(BigInt('0x' + w[5])); // virtual reserves: HYPE per coin
+        if (rh > 0 && rt > 0) r.price = rh / rt;
+      } else if (w[2]) {
+        const tk = Number(BigInt('0x' + w[2])) / 1e18;
+        if (tk > 0 && h > 0) r.price = h / tk;
       }
     } else if (l.topics[0] === T_SWAP_V3) {
       const pool = lc(l.address);
@@ -736,6 +804,12 @@ async function main() {
   }
   for (const p of Object.keys(v3Pools)) poolOut.add(p);
 
+  // Obol buys through a router: the curve hands the coin to the router, so the buyer is the sender of the tx
+  const obolFrom = {};
+  for (const { t, h } of obolBuys.slice(0, 80)) {
+    if (!(h in obolFrom)) { try { obolFrom[h] = lc((await rpc('eth_getTransactionByHash', [h]))?.from || ''); } catch { obolFrom[h] = ''; } }
+    if (obolFrom[h] && !INFRA.has(obolFrom[h])) roll[t]?.buyers.add(obolFrom[h]);
+  }
   // buyers/sellers from token transfers out of / into pools
   for (const l of logs) {
     if (l.topics[0] !== T_TRANSFER || l.topics.length !== 3) continue;
@@ -1841,7 +1915,7 @@ async function fastMain() {
       if (head > fst.block) {
         const from = fst.block + 1, to = Math.min(head, from + FAST_RANGE - 1);
         ta = Date.now();
-        const logs = await getLogs({ topics: [[T_TRANSFER, T_SWAP_V4, T_SWAP_V3, T_SWAP_V2, T_INIT_V4]] }, from, to, FAST_RANGE);
+        const logs = await getLogs({ topics: [[T_TRANSFER, T_SWAP_V4, T_SWAP_V3, T_SWAP_V2, T_INIT_V4, T_OBOL_TRADE, T_OBOL_AMM]] }, from, to, FAST_RANGE);
         stats.tLogs.push(Date.now() - ta);
         await fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, rootOf, stats, blockTime });
         stats.blocks += to - from + 1;
@@ -1890,10 +1964,21 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
   // swaps in the txs we care about: HYPE paid per tx, which addresses are pools, the coin's latest price
   const txBuy = {}, emitters = {}, swapTx = new Set();
   for (const l of logs) {
-    if (l.topics[0] !== T_SWAP_V4 && l.topics[0] !== T_SWAP_V3 && l.topics[0] !== T_SWAP_V2) continue;
+    const obol = (l.topics[0] === T_OBOL_TRADE || l.topics[0] === T_OBOL_AMM) && l.topics.length === 3 && (OBOL[lc(l.address)] || st.obolSeen?.[lc(l.address)]);
+    if (l.topics[0] !== T_SWAP_V4 && l.topics[0] !== T_SWAP_V3 && l.topics[0] !== T_SWAP_V2 && !obol) continue;
     const b = parseInt(l.blockNumber, 16);
     const inHot = hot.has(l.transactionHash);
     if (inHot) { swapTx.add(l.transactionHash); (emitters[l.transactionHash] ||= new Set()).add(lc(l.address)); }
+    if (obol) {
+      // an Obol curve trade: isBuy, HYPE, tokens (then fee and the curve's virtual reserves on a curve trade)
+      const w = words(l.data);
+      const t = lc(topicAddr(l.topics[1]));
+      const h = Number(BigInt('0x' + (w[1] || '0'))) / 1e18;
+      if (inHot && BigInt('0x' + (w[0] || '0')) === 1n) txBuy[l.transactionHash] = (txBuy[l.transactionHash] || 0) + h;
+      const p = l.topics[0] === T_OBOL_TRADE && w[5] ? Number(BigInt('0x' + w[4])) / Number(BigInt('0x' + w[5])) : w[2] && BigInt('0x' + w[2]) > 0n ? h / (Number(BigInt('0x' + w[2])) / 1e18) : 0;
+      if (p > 0 && (!fst.price[t] || fst.price[t].b <= b)) fst.price[t] = { p, b, t: now() };
+      continue;
+    }
     if (l.topics[0] === T_SWAP_V4) {
       const p = poolOf(lc(l.topics[1]));
       if (!p) continue;
