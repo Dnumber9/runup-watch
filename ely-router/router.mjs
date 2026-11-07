@@ -14,6 +14,10 @@
 //   3. Bonding-curve launchpads (VEINS and its two copies), before and after a coin graduates to the curve's own pair.
 //   4. Coins only their own router may trade (Elysium Machines), through that router.
 //   5. Single-coin bonding curves (COREPAD): each coin has a curve contract of its own, found from the coin's mint.
+//   6. Coins paired with another token on Uniswap v4 (BOXA, USDC, KNTQ…): in one transaction through that token's
+//      HYPE pool on the same manager when it has one, otherwise in two steps (HYPE → the token on its own best route,
+//      then the token → the coin through Uniswap's Universal Router; sells the other way round). /set pairbuy off
+//      keeps the token instead (a buy then needs it in the wallet). Ascend coins paired with USDC work the same way.
 //
 // Safety before every buy:
 //   Sell check: the buy is simulated together with an immediate sell of everything it returns (a tiny
@@ -228,6 +232,7 @@ const cfg = () => ({
   notes: (state.set.notes ?? process.env.TRADE_NOTES ?? 'on') !== 'off', // 📒 note question on each buy and close in your other wallets
   bagwatch: (state.set.bagwatch ?? process.env.BAG_WATCH ?? 'off') !== 'off', // 👀 every coin you hold (off: only the coins you arm)
   inbox: (state.set.inbox ?? process.env.INBOX ?? 'on') !== 'off',            // also post every trade to Elysium's Inbox on HyperEVM
+  pairbuy: (state.set.pairbuy ?? process.env.PAIR_BUY ?? 'on') !== 'off',     // coins paired with a token: buy that token with HYPE first, sell it back after
 });
 const DEFAULT_AUTO = 'tp 2x 50 trail 40';
 let saveTimer = null;
@@ -530,6 +535,10 @@ const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('41
 const sigKey = (r, t) => [...(r.qFirst ? [r.q, t] : [t, r.q]), r.fee, r.ts, r.hook];
 const sigBuy = (r, t, minOut, to, dl) => enc('31561a35', ...sigKey(r, t), minOut, to, to, dl);
 const sigSell = (r, t, amt, minOut, to, dl) => enc('38aad789', ...sigKey(r, t), r.qFirst ? 0 : 1, amt, minOut, to, 1, dl);
+// routes paid in a token through a Universal Router (Ascend's, or Uniswap's for a coin paired with a token), and
+// Uniswap routes that take and pay native HYPE whatever the pair
+const tokRoute = (r) => r?.kind === 'ascend' || (r?.kind === 'uni' && r.mode === 'token');
+const uniNative = (r) => r?.kind === 'uni' && r.mode !== 'token';
 const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal';
 const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, SIGNAL.router, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
@@ -548,8 +557,8 @@ const routeOf = (p) => (p.kind === 'signal' ? sigRoute(p) : p.kind === 'ascend' 
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
 async function v4QuoteBuy(r, t, wei) {
-  if (r.kind === 'uni') return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
-  if (r.kind === 'ascend') return ascQuoteBuy(r, t, wei);
+  if (uniNative(r)) return (await ascSim(r, t, { qAmt: wei, sell: false })).got;
+  if (tokRoute(r)) return ascQuoteBuy(r, t, wei);
   if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qBuy, wei), {}, undefined, true));
   if (r.kind === 'curve') return r.amm && !curveOf(r).v4 ? ammQuote(r, t, wei, true) : u256(await ethCall(r.router, enc(curveOf(r).qBuy, t, wei))); // its buy() returns nothing
   const data = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1);
@@ -584,8 +593,8 @@ async function allowanceSlot(t, spender) {
   return state.slots[key];
 }
 async function v4QuoteSell(r, t, amt, slot) {
-  if (r.kind === 'uni') return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
-  if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
+  if (uniNative(r)) return (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
+  if (tokRoute(r)) return ascQuoteSell(r, t, amt);
   if (r.kind === 'pcurve') return u256(await ethCall(r.router, enc(PC.qSell, amt), {}, undefined, true)); // a view
   if (r.kind === 'curve') return r.amm && !curveOf(r).v4 ? ammQuote(r, t, amt, false) : u256(await ethCall(r.router, sellQuoteData(r, t, amt))); // a view: no allowance needed
   const data = sellQuoteData(r, t, amt);
@@ -643,11 +652,14 @@ const HOP_LEGS = { [KNTQ]: [{ fee: 50000, ts: 60, hook: ZERO }, { fee: 100000, t
 const uniSingle = (key, zfo, amt, minOut) => word(32) + [...key, zfo ? 1 : 0, amt, minOut, 0, 320].map(word).join('') + word(0);
 const uniKey = (r, t) => [...(r.qFirst ? [r.q, t] : [t, r.q]), r.fee, r.ts, r.hook];
 const legKey = (r) => [ZERO, r.q, r.h.fee, r.h.ts, r.h.hook];
+// token: a coin paired with a token, swapped straight from that token (pulled through Permit2) and back into it
 function uniBuyData(r, t, wei, minOut, dl) {
+  if (r.mode === 'token') return urExecute('10', [infiSwap('060c0f', [uniSingle(uniKey(r, t), r.qFirst, wei, minOut), word(r.q) + word(wei), word(t) + word(minOut)])], dl);
   if (r.mode === 'wrap') return urExecute('0b10', [word(2) + word(wei), infiSwap('060b0f', [uniSingle(uniKey(r, t), r.qFirst, wei, minOut), word(r.q) + word(wei) + word(0), word(t) + word(minOut)])], dl);
   return urExecute('10', [infiSwap('06060c0f', [uniSingle(legKey(r), true, wei, 0), uniSingle(uniKey(r, t), r.qFirst, 0, minOut), word(ZERO) + word(wei), word(t) + word(minOut)])], dl);
 }
 function uniSellData(r, t, amt, minOut, dl, settleMax = amt) {
+  if (r.mode === 'token') return urExecute('10', [infiSwap('060c0f', [uniSingle(uniKey(r, t), !r.qFirst, amt, minOut), word(t) + word(settleMax), word(r.q) + word(minOut)])], dl);
   if (r.mode === 'wrap') return urExecute('100c', [infiSwap('060c0e', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), word(t) + word(settleMax), word(r.q) + word(2) + word(0)]), word(1) + word(minOut)], dl);
   return urExecute('10', [infiSwap('06060c0f', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), uniSingle(legKey(r), false, 0, minOut), word(t) + word(settleMax), word(ZERO) + word(minOut)])], dl);
 }
@@ -662,12 +674,21 @@ const uniLegs = (r) => {
   return out.sort((a, b) => a.fee - b.fee); // cheapest first: the default leg when there is no time to quote them all
 };
 const uniRoute = (p, h) => {
-  const r = { kind: 'uni', mode: p.uni, name: p.uni === 'wrap' ? 'Uniswap WHYPE' : `Uniswap via ${p.q === KNTQ ? 'KNTQ' : meta[p.q]?.sym || short(p.q)}`, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, ur: UNI_UR };
+  const qs = p.q === KNTQ ? 'KNTQ' : meta[p.q]?.sym || short(p.q);
+  const name = p.uni === 'wrap' ? 'Uniswap WHYPE' : p.uni === 'token' ? `Uniswap ${qs} pair (${qs} bought first)` : `Uniswap via ${qs}`;
+  const r = { kind: 'uni', mode: p.uni, name, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, ur: UNI_UR };
   if (p.uni === 'hop') r.h = h || uniLegs(r)[0] || null;
   return r;
 };
 // every first leg of a hop route, so the best one can be picked by quote
-const uniExpand = (r) => (r.kind === 'uni' && r.mode === 'hop' ? uniLegs(r).map((h) => ({ ...r, h })) : [r]);
+// a pool paired with any token ('pair'): one hop route per HYPE pool that token has on the same manager, and the
+// two-step route through the token itself; the best quote wins
+const uniExpand = (r) => {
+  if (r.kind !== 'uni') return [r];
+  if (r.mode === 'hop') return uniLegs(r).map((h) => ({ ...r, h }));
+  if (r.mode === 'pair') return [...uniLegs(r).map((h) => uniRoute({ ...r, uni: 'hop' }, h)), uniRoute({ ...r, uni: 'token' })];
+  return [r];
+};
 // Simulation helper (hand-assembled, only ever placed at SIM through a state override). Calldata words: router,
 // coin, buyLen, sellLen, amount offset in sellData, quote (0 = native), Permit2, flags (1: approve the quote
 // before buying, 2: proceeds are native), then buyData and sellData. It approves through Permit2 itself, buys,
@@ -707,7 +728,7 @@ async function simSlot(t, hint) {
 // buy and/or sell through the helper, as of now or as of `time` (a block-time override, for the seconds after launch)
 async function ascSim(r, t, { qAmt = 0n, sellAmt = 0n, buy = true, sell = true, time = null } = {}) {
   if (!r.ur) throw new Error('Ascend router not known yet');
-  const native = r.q === ZERO || r.kind === 'uni'; // uni routes take and pay native HYPE whatever the pair
+  const native = r.q === ZERO || uniNative(r); // uni routes take and pay native HYPE whatever the pair (token mode aside)
   const bd = buy ? strip(urBuyData(r, t, qAmt, 0n, 2 ** 31 - 1)) : '';
   const sd = sell ? strip(urSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256)) : '';
   const off = sell ? sd.indexOf(word(ASC_MARK)) / 2 : 0;
@@ -742,6 +763,8 @@ async function ascRate(q) {
   let v = null;
   if (/usd/i.test(m.sym)) { const px = await hypeUsd(); if (px) v = (BigInt(Math.round(px * 1e6)) * 10n ** BigInt(m.d)) / 10n ** 6n; }
   if (!v) { try { v = BigInt((await kyRoute(NATIVE, q, 10n ** 18n)).routeSummary.amountOut); } catch {} }
+  // a token KyberSwap does not price (BOXA): what its own best route pays for 0.1 HYPE
+  if (!v) { try { const qr = state.routes[q] || (await findRoute(q)); if (qr && !tokRoute(qr)) { const o = await quoteBuy(qr, q, 10n ** 17n); if (o > 0n) v = o * 10n; } } catch {} }
   if (!v) throw new Error(`no HYPE price for ${m.sym}`);
   ascRates[q] = { v, t: Date.now() };
   return v;
@@ -773,7 +796,7 @@ async function ascQuoteBuy(r, t, wei) { return (await ascSim(r, t, { qAmt: await
 async function ascQuoteSell(r, t, amt) { return weiOfQ(r.q, (await ascSim(r, t, { buy: false, sellAmt: amt })).back); }
 async function ascSellCheck(r, t, wei, time) {
   try {
-    const uni = r.kind === 'uni'; // native in and out: no quote-token conversion
+    const uni = uniNative(r); // native in and out: no quote-token conversion
     const qAmt = uni ? wei : await qOfWei(r.q, wei);
     const { got, back } = await ascSim(r, t, { qAmt, time });
     const loss = 1 - num(back) / num(qAmt);
@@ -833,15 +856,43 @@ async function resolveAscend(l, p) {
     save();
   } finally { ascResolving.delete(p.id); }
 }
+// a Uniswap pool pairing two tokens: the coin is the side that had no code before the launch block, the other side
+// is the token it trades against. Both older than the pool: not a launch, left out.
+async function resolvePair(l, p) {
+  if (ascResolving.has(p.id)) return;
+  ascResolving.add(p.id);
+  try {
+    const before = hex(Math.max(0, p.b - 1));
+    const [k0, k1] = await Promise.all([p.c0, p.c1].map((c) => rpc('eth_getCode', [c, before]).catch(() => null)));
+    const q = k0 === '0x' && k1 && k1 !== '0x' ? p.c1 : k1 === '0x' && k0 && k0 !== '0x' ? p.c0 : null;
+    if (q) addPairPool(q === p.c0 ? p.c1 : p.c0, q, p, l);
+  } finally { ascResolving.delete(p.id); }
+}
+function addPairPool(t, q, p, l) {
+  const { c0, c1, pair, ...rest } = p;
+  const pp = { ...rest, q, qFirst: q === c0, uni: 'pair' };
+  const list = (state.pools[t] ||= []);
+  const had = list.find((y) => y.id === pp.id);
+  if (had) return had;
+  list.push(pp);
+  delete state.routes[t];
+  tokenMeta(q).catch(() => {}); // its symbol, for the route's name
+  if (live && l) fresh.push({ t, ...pp, tx: lc(l.transactionHash || ''), newPm: !knownPms.has(pp.pm) });
+  knownPms.add(pp.pm);
+  save();
+  return pp;
+}
 // buy plan for an Ascend coin: amount in the quote, sell check (as of `time` for a snipe), approvals, the swap
 async function ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, hBal) {
   const { slip } = cfg();
-  r.ur ||= await ascRouterFor(r.pm);
+  if (r.kind === 'ascend') r.ur ||= await ascRouterFor(r.pm);
   if (!r.ur) throw new Error('Ascend router not known yet: set it with /ascend router 0x…');
   const native = r.q === ZERO;
-  const [qAmt, qm, qBal] = await Promise.all([qOfWei(r.q, wei), native ? null : tokenMeta(r.q), native ? null : balOf(r.q, me, true)]);
-  if (native ? hBal < wei + 2n * 10n ** 15n : qBal < qAmt) {
-    throw new Error(native ? `not enough HYPE: wallet has ${fmtH(num(hBal))}` : `not enough ${qm.sym}: wallet has ${fmt(num(qBal, qm.d))}, this buy needs ${fmt(num(qAmt, qm.d))}. Ascend coins are paired with ${qm.sym}: send some to ${me}`);
+  let [qAmt, qm, qBal] = await Promise.all([qOfWei(r.q, wei), native ? null : tokenMeta(r.q), native ? null : balOf(r.q, me, true)]);
+  // not enough of the token the coin is paired with: buy it with HYPE first (step 1 of 2), unless /set pairbuy off
+  const topUp = !native && qBal < qAmt && cfg().pairbuy && !opts.convert;
+  if (native || topUp ? hBal < wei + 3n * 10n ** 15n : qBal < qAmt) {
+    throw new Error(native || topUp ? `not enough HYPE: wallet has ${fmtH(num(hBal))}` : `not enough ${qm.sym}: wallet has ${fmt(num(qBal, qm.d))}, this buy needs ${fmt(num(qAmt, qm.d))}. ${m.sym} is paired with ${qm.sym}: send some to ${me}, or /set pairbuy on to buy it with HYPE first`);
   }
   if (!native && hBal < 2n * 10n ** 15n) throw new Error('need a little HYPE in the wallet for gas');
   const head = opts.label ? `${opts.label}\n` : '';
@@ -855,13 +906,20 @@ async function ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, hBal
     await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
     return { refused: true };
   }
-  const expect = sc.got > 0n ? sc.got : (await ascSim(r, t, { qAmt, sell: false, time: opts.ascTime })).got;
+  // the sell check ran first, so a coin that cannot be sold back costs nothing; now the token itself
+  if (topUp) {
+    const res = await buy(r.q, hypeAmt, replyTo, force, src, { convert: true, label: `${head}1/2 · ${esc(m.sym)} trades against ${esc(qm.sym)}: buying ${esc(qm.sym)} first` });
+    if (!res.ok) { if (res.refused) return { refused: true }; throw new Error(`could not buy ${qm.sym} first${res.error ? ': ' + res.error : ''}`); }
+    qBal = await balOf(r.q, me, true).catch(() => res.got);
+    qAmt = res.got > 0n && res.got < qBal ? res.got : qBal;
+  }
+  const expect = sc.got > 0n && !topUp ? sc.got : (await ascSim(r, t, { qAmt, sell: false, time: opts.ascTime })).got;
   let minOut = (expect * (10000n - slip)) / 10000n;
   // landing a second early means a higher fee: the minimum sits halfway between the two outcomes, so that reverts
   if (prev != null && prev > 0n && prev * 100n < expect * 98n && (prev + expect) / 2n > minOut) minOut = (prev + expect) / 2n;
   const txs = native ? [] : await ascApprovals(r.q, r.ur, qAmt);
-  txs.push({ to: r.ur, value: native ? qAmt : 0n, data: ascBuyData(r, t, qAmt, minOut, deadline()), gas: 900000 });
-  if (!native) sc.note = `${fmt(num(qAmt, qm.d))} ${qm.sym}${sc.note ? ', ' + sc.note : ''}`;
+  txs.push({ to: r.ur, value: native ? qAmt : 0n, data: urBuyData(r, t, qAmt, minOut, deadline()), gas: r.kind === 'uni' ? 1500000 : 900000 });
+  if (!native) sc.note = `${topUp ? '2/2 · ' : ''}${fmt(num(qAmt, qm.d))} ${qm.sym}${sc.note ? ', ' + sc.note : ''}`;
   return { txs, expect, sc };
 }
 // when the anti-snipe fee is gone: the round trip simulated as of each second after launch, against the same trip
@@ -1002,8 +1060,11 @@ function parseInit(l) {
   // official Uniswap v4: WHYPE pairs and token pairs (KNTQ…) through Uniswap's Universal Router
   else if (pm === UNI_PM && (c0 === UNI_WETH || c1 === UNI_WETH)) { q = UNI_WETH; t = c0 === q ? c1 : c0; uni = 'wrap'; }
   else if (pm === UNI_PM && (HOP_QUOTES.has(c0) || HOP_QUOTES.has(c1))) { q = HOP_QUOTES.has(c1) ? c1 : c0; t = q === c0 ? c1 : c0; uni = 'hop'; }
-  else return null;
+  // any other token pair on Uniswap's manager (a coin launched against BOXA, USDC…): which side is the coin is
+  // settled on chain (resolvePair)
+  else if (pm !== UNI_PM) return null;
   const p = { pm, fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: '0x' + d.slice(152, 192), b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) };
+  if (!t) return { t: null, p: { ...p, c0, c1, pair: true } };
   if (q) { p.q = q; p.qFirst = q === c0; }
   if (uni) p.uni = uni;
   return { t, p };
@@ -1011,7 +1072,7 @@ function parseInit(l) {
 function addPool(l) {
   const x = parseInit(l);
   if (!x) return 0;
-  if (!x.t) { resolveAscend(l, x.p).catch((e) => console.error('ascend pool', e.message)); return 0; }
+  if (!x.t) { (x.p.pair ? resolvePair : resolveAscend)(l, x.p).catch((e) => console.error(x.p.pair ? 'pair pool' : 'ascend pool', e.message)); return 0; }
   const { t, p } = x, pm = p.pm;
   const list = (state.pools[t] ||= []);
   if (list.some((y) => y.id === p.id)) return 0;
@@ -1056,6 +1117,7 @@ async function findRoute(t, fresh = false) {
   const quote = async (r) => { try { const out = await v4QuoteBuy(r, t, probe); return out > 0n ? { r, out } : null; } catch { return null; } };
   if (!state.pools[t]?.length) await indexPools().catch(() => {}); // a pool from the last few seconds
   const pools = state.pools[t] || [];
+  await Promise.all(pools.filter((p) => p.uni === 'pair').map((p) => tokenMeta(p.q).catch(() => null)));
   let cands = pools.filter((p) => p.kind !== 'ascend').slice(-8).map(routeOf).flatMap(uniExpand);
   for (const p of pools.filter((x) => x.kind === 'ascend').slice(-2)) { const ar = await ascRouteOf(p).catch(() => null); if (ar) cands.push(ar); }
   if (!cands.length) cands = V4.map((x) => ({ kind: 'v4', name: x.name, pm: x.pm, hook: x.hook, fee: x.fee, ts: x.ts }));
@@ -1139,6 +1201,13 @@ async function scanV4(t, ok) {
     }
     for (const l of (await Promise.all(jobs)).flat()) {
       const x = parseInit(l);
+      if (x?.p?.pair && (x.p.c0 === t || x.p.c1 === t)) {
+        // a token pair: the coin is the one asked about
+        const pp = addPairPool(t, x.p.c0 === t ? x.p.c1 : x.p.c0, x.p, null);
+        await tokenMeta(pp.q).catch(() => {});
+        for (const v of uniExpand(routeOf(pp))) { const r = await ok(v); if (r) return r; }
+        continue;
+      }
       if (!x || x.t !== t) continue;
       const r = await ok(routeOf(x.p));
       if (r) return r;
@@ -1178,7 +1247,7 @@ async function quoteBuy(r, t, wei) {
 // HYPE out for selling `amt` tokens now
 async function quoteSellOut(r, t, amt) {
   if (!isPool(r)) return BigInt((await kyRoute(t, NATIVE, amt)).routeSummary.amountOut);
-  if (r.kind === 'ascend') return ascQuoteSell(r, t, amt);
+  if (tokRoute(r)) return ascQuoteSell(r, t, amt);
   if (r.kind === 'uni' || r.kind === 'pcurve') return v4QuoteSell(r, t, amt);
   const allowed = u256(await ethCall(t, enc('dd62ed3e', me, routerOf(r))));
   return v4QuoteSell(r, t, amt, allowed >= amt ? null : await allowanceSlot(t, routerOf(r)));
@@ -1311,27 +1380,29 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   // a second tap while a buy of the same coin is still landing is almost always a retry of that buy: it does not buy
   // twice unless asked (limit orders, snipes and copies are not held back)
   const busy = buyingNow.get(t);
-  if (busy && !force && !/^(limit|snipe|copy)/.test(src) && Date.now() - busy < 200000) {
+  if (busy && !force && !opts.convert && !/^(limit|snipe|copy)/.test(src) && Date.now() - busy < 200000) {
     await say(`⏳ A buy of <b>${esc(meta[t]?.sym || t.slice(0, 10))}</b> sent ${Math.round((Date.now() - busy) / 1000)} s ago is still landing, so this tap did not buy again.`, [[{ text: `Buy ${hypeAmt} more anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }]], replyTo);
     return { ok: false, refused: true };
   }
   const wei = toWei(String(hypeAmt));
   const kept = state.routes[t];
-  const known = opts.route || (kept?.again && Date.now() > kept.again ? null : kept); // see findRoute
+  const known = (opts.route?.mode === 'pair' ? null : opts.route) || (kept?.again && Date.now() > kept.again ? null : kept); // see findRoute
   // started right away when the route is known: the sell check (a KyberSwap route runs it on the coin's own pool) and
   // the gas estimate
-  const scOn = (x) => (isPool(x) && x.kind !== 'ascend' ? x : x?.kind === 'kyber' && x.check ? x.check : null);
+  const scOn = (x) => (isPool(x) && !tokRoute(x) ? x : x?.kind === 'kyber' && x.check ? x.check : null);
   const scP = scOn(known) ? sellCheck(scOn(known), t, wei) : null;
-  const gasP = isPool(known) && known.kind !== 'ascend' ? estGas(known, t, wei) : null;
+  const gasP = isPool(known) && !tokRoute(known) ? estGas(known, t, wei) : null;
   let [m, r, bal, before] = await Promise.all([tokenMeta(t), known || findRoute(t), hypeBal(true), balOf(t, me, true).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
+  // the token a coin is paired with is bought on a route of its own that takes HYPE (never two pairs deep)
+  if (opts.convert && tokRoute(r)) throw new Error(`no direct HYPE route for ${m.sym}`);
   // an Ascend coin whose anti-snipe fee is still up: wait for the second it drops instead of paying it
   if (r.kind === 'ascend' && opts.ascTime == null) {
     r.ur ||= await ascRouterFor(r.pm).catch(() => null);
     const d = r.ur ? await ascEarly(r, t, wei).catch(() => null) : null;
     if (d) return ascWaitBuy(t, hypeAmt, replyTo, force, src, opts, r, d);
   }
-  if (r.kind !== 'ascend' && bal < wei + 2n * 10n ** 15n + (r.kind === 'gated' ? 10n ** 15n : 0n)) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
+  if (!tokRoute(r) && bal < wei + 2n * 10n ** 15n + (r.kind === 'gated' ? 10n ** 15n : 0n)) throw new Error(`not enough HYPE: wallet has ${fmtH(num(bal))}`);
   const head = opts.label ? `${opts.label}\n` : '';
   // sell check: the buy simulated together with an immediate sell. It refuses coins that cannot be sold back
   // or lose too much on the round trip, and its buy leg is the quote for this exact size.
@@ -1342,7 +1413,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
     await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
     return { ok: false, refused: true };
   };
-  if (r.kind === 'ascend') {
+  if (tokRoute(r)) {
     const plan = await ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, bal);
     if (plan.refused) return { ok: false, refused: true };
     ({ sc, expect } = plan);
@@ -1411,6 +1482,14 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   }
   let got = gotFromLogs(rc, t);
   if (got === 0n) got = (await balOf(t, me, true).catch(() => before)) - before;
+  // the token a paired coin trades against (step 1 of 2): no position, no journal, approved for the way back
+  if (opts.convert) {
+    cacheBal(t, before + got);
+    if (cfg().preapprove && uniNative(r)) ascPreApprove(t, r).catch(() => {});
+    else if (cfg().preapprove && isPool(r) && !tokRoute(r)) preApprove(t, routerOf(r)).catch(() => {});
+    await edit(msg, `${head}✅ Got ${fmt(num(got, m.d))} ${esc(m.sym)} for ${hypeAmt} HYPE · ${txLink(hash)}`);
+    return { ok: true, got };
+  }
   const px = await hypeUsd();
   const mc = m.sup && got > 0n ? (hypeAmt / num(got, m.d)) * num(m.sup, m.d) : null;
   const p = P(t, m.sym);
@@ -1475,13 +1554,13 @@ async function sell(t, pct, replyTo, opts = {}) {
   let txs, expect;
   try {
     if (r.kind === 'ascend' || r.kind === 'uni') {
-      const uni = r.kind === 'uni'; // pays native HYPE (unwrapped or swapped back inside the router)
-      if (!uni) r.ur ||= await ascRouterFor(r.pm);
+      const uni = uniNative(r); // pays native HYPE (unwrapped or swapped back inside the router)
+      if (r.kind === 'ascend') r.ur ||= await ascRouterFor(r.pm);
       if (!r.ur) throw new Error('Ascend router not known yet: /ascend router 0x…');
       const backQ = (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
       expect = uni ? backQ : await weiOfQ(r.q, backQ);
       const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
-      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: uni ? 3000000 : 2000000 }];
+      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: r.kind === 'uni' ? 3000000 : 2000000 }];
       if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
     } else if (isPool(r)) {
       // an ERC-404 sell burns an NFT per whole unit: its gas is estimated once the router may pull the coin, and is
@@ -1554,10 +1633,23 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
     // an Ascend coin paired with a token (USDC): the proceeds are that token, valued in HYPE
     const qNow = await tokAt(opts.outQ.q, at).catch(() => balOf(opts.outQ.q, me, true)).catch(() => opts.outQ.before);
     const gq = qNow > opts.outQ.before ? qNow - opts.outQ.before : 0n;
-    got = num(await weiOfQ(opts.outQ.q, gq));
+    got = num(await weiOfQ(opts.outQ.q, gq).catch(() => 0n));
     qLine = ` (${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`;
+    // a coin paired with a token: that token goes straight back to HYPE (step 2 of 2), unless /set pairbuy off
+    if (gq > 0n && cfg().pairbuy && !opts.convert) {
+      await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)} · ${txLink(hash)}\n↩️ Swapping the ${esc(opts.outQ.qm.sym)} back to HYPE…`).catch(() => {});
+      const h = await sell(opts.outQ.q, 100, null, { amt: gq, convert: true, why: `2/2 · ${opts.outQ.qm.sym} from the ${m.sym} sell back to HYPE`, icon: '↩️' }).catch(() => null);
+      if (typeof h === 'number') { got = h; qLine = ` (through ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`; }
+      else qLine = ` (kept as ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)}: swapping it back failed, sell it from its card)`;
+    }
   }
   const sold = num(tokBefore - left, m.d);
+  // the token from a paired coin's sell, back to HYPE: no position, no journal
+  if (opts.convert) {
+    cacheBal(t, left);
+    await edit(msg, `${head}✅ ${fmt(sold)} ${esc(m.sym)} back to <b>${fmtH(got)}</b> · ${txLink(hash)}`);
+    return got;
+  }
   const p = P(t, m.sym); p.hypeOut += Math.max(got, 0); p.tokOut += sold; p.lastSell = Date.now();
   p.cOut = (p.cOut ?? 0) + Math.max(got, 0);
   cacheBal(t, left);
@@ -3038,6 +3130,7 @@ const HELP =
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
   `<b>Bag watch</b>, per coin: 👀 on its card or /bagwatch 0xCOIN watches its dev and top 10 holders, a post when they sell or move a real part of their bag · /bagwatch lists them · /set bagwatch on watches every coin you hold\n` +
   `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)\n` +
+  `<b>Token pairs</b>: a coin paired with BOXA, USDC or any other token is bought with HYPE in two steps (the token first, then the coin) and sold back to HYPE the same way · /set pairbuy off keeps the token instead\n` +
   `<b>/fire</b> keeps sending a buy to a launch contract until it opens and fills (/fire for how)`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
@@ -3269,15 +3362,16 @@ async function onMessage(msg) {
     else if (k === 'rug' && /^(on|off)$/.test(lv)) state.set.rug = lv;
     else if (k === 'bagwatch' && /^(on|off)$/.test(lv)) state.set.bagwatch = lv;
     else if (k === 'preapprove' && /^(on|off)$/.test(lv)) state.set.preapprove = lv;
+    else if (k === 'pairbuy' && /^(on|off)$/.test(lv)) state.set.pairbuy = lv;
     else if (k === 'copymax' && Number(v) >= 0) state.set.copymax = Number(v);
     else if (k === 'inbox' && /^(on|off)$/.test(lv)) { state.set.inbox = lv; inbox.warned = false; }
     else if (k === 'gwei' && Number(v) >= 0.1 && Number(v) <= 2000) { state.set.gwei = Number(v); inbox.warned = false; }
     else if (k === 'pin' && /^(on|off)$/.test(lv)) { state.set.pin = lv; if (lv === 'off' && state.pin?.id) { await tg('unpinChatMessage', { chat_id: OWNER, message_id: state.pin.id }); state.pin = {}; } }
-    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · copymax 10 · pin on|off · inbox on|off · gwei 200 (Inbox post gas price on HyperEVM)');
+    else return say('Usage: /set slip 15 · max 5 · sizes 1,2,3,5 · tax 25 · check on|off · stale 5 · report quiet|on|off · devsell 50 · rug on|off · bagwatch on|off · preapprove on|off · pairbuy on|off · copymax 10 · pin on|off · inbox on|off · gwei 200 (Inbox post gas price on HyperEVM)');
     save();
     const c = cfg();
     return say(`Saved. Slippage ${Number(c.slip) / 100}% · max ${c.max} HYPE · sizes ${c.sizes.join(', ')} · sell check ${c.check ? `on (limit ${c.tax}%)` : 'OFF'} · stale taps ${c.stale ? `after ${c.stale} min` : 'off'} · report ${c.report}\n` +
-      `Dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'every bag' : 'armed coins'} · pre-approve ${c.preapprove ? 'on' : 'off'} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · copy cap ${c.copymax}/day`);
+      `Dev guard ${c.devsell ? c.devsell + '%' : 'off'} · rug guard ${c.rug ? 'on' : 'off'} · bag watch ${c.bagwatch ? 'every bag' : 'armed coins'} · pre-approve ${c.preapprove ? 'on' : 'off'} · token pairs ${c.pairbuy ? 'bought with HYPE' : 'need the token'} · auto-sell ${c.auto === 'off' ? 'off' : esc(c.auto)} · copy cap ${c.copymax}/day`);
   }
   if (cmd === '/fire') {
     const sub = lc(args[0] || '');
