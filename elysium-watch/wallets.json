@@ -3016,5 +3016,53 @@
   "label": "Kinetiq governance multisig on Elysium (4 of 8, same owners as HyperEVM)",
   "group": "kinetiq",
   "watch": "all"
+ },
+ {
+  "address": "0xdc333375e5a1c730a1731a93dc51b0c308b68fc4",
+  "label": "MAX dev (launched MAX LEVERAGE on Montra, from Solana via Relay)",
+  "group": "maxteam",
+  "coins": [
+   "0xc890cd53181d16140be68ffdf81876d8e5249a0a"
+  ]
+ },
+ {
+  "address": "0x61d575c18ab3fb7d4f3db791937defd58c673302",
+  "label": "MAX dev alt (3 HYPE before launch)",
+  "group": "maxteam"
+ },
+ {
+  "address": "0xa2713e9f9bc44c83105ec25258398f670163385d",
+  "label": "MAX dev alt (3 HYPE before launch)",
+  "group": "maxteam"
+ },
+ {
+  "address": "0xc0196f4faae4753f7a73d51764c813638faf986c",
+  "label": "MAX dev alt (2 HYPE before launch)",
+  "group": "maxteam"
+ },
+ {
+  "address": "0x203abb66d0f19c3fb1868eb240b5b3ce3b1940d4",
+  "label": "MAX early cluster lead (likely MAX dev, bridged from Solana 4.5 min after him)",
+  "group": "maxteam"
+ },
+ {
+  "address": "0x8bc0aa3c0fcd99317a471b1bef868657bf40c603",
+  "label": "MAX early cluster lead alt",
+  "group": "maxteam"
+ },
+ {
+  "address": "0xd2d62285c06708d5ebcfed02e3fe3629f9cd87d6",
+  "label": "MAX early cluster lead alt",
+  "group": "maxteam"
+ },
+ {
+  "address": "0x15f34f13fe97035a39bdbf8a35506493218489aa",
+  "label": "MAX early cluster lead alt",
+  "group": "maxteam"
+ },
+ {
+  "address": "0x478108daf3e7879fedda77718b78983804ae00f4",
+  "label": "MAX early cluster lead alt",
+  "group": "maxteam"
  }
 ]
