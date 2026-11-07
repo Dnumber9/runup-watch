@@ -3067,8 +3067,9 @@
  },
  {
   "address": "0x48ad71ab6467b0d0d9c5e23caf77452a343cdeeb",
-  "label": "Obol deployer (made all four Obol curves and ObolBridge)",
+  "label": "Obol deployer and fee taker (made all four Obol curves and ObolBridge)",
   "group": "obol",
-  "watch": "launch"
+  "watch": "launch",
+  "cluster": false
  }
 ]
