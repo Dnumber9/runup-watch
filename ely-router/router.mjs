@@ -2017,7 +2017,7 @@ async function snipeBuy(f, s) {
 }
 // /snipe signal: the next Signal launch(es) on Elysium. Every second the round trip (buy, then sell straight back) is
 // simulated at the snipe's size and at half and a quarter of it; the buy goes the first second one of them is within
-// /set tax, at the largest size that is. That waits out the anti-snipe fee, and a size over the launch's wallet cap or
+// the snipe's own limit (or /set tax), at the largest size that is. That waits out the anti-snipe fee, and a size over the launch's wallet cap or
 // its per-block budget (the simulated buy reverts) drops to one that fits. A buy that still reverts is tried again the
 // next second. Gives up after 11 minutes (the longest fee window is 10).
 let snipeOffAt = 0; // /snipe off also stops a Signal snipe that is waiting out a launch's fee
@@ -2025,14 +2025,17 @@ async function sigSnipe(f, s) {
   const r = sigRoute(f), t = f.t;
   const label = `🎯 Signal snipe: new coin <code>${t}</code>`;
   const sizes = [s.hype, s.hype / 2, s.hype / 4].map((h) => Math.round(h * 1000) / 1000).filter((h) => h >= 0.05);
+  const lim = s.tax ?? cfg().tax; // this snipe's limit (set with /snipe signal … tax%) or /set tax
+  const fits = (x) => x.got > 0n && x.back > 0n && x.loss * 100 <= lim; // a coin that cannot be sold back never fits
   const t0 = Date.now();
   let last = null, told = false, tries = 0;
   while (Date.now() - t0 < 11 * 60000) {
     const scs = await Promise.all(sizes.map((h) => sellCheck(r, t, toWei(String(h))).catch(() => ({ ok: null, note: 'sell check unavailable' }))));
     last = scs[0];
-    const i = scs.findIndex((x) => x.ok === true);
+    const i = scs.findIndex(fits);
     if (i >= 0) {
-      const res = await buy(t, sizes[i], null, false, 'snipe', { route: r, label: label + (i ? `\nBuying ${sizes[i]} HYPE: ${s.hype} is over the launch's wallet cap or block budget right now` : '') })
+      // checked just now against this snipe's own limit, so buy() does not refuse it again on /set tax
+      const res = await buy(t, sizes[i], null, s.tax != null, 'snipe', { route: r, label: label + (i ? `\nBuying ${sizes[i]} HYPE: ${s.hype} is over the launch's wallet cap or block budget right now` : '') })
         .catch((e) => ({ err: e.message }));
       if (res?.ok) return res;
       if (res?.err && !/revert|budget|cap|gated|too little|no route/i.test(res.err)) return say(`${label}\n⚠️ ${esc(res.err).slice(0, 200)}`);
@@ -2040,7 +2043,7 @@ async function sigSnipe(f, s) {
     } else if (!told && Date.now() - t0 > 1500) {
       told = true;
       const l = scs.find((x) => x.loss != null);
-      say(`${label}\n⏱ ${l ? `Buying and selling straight back loses ${(l.loss * 100).toFixed(0)}% right now (limit ${cfg().tax}%)` : 'The simulated buy is refused right now (a gate, cap or block budget)'}: checking every second and buying the moment it fits. /snipe off cancels.`).catch(() => {});
+      say(`${label}\n⏱ ${l ? `Buying and selling straight back loses ${(l.loss * 100).toFixed(0)}% right now (limit ${lim}%)` : 'The simulated buy is refused right now (a gate, cap or block budget)'}: checking every second and buying the moment it fits. /snipe off cancels.`).catch(() => {});
     }
     if (snipeOffAt > t0) return say(`${label}\nCancelled (/snipe off) before it bought.`);
     await sleep(1000);
@@ -2048,7 +2051,7 @@ async function sigSnipe(f, s) {
   return say(`${label}\n⚠️ Gave up after 11 minutes: ${esc(last?.note || 'the round trip never came within your limit')}.`);
 }
 function snipeText(s) {
-  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once its anti-snipe fee is within /set tax`;
+  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once the round trip loses ${s.tax ?? cfg().tax}% or less`;
   if (s.k === 'asc') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Ascend launches' : 'Ascend launch'}, ${ascDelayText()}`;
   return s.k === 'token' ? `${s.hype} HYPE of <code>${short(s.w)}</code> when its pool opens` :
     s.k === 'dev' ? `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' coins' : 'coin'} ${short(s.w)} launches` :
@@ -3266,12 +3269,17 @@ async function onMessage(msg) {
   }
   if (cmd === '/snipe') {
     const sub = lc(args[0] || '');
-    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe signal 1 [count] · the next Signal launch(es) on Elysium, bought once the round trip is within /set tax\n/snipe off · cancel all';
+    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe signal 1 [count] [tax%] · the next Signal launch(es) on Elysium, bought once the round trip is within tax% (default: /set tax)\n/snipe off · cancel all';
     if (sub === 'off') { state.snipes = []; snipeOffAt = Date.now(); save(); return say('All snipes cancelled.'); }
     let s;
     if (sub === 'dev') { const w = addrIn(args[1]), h = Number(args[2]); if (!w || !(h > 0)) return say(usage); s = { k: 'dev', w, hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[3]) || 1))) }; }
     else if (sub === 'new') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'new', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
-    else if (sub === 'signal' || sub === 'sig') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'sig', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
+    else if (sub === 'signal' || sub === 'sig') {
+      const h = Number(args[1]), tx = Number(args[3]);
+      if (!(h > 0)) return say(usage);
+      s = { k: 'sig', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) };
+      if (tx > 0 && tx <= 90) s.tax = tx; // this snipe's own round-trip limit; /set tax stays as it is for every other buy
+    }
     else if (sub === 'ascend' || sub === 'asc') { const h = Number(args[1]); if (!(h > 0)) return say(usage); s = { k: 'asc', hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[2]) || 1))) }; }
     else { const t = addrIn(args[0]), h = Number(args[1]); if (!t || !(h > 0)) return say(usage); s = { k: 'token', w: t, hype: h, left: 1 }; }
     if (s.hype > cfg().max) throw new Error(`max per buy is ${cfg().max} HYPE (change with /set max)`);
