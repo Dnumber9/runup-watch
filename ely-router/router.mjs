@@ -17,7 +17,9 @@
 //   6. Coins paired with another token on Uniswap v4 (BOXA, USDC, KNTQ…): in one transaction through that token's
 //      HYPE pool on the same manager when it has one, otherwise in two steps (HYPE → the token on its own best route,
 //      then the token → the coin through Uniswap's Universal Router; sells the other way round). /set pairbuy off
-//      keeps the token instead (a buy then needs it in the wallet). Ascend coins paired with USDC work the same way.
+//      keeps the token instead (a buy then needs it in the wallet). Ascend coins paired with USDC work the same way,
+//      and so do Signal launches paired with a token such as SIGNAL (through Signal's own router, the only one its
+//      hook takes during a launch's gate). A token whose HYPE pool is too thin to swap back without a 10%+ loss is kept.
 //
 // Safety before every buy:
 //   Sell check: the buy is simulated together with an immediate sell of everything it returns (a tiny
@@ -167,6 +169,15 @@ const GATED = {
 // falling anti-snipe fee on buys (up to 90%, linear over up to 600 s), cap one wallet's share and the tokens all buys of
 // one block may take, each for a while after launch; a buy over a cap or the block's budget reverts.
 const SIGNAL = { pm: '0x5c54a7293d96b11a29a0256ee8dfdbc3059637da', hook: '0x601bdb66b0285c199b43479030a9132f6dd8aaec', router: '0x0f8b987553a40ba565eee9a7f6df3d1ecd07d964', factory: '0xd31471cb7044edae748d2a7324648e298346ecaa', whype: V3WHYPE };
+// Signal launches paired with a token instead of WHYPE (route kind 'sigq'). Its lane can list other quote assets (none
+// on Elysium yet, Nov 8), and the hook names each pool's quote (quoteOf). Its router is the only one the hook takes
+// during a launch's gate (approvedRouter: Signal's Universal Router is not), and its buyNative only takes WHYPE pools, so
+// such a coin trades in two steps like any token pair: HYPE → the token on that token's own best route, then
+// swap(key, zeroForOne, amountIn, minOut, to, unwrap = false, deadline) from the token after a plain approve; sells the
+// other way round. SIGNAL itself got a HYPE pool on eleos's manager on Nov 8 (no hook, 1% fee, opened by Signal's factory
+// owner with 36M SIGNAL and 9.8 HYPE), so it is known as a quote before any launch uses it; more with SIGNAL_QUOTES.
+const SIGNAL_TOKEN = '0xf08dba55e183d4be1a5514baec532e812bb2943b'; // SIGNAL, bridged from HyperEVM 0xf097…3666
+const SIG_QUOTES = new Set([SIGNAL_TOKEN, ...String(process.env.SIGNAL_QUOTES || '').toLowerCase().split(',').map((x) => x.trim()).filter(Boolean)]);
 const PM_NAMES = Object.fromEntries([...V4.map((x) => [x.pm, x.name]), ['0x5fb015a49f5b35073f9ce01c2adb287a75f89600', 'ElysPump'], ['0xe2e105d3f7209a9da11f83ccf3e7398a753823f1', 'Uniswap']]);
 // launchpads that sit on someone else's pool manager, named by their hook
 const HOOK_NAMES = { '0x3ab88ddc3cf2a012af88b60828edb4553697e5dc': 'Flaunch' }; // Flaunch fork on the official Uniswap v4
@@ -536,12 +547,15 @@ const v3Sell = (r, t, amt, minOut, to, dl) => encBytesArray('ac9650d8', [enc('41
 const sigKey = (r, t) => [...(r.qFirst ? [r.q, t] : [t, r.q]), r.fee, r.ts, r.hook];
 const sigBuy = (r, t, minOut, to, dl) => enc('31561a35', ...sigKey(r, t), minOut, to, to, dl);
 const sigSell = (r, t, amt, minOut, to, dl) => enc('38aad789', ...sigKey(r, t), r.qFirst ? 0 : 1, amt, minOut, to, 1, dl);
-// routes paid in a token through a Universal Router (Ascend's, or Uniswap's for a coin paired with a token), and
-// Uniswap routes that take and pay native HYPE whatever the pair
-const tokRoute = (r) => r?.kind === 'ascend' || (r?.kind === 'uni' && r.mode === 'token');
+// a Signal coin paired with a token: swap() from that token into the coin, and from the coin back into the token
+const sigqBuy = (r, t, qAmt, minOut, to, dl) => enc('38aad789', ...sigKey(r, t), r.qFirst ? 1 : 0, qAmt, minOut, to, 0, dl);
+const sigqSell = (r, t, amt, minOut, to, dl) => enc('38aad789', ...sigKey(r, t), r.qFirst ? 0 : 1, amt, minOut, to, 0, dl);
+// routes paid in a token through a Universal Router (Ascend's, or Uniswap's for a coin paired with a token) or through
+// Signal's router (a Signal coin paired with a token), and Uniswap routes that take and pay native HYPE whatever the pair
+const tokRoute = (r) => r?.kind === 'ascend' || r?.kind === 'sigq' || (r?.kind === 'uni' && r.mode === 'token');
 const uniNative = (r) => r?.kind === 'uni' && r.mode !== 'token';
-const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal';
-const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal' ? r.router : ROUTER);
+const isPool = (r) => r?.kind === 'v4' || r?.kind === 'wv4' || r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'ascend' || r?.kind === 'uni' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal' || r?.kind === 'sigq';
+const routerOf = (r) => (r?.kind === 'ascend' || r?.kind === 'uni' ? r.ur || ROUTER : r?.kind === 'wv4' ? WROUTER : r?.kind === 'v3' || r?.kind === 'curve' || r?.kind === 'gated' || r?.kind === 'pcurve' || r?.kind === 'signal' || r?.kind === 'sigq' ? r.router : ROUTER);
 const ROUTERS = new Set([ROUTER, WROUTER, SIGNAL.router, ...V3DEX.map((x) => x.router), ...CURVES.map((x) => x.curve), ...Object.values(GATED).map((x) => x.router)]);
 const curveOf = (r) => CURVES.find((x) => x.curve === r.router) || CURVES[0];
 // curve trades go to msg.sender, so `to` is unused there (the bot and the sell check helper both call it directly)
@@ -551,9 +565,11 @@ const sellData = (r, t, amt, minOut, to, dl) => (r.kind === 'signal' ? sigSell(r
 const sellQuoteData = (r, t, amt) => (r.kind === 'curve' ? enc(curveOf(r).qSell, t, amt) : r.kind === 'v3' ? enc('414bf389', t, wOf(r), r.fee, r.router, 2 ** 31 - 1, amt, 0, 0) : sellData(r, t, amt, 0, me, 2 ** 31 - 1));
 // byte offset of the amount inside a sell's calldata, for the sell check helper that writes the bag there
 const amtOffset = (r, t) => { const M = 0xabcdef0123456789abcdef0123456789n; return strip(sellData(r, t, M, 0, SIM, 2 ** 31 - 1)).indexOf(word(M)) / 2; };
-const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} ${curveOf(r).v4 ? 'v4 pool' : 'pair'} (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
+const routeLabel = (r) => (r.kind === 'uni' ? r.name : r.kind === 'sigq' ? `Signal ${meta[r.q]?.sym || short(r.q)} pair (${meta[r.q]?.sym || 'the token'} bought first)` : r.kind === 'ascend' ? `Ascend ${r.q === ZERO ? 'HYPE' : meta[r.q]?.sym || 'USDC'} pool` : r.kind === 'curve' ? (r.amm ? `${r.name} ${curveOf(r).v4 ? 'v4 pool' : 'pair'} (graduated)` : `${r.name} bonding curve`) : r.kind === 'gated' ? `${r.name} router` : r.kind === 'pcurve' ? `${r.name} (its own bonding curve)` : r.kind === 'v3' ? `${r.name} ${r.fee / 10000}% pool` : `${r.name} v4`);
 const sigRoute = (p) => ({ kind: 'signal', name: 'Signal', router: SIGNAL.router, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, b: p.b });
-const routeOf = (p) => (p.kind === 'signal' ? sigRoute(p) : p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
+// ur: the token-pair machinery (simulation, approvals, the swap) sends to r.ur, here Signal's router
+const sigqRoute = (p) => ({ kind: 'sigq', name: 'Signal', router: SIGNAL.router, ur: SIGNAL.router, pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst, b: p.b });
+const routeOf = (p) => (p.kind === 'signal' ? (p.q && p.q !== SIGNAL.whype ? sigqRoute(p) : sigRoute(p)) : p.kind === 'ascend' ? ascRoute(p, ascUr(p.pm)) : p.uni ? uniRoute(p) : p.q
   ? { kind: 'wv4', name: pmName(p.pm) + ' WHYPE', pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook, q: p.q, qFirst: p.qFirst }
   : { kind: 'v4', name: HOOK_NAMES[p.hook] || pmName(p.pm), pm: p.pm, fee: p.fee, ts: p.ts, hook: p.hook });
 
@@ -664,8 +680,9 @@ function uniSellData(r, t, amt, minOut, dl, settleMax = amt) {
   if (r.mode === 'wrap') return urExecute('100c', [infiSwap('060c0e', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), word(t) + word(settleMax), word(r.q) + word(2) + word(0)]), word(1) + word(minOut)], dl);
   return urExecute('10', [infiSwap('06060c0f', [uniSingle(uniKey(r, t), !r.qFirst, amt, 0), uniSingle(legKey(r), false, 0, minOut), word(t) + word(settleMax), word(ZERO) + word(minOut)])], dl);
 }
-const urBuyData = (r, t, qAmt, minOut, dl) => (r.kind === 'uni' ? uniBuyData(r, t, qAmt, minOut, dl) : ascBuyData(r, t, qAmt, minOut, dl));
-const urSellData = (r, t, amt, minOut, dl, settleMax = amt) => (r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl, settleMax) : ascSellData(r, t, amt, minOut, dl, settleMax));
+// `to`: who Signal's router pays (the wallet, or the simulation helper); a Universal Router pays whoever calls it
+const urBuyData = (r, t, qAmt, minOut, dl, to = me) => (r.kind === 'sigq' ? sigqBuy(r, t, qAmt, minOut, to, dl) : r.kind === 'uni' ? uniBuyData(r, t, qAmt, minOut, dl) : ascBuyData(r, t, qAmt, minOut, dl));
+const urSellData = (r, t, amt, minOut, dl, settleMax = amt, to = me) => (r.kind === 'sigq' ? sigqSell(r, t, amt, minOut, to, dl) : r.kind === 'uni' ? uniSellData(r, t, amt, minOut, dl, settleMax) : ascSellData(r, t, amt, minOut, dl, settleMax));
 const uniLegs = (r) => {
   const seen = new Set(), out = [];
   for (const x of [...(state.pools[r.q] || []).filter((p) => p.pm === r.pm && !p.q && !p.uni && p.kind !== 'ascend'), ...(HOP_LEGS[r.q] || [])]) {
@@ -697,6 +714,12 @@ const uniExpand = (r) => {
 // 3 (sell), 4/5 (approvals). Checked against Ascend's testnet pools: 5 USDC in, 4.9006 USDC back (1% each way).
 const ASC_CODE = '0x36156101e55760e0356001161561007f5763095ea7b360e01b60005260c0356004526000196024526000600060446000600060a0355af115610208576387517c4560e01b60005260a035600452600035602452600160a01b60019003604452600160301b600190036064526000600060846000600060c0355af115610213575b60403580156100a45780610100612000376000600082612000346000355af1156101e7575b506370a0823160e01b6000523060045260206000602460006020355afa156101f25760005160603580156101d95763095ea7b360e01b60005260c035600452600019602452600060006044600060006020355af115610208576387517c4560e01b600052602035600452600035602452600160a01b60019003604452600160301b600190036064526000600060846000600060c0355af1156102135780604035610100016130003781608035613000015260e03560021660a0351517610189576370a0823160e01b60005230600452602060006024600060a0355afa5060005161018b565b475b600060008361300060006000355af1156101fd5760e03560021660a03515176101d3576370a0823160e01b60005230600452602060006024600060a0355afa506000516101d5565b475b0390505b60205260005260406000f35b005b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b600460005260206000fd5b600560005260206000fd';
 const ASC_MARK = 0xabcdef0123456789abcdef0123456789n;
+// The same helper for Signal's router, which pulls tokens after a plain approve: the router's address goes where
+// Permit2's would, so the helper's approve() calls approve the router itself, and the failure of the Permit2 approval
+// call after each (the router has no such function) is ignored (ISZERO PUSH2 0x0213 JUMPI → POP and four JUMPDESTs,
+// same length, so every jump target stays put). Checked Nov 8 on a live Signal pool through that router, WHYPE as the
+// token: 0.1 in, 1.83M coins, 0.09801 back.
+const SIGQ_CODE = ASC_CODE.replaceAll('60c0355af115610213' + '57', '60c0355af1' + '505b5b5b5b');
 // The storage slot of SIM's balance in a token, so a simulation can hand the helper tokens. Tried in order: the
 // slot found before for this token or its launchpad (coins of one launchpad share a layout), the usual mapping
 // slots (0-12; 51 for bridged OpenZeppelin-upgradeable tokens such as Elysium's USDC; the OpenZeppelin 5 namespace;
@@ -730,12 +753,13 @@ async function simSlot(t, hint) {
 async function ascSim(r, t, { qAmt = 0n, sellAmt = 0n, buy = true, sell = true, time = null } = {}) {
   if (!r.ur) throw new Error('Ascend router not known yet');
   const native = r.q === ZERO || uniNative(r); // uni routes take and pay native HYPE whatever the pair (token mode aside)
-  const bd = buy ? strip(urBuyData(r, t, qAmt, 0n, 2 ** 31 - 1)) : '';
-  const sd = sell ? strip(urSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256)) : '';
+  const sq = r.kind === 'sigq'; // Signal's router: plain approvals (SIGQ_CODE), and it pays the helper by address
+  const bd = buy ? strip(urBuyData(r, t, qAmt, 0n, 2 ** 31 - 1, SIM)) : '';
+  const sd = sell ? strip(urSellData(r, t, ASC_MARK, 0n, 2 ** 31 - 1, MAX256, SIM)) : '';
   const off = sell ? sd.indexOf(word(ASC_MARK)) / 2 : 0;
   const flags = (buy && !native ? 1 : 0) | (native ? 2 : 0);
-  const data = '0x' + [r.ur, t, bd.length / 2, sd.length / 2, off, native ? ZERO : r.q, PERMIT2, flags].map(word).join('') + bd + sd;
-  const ov = { [SIM]: { code: ASC_CODE, balance: hex((buy && native ? qAmt : 0n) + 10n ** 22n) } };
+  const data = '0x' + [r.ur, t, bd.length / 2, sd.length / 2, off, native ? ZERO : r.q, sq ? r.ur : PERMIT2, flags].map(word).join('') + bd + sd;
+  const ov = { [SIM]: { code: sq ? SIGQ_CODE : ASC_CODE, balance: hex((buy && native ? qAmt : 0n) + 10n ** 22n) } };
   if (buy && !native) {
     const s = await simSlot(r.q);
     if (!s) throw new Error('cannot simulate: unknown balance layout of the quote token');
@@ -810,6 +834,8 @@ async function ascSellCheck(r, t, wei, time) {
 }
 // Permit2 route: the token approves Permit2, Permit2 lets the router pull it; both for good (burner wallet)
 async function ascApprovals(token, ur, amt) {
+  // Signal's router pulls the token itself after a plain approve (no Permit2)
+  if (ur === SIGNAL.router) return (await allowanceOf(token, ur).catch(() => 0n)) >= amt ? [] : [{ to: token, data: enc('095ea7b3', ur, MAX256), gas: 120000 }];
   const [a, p] = await Promise.all([
     ethCall(token, enc('dd62ed3e', me, PERMIT2), {}, undefined, true).then(u256).catch(() => 0n),
     ethCall(PERMIT2, enc('927da105', me, token, ur), {}, undefined, true).then(strip).catch(() => ''),
@@ -869,6 +895,26 @@ async function resolvePair(l, p) {
     if (q) addPairPool(q === p.c0 ? p.c1 : p.c0, q, p, l);
   } finally { ascResolving.delete(p.id); }
 }
+// a Signal pool paired with neither WHYPE nor a known quote token: the hook names its quote (quoteOf), and the other
+// side is the coin
+async function resolveSig(l, p) {
+  if (ascResolving.has(p.id)) return;
+  ascResolving.add(p.id);
+  try {
+    const q = lc('0x' + strip(await ethCall(SIGNAL.hook, '0x7195270a' + strip(p.id), {}, undefined, true)).slice(24, 64));
+    const { c0, c1, sig, ...rest } = p;
+    if (q === ZERO || (q !== c0 && q !== c1)) return;
+    const t = q === c0 ? c1 : c0;
+    const pp = { ...rest, q, qFirst: q === c0 };
+    const list = (state.pools[t] ||= []);
+    if (list.some((y) => y.id === pp.id)) return;
+    list.push(pp);
+    delete state.routes[t];
+    tokenMeta(q).catch(() => {}); // its symbol, for the route's name
+    if (live) fresh.push({ t, ...pp, tx: lc(l.transactionHash || ''), newPm: false });
+    save();
+  } finally { ascResolving.delete(p.id); }
+}
 function addPairPool(t, q, p, l) {
   const { c0, c1, pair, ...rest } = p;
   const pp = { ...rest, q, qFirst: q === c0, uni: 'pair' };
@@ -903,7 +949,7 @@ async function ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, hBal
   if (cfg().check && !force && sc.ok === false) {
     J({ side: 'refused', coin: t, sym: m.sym, hype: hypeAmt, src, sc: sc.loss ?? null, reason: sc.blocked ? 'cannot sell' : 'round trip too costly' });
     const why = sc.blocked ? `🚫 <b>${esc(m.sym)}</b> cannot be sold back in a simulation (honeypot or sells blocked).`
-      : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).${sc.loss > 0.15 ? ' Ascend charges a falling anti-snipe fee for the first seconds after launch.' : ''}`;
+      : `⚠️ Buying <b>${esc(m.sym)}</b> and selling straight back loses <b>${(sc.loss * 100).toFixed(0)}%</b> (limit ${cfg().tax}%, change with /set tax).${sc.loss > 0.15 ? (r.kind === 'sigq' ? ' A Signal launch can charge a falling anti-snipe fee for up to 10 minutes.' : r.kind === 'ascend' ? ' Ascend charges a falling anti-snipe fee for the first seconds after launch.' : '') : ''}`;
     await say(`${head}${why}\nNot buying.`, [[{ text: `Buy ${hypeAmt} anyway`, callback_data: `f:${t.slice(2)}:${Math.round(hypeAmt * 10)}` }, { text: '🔎', callback_data: `c:${t.slice(2)}` }]], replyTo);
     return { refused: true };
   }
@@ -919,7 +965,7 @@ async function ascPlanBuy(t, hypeAmt, wei, replyTo, force, src, opts, r, m, hBal
   // landing a second early means a higher fee: the minimum sits halfway between the two outcomes, so that reverts
   if (prev != null && prev > 0n && prev * 100n < expect * 98n && (prev + expect) / 2n > minOut) minOut = (prev + expect) / 2n;
   const txs = native ? [] : await ascApprovals(r.q, r.ur, qAmt);
-  txs.push({ to: r.ur, value: native ? qAmt : 0n, data: urBuyData(r, t, qAmt, minOut, deadline()), gas: r.kind === 'uni' ? 1500000 : 900000 });
+  txs.push({ to: r.ur, value: native ? qAmt : 0n, data: urBuyData(r, t, qAmt, minOut, deadline()), gas: r.kind === 'uni' ? 1500000 : r.kind === 'sigq' ? 2000000 : 900000 });
   if (!native) sc.note = `${topUp ? '2/2 · ' : ''}${fmt(num(qAmt, qm.d))} ${qm.sym}${sc.note ? ', ' + sc.note : ''}`;
   return { txs, expect, sc };
 }
@@ -1048,11 +1094,14 @@ function parseInit(l) {
     if (q) { p.q = q; p.qFirst = q === c0; }
     return { t: q ? (q === c0 ? c1 : c0) : null, p };
   }
-  // a Signal launch: its WHYPE pair on eleos's pool manager, traded through Signal's router
+  // a Signal launch on eleos's pool manager, traded through Signal's router: paired with WHYPE, or with a token (SIGNAL…)
+  // known as a quote; any other pair is settled by asking the hook for its quote (resolveSig)
   const hk = '0x' + d.slice(152, 192);
-  if (pm === SIGNAL.pm && hk === SIGNAL.hook && (c0 === SIGNAL.whype || c1 === SIGNAL.whype)) {
-    const sq = SIGNAL.whype;
-    return { t: sq === c0 ? c1 : c0, p: { pm, kind: 'signal', fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: hk, b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]), q: sq, qFirst: sq === c0 } };
+  if (pm === SIGNAL.pm && hk === SIGNAL.hook && c0 !== ZERO) {
+    const sp = { pm, kind: 'signal', fee: Number(BigInt('0x' + d.slice(0, 64))), ts: Number(BigInt.asIntN(24, BigInt('0x' + d.slice(64, 128)))), hook: hk, b: parseInt(l.blockNumber, 16), id: lc(l.topics[1]) };
+    const sq = c0 === SIGNAL.whype || c1 === SIGNAL.whype ? SIGNAL.whype : SIG_QUOTES.has(c0) ? c0 : SIG_QUOTES.has(c1) ? c1 : null;
+    if (!sq) return { t: null, p: { ...sp, c0, c1, sig: true } };
+    return { t: sq === c0 ? c1 : c0, p: { ...sp, q: sq, qFirst: sq === c0 } };
   }
   let uni = null;
   if (c0 === ZERO) t = c1;
@@ -1073,7 +1122,7 @@ function parseInit(l) {
 function addPool(l) {
   const x = parseInit(l);
   if (!x) return 0;
-  if (!x.t) { (x.p.pair ? resolvePair : resolveAscend)(l, x.p).catch((e) => console.error(x.p.pair ? 'pair pool' : 'ascend pool', e.message)); return 0; }
+  if (!x.t) { (x.p.sig ? resolveSig : x.p.pair ? resolvePair : resolveAscend)(l, x.p).catch((e) => console.error(x.p.sig ? 'signal pool' : x.p.pair ? 'pair pool' : 'ascend pool', e.message)); return 0; }
   const { t, p } = x, pm = p.pm;
   const list = (state.pools[t] ||= []);
   if (list.some((y) => y.id === p.id)) return 0;
@@ -1170,7 +1219,7 @@ async function findRoute(t, fresh = false) {
   // a fast move it looks cheaper than it is (TESTICLES, Nov 6: a buy routed that way reverted on a 5% slippage)
   const own = new Set([...pools.map((p) => lc(p.id)), ...cands.filter((c) => c.pool).map((c) => lc(c.pool))]);
   const kPools = (kSum?.route || []).flat().map((h) => lc(h.pool));
-  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && route.kind !== 'signal' && kOut > (good[0].out * 103n) / 100n && !kPools.some((x) => own.has(x))) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
+  if (route && route.kind !== 'gated' && route.kind !== 'ascend' && route.kind !== 'signal' && route.kind !== 'sigq' && kOut > (good[0].out * 103n) / 100n && !kPools.some((x) => own.has(x))) route = { kind: 'kyber', name: 'KyberSwap', check: good[0].r };
   if (!route) {
     if (kOut > 0n) route = { kind: 'kyber', name: 'KyberSwap', ...(pools.length ? { again: Date.now() + 600000 } : {}) };
     else try { const k = await kyRoute(NATIVE, t, probe); if (BigInt(k.routeSummary.amountOut) > 0n) route = { kind: 'kyber', name: 'KyberSwap' }; } catch {}
@@ -1259,7 +1308,7 @@ async function scanV4(t, ok) {
 const RT_CODE = '0x36156100c3576040358060a060003760006000826000346000355af1156100a2576370a0823160e01b6000523060045260206000602460006020355afa156100ad5760005163095ea7b360e01b60005260003560045280602452600060006044600060006020355af15047606035808460a00161010037826080356101000152600060008261010060006000355af1156100b85750470360205260005260406000f35b600160005260206000fd5b600260005260206000fd5b600360005260206000fd5b00';
 async function sellCheck(r, t, wei) {
   if (!isPool(r)) return { ok: null, note: 'sell check skipped (KyberSwap route)' };
-  if (r.kind === 'ascend' || r.kind === 'uni') return ascSellCheck(r, t, wei); // Permit2 routers: the helper approves through Permit2
+  if (r.kind === 'ascend' || r.kind === 'uni' || r.kind === 'sigq') return ascSellCheck(r, t, wei); // Permit2 routers (and Signal's token pairs): the token-pair helper
   const bd = buyData(r, t, wei, 0, SIM, 2 ** 31 - 1), sd = sellData(r, t, 0, 0, SIM, 2 ** 31 - 1);
   const len = (h) => (h.length - 2) / 2;
   const data = '0x' + word(routerOf(r)) + word(t) + word(len(bd)) + word(len(sd)) + word(amtOffset(r, t)) + strip(bd) + strip(sd);
@@ -1545,7 +1594,7 @@ async function buy(t, hypeAmt, replyTo, force = false, src = 'command', opts = {
   J({ side: 'buy', coin: t, sym: m.sym, hype: hypeAmt, tok: num(got, m.d), mcUsd: mc && px ? mc * px : null, src, slip: Number(slip), sc: sc.loss ?? null, route: r.name, hash });
   // after the buy: approve so every sell is one transaction, note the creator's bag for the dev guard (when on),
   // and add the auto-sell preset (when set)
-  if (cfg().preapprove && (r.kind === 'ascend' || r.kind === 'uni')) ascPreApprove(t, r).catch((e) => console.error('preapprove', e.message));
+  if (cfg().preapprove && (r.kind === 'ascend' || r.kind === 'uni' || r.kind === 'sigq')) ascPreApprove(t, r).catch((e) => console.error('preapprove', e.message));
   else if (cfg().preapprove && isPool(r)) preApprove(t, routerOf(r)).catch((e) => console.error('preapprove', e.message));
   if (cfg().devsell > 0) devOf(t).then(async (d) => { if (d?.w) { d.peak = num(await balOf(t, d.w), m.d); save(); } }).catch(() => {});
   let autoLine = '';
@@ -1579,7 +1628,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   const p0 = state.pos[t], r0 = state.routes[t];
   const cached = p0?.balW ? BigInt(p0.balW) : null;
   const guess = opts.amt == null && cached > 0n ? (cached * BigInt(Math.min(100, Math.max(1, Math.round(pct))))) / 100n : null;
-  const qGuess = isPool(r0) && r0.kind !== 'ascend' && r0.kind !== 'uni' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
+  const qGuess = isPool(r0) && !tokRoute(r0) && r0.kind !== 'uni' && guess ? v4QuoteSell(r0, t, guess, null).catch(() => null) : null; // valid once approved
   let [m, r, bal, hBefore, allowed] = await Promise.all([tokenMeta(t), r0 || findRoute(t), balOf(t, me, true), hypeBal(true), allowanceOf(t, routerOf(r0)).catch(() => 0n)]);
   if (!r) throw new Error('no route for this token');
   let rtr = routerOf(r);
@@ -1600,7 +1649,7 @@ async function sell(t, pct, replyTo, opts = {}) {
   const approveTx = (spender) => ({ to: t, data: enc('095ea7b3', spender, cfg().preapprove && ROUTERS.has(spender) ? MAX256 : amt), gas: 200000 });
   let txs, expect;
   try {
-    if (r.kind === 'ascend' || r.kind === 'uni') {
+    if (r.kind === 'ascend' || r.kind === 'uni' || r.kind === 'sigq') {
       const uni = uniNative(r); // pays native HYPE (unwrapped or swapped back inside the router)
       if (r.kind === 'ascend') r.ur ||= await ascRouterFor(r.pm);
       if (!r.ur) throw new Error('Ascend router not known yet: /ascend router 0x…');
@@ -1608,7 +1657,7 @@ async function sell(t, pct, replyTo, opts = {}) {
       expect = uni ? backQ : await weiOfQ(r.q, backQ);
       const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
       txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: r.kind === 'uni' ? 3000000 : 2000000 }];
-      if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm } }; }
+      if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm, thin: r.kind === 'sigq' } }; }
     } else if (isPool(r)) {
       // an ERC-404 sell burns an NFT per whole unit: its gas is estimated once the router may pull the coin, and is
       // otherwise a high limit (only the gas used is charged)
@@ -1682,8 +1731,19 @@ async function finishSell(t, m, pct, msgP, txs, expect, head, before, tokBefore,
     const gq = qNow > opts.outQ.before ? qNow - opts.outQ.before : 0n;
     got = num(await weiOfQ(opts.outQ.q, gq).catch(() => 0n));
     qLine = ` (${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`;
-    // a coin paired with a token: that token goes straight back to HYPE (step 2 of 2), unless /set pairbuy off
-    if (gq > 0n && cfg().pairbuy && !opts.convert) {
+    // a coin paired with a token: that token goes straight back to HYPE (step 2 of 2), unless /set pairbuy off. A token
+    // whose HYPE pool is thin (SIGNAL's on Elysium held 9.8 HYPE of bids when it opened, Nov 8) is kept instead when
+    // swapping it back would pay 10%+ under its own price: holding it beats dumping it.
+    let thin = null;
+    if (gq > 0n && cfg().pairbuy && !opts.convert && opts.outQ.thin) {
+      try {
+        const qr = state.routes[opts.outQ.q] || (await findRoute(opts.outQ.q));
+        const [out, fair] = await Promise.all([quoteSellOut(qr, opts.outQ.q, gq), weiOfQ(opts.outQ.q, gq)]);
+        if (fair > 0n && out * 100n < fair * 90n) thin = 1 - num(out) / num(fair);
+      } catch {}
+    }
+    if (thin != null) qLine = ` (kept as ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)}: its HYPE pool is thin, swapping it back now would lose ${Math.round(thin * 100)}%. Sell it from its card once that pool is deeper)`;
+    else if (gq > 0n && cfg().pairbuy && !opts.convert) {
       await edit(msg, `${head}✅ Sold ${pct}% of <b>${esc(m.sym)}</b> for ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)} · ${txLink(hash)}\n↩️ Swapping the ${esc(opts.outQ.qm.sym)} back to HYPE…`).catch(() => {});
       const h = await sell(opts.outQ.q, 100, null, { amt: gq, convert: true, why: `2/2 · ${opts.outQ.qm.sym} from the ${m.sym} sell back to HYPE`, icon: '↩️' }).catch(() => null);
       if (typeof h === 'number') { got = h; qLine = ` (through ${fmt(num(gq, opts.outQ.qm.d))} ${esc(opts.outQ.qm.sym)})`; }
@@ -2194,7 +2254,7 @@ function sigDone(s, t, bought) {
 }
 // t0: when the launch was seen (a wait resumed after a restart keeps its first start, so the 11 minutes still hold)
 async function sigSnipe(f, s, t0 = Date.now(), resumed = false) {
-  const r = sigRoute(f), t = f.t;
+  const r = routeOf(f), t = f.t; // paired with WHYPE (one transaction) or with a token such as SIGNAL (bought first)
   const label = `🎯 Signal snipe: new coin <code>${t}</code>${resumed ? ' (resumed after a restart)' : ''}`;
   const sizes = [s.hype, s.hype / 2, s.hype / 4].map((h) => Math.round(h * 1000) / 1000).filter((h) => h >= 0.05);
   const lim = s.tax ?? cfg().tax; // this snipe's limit (set with /snipe signal … tax%) or /set tax
@@ -2257,9 +2317,14 @@ async function sigNew(url, n) {
       const w = strip(await call1(url, 'eth_call', [{ to: SIGNAL.hook, data: '0xca266dfe' + strip(id) }, 'latest'], 3000)).match(/.{64}/g) || [];
       if (w.length < 5) throw new Error('pool key not readable yet'); // read again on the next tick
       const c0 = lc('0x' + w[0].slice(24)), c1 = lc('0x' + w[1].slice(24));
+      // its quote: WHYPE, or a token (SIGNAL…) named by the hook, bought with HYPE first; read before the count moves on,
+      // so a failed read is tried again on the next tick
+      const q = c0 === SIGNAL.whype || c1 === SIGNAL.whype ? SIGNAL.whype : SIG_QUOTES.has(c0) ? c0 : SIG_QUOTES.has(c1) ? c1
+        : lc('0x' + strip(await call1(url, 'eth_call', [{ to: SIGNAL.hook, data: '0x7195270a' + strip(id) }, 'latest'], 3000)).slice(24, 64));
       sigCount = i + 1;
-      if (c0 !== SIGNAL.whype && c1 !== SIGNAL.whype) continue; // paired with another asset, not HYPE: not traded here
-      const p = { pm: SIGNAL.pm, kind: 'signal', fee: Number(BigInt('0x' + w[2])), ts: Number(BigInt.asIntN(24, BigInt('0x' + w[3]))), hook: lc('0x' + w[4].slice(24)), b: head, id, q: SIGNAL.whype, qFirst: c0 === SIGNAL.whype };
+      if (q === ZERO || (q !== c0 && q !== c1)) continue; // native HYPE, or no quote it names: not traded here
+      const p = { pm: SIGNAL.pm, kind: 'signal', fee: Number(BigInt('0x' + w[2])), ts: Number(BigInt.asIntN(24, BigInt('0x' + w[3]))), hook: lc('0x' + w[4].slice(24)), b: head, id, q, qFirst: c0 === q };
+      if (q !== SIGNAL.whype) tokenMeta(q).catch(() => {}); // its symbol, for the route's name
       const t = p.qFirst ? c1 : c0;
       const list = (state.pools[t] ||= []);
       if (!list.some((y) => y.id === id)) { list.push(p); delete state.routes[t]; }
@@ -3188,7 +3253,7 @@ const HELP =
   `<b>Extras</b> (off unless you set them): /tp /sl /trail · /auto · /snipe · /copy · /set devsell 50 · /set rug on\n` +
   `<b>Bag watch</b>, per coin: 👀 on its card or /bagwatch 0xCOIN watches its dev and top 10 holders, a post when they sell or move a real part of their bag · /bagwatch lists them · /set bagwatch on watches every coin you hold\n` +
   `<b>Ascend</b>: new launches post here with ⚡ buttons; a tap while the anti-snipe fee is up waits and buys the second it drops · /ascend (status, router, alerts)\n` +
-  `<b>Token pairs</b>: a coin paired with BOXA, USDC or any other token is bought with HYPE in two steps (the token first, then the coin) and sold back to HYPE the same way · /set pairbuy off keeps the token instead\n` +
+  `<b>Token pairs</b>: a coin paired with BOXA, USDC, SIGNAL or any other token is bought with HYPE in two steps (the token first, then the coin) and sold back to HYPE the same way · /set pairbuy off keeps the token instead\n` +
   `<b>/fire</b> keeps sending a buy to a launch contract until it opens and fills (/fire for how)`;
 
 // ── update handling ────────────────────────────────────────────────────────────────────────────────
