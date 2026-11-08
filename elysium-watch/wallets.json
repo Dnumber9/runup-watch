@@ -3035,11 +3035,6 @@
   "group": "maxteam"
  },
  {
-  "address": "0x203abb66d0f19c3fb1868eb240b5b3ce3b1940d4",
-  "label": "MAX early trader (bridged from Solana 4.5 min after the MAX dev; not team)",
-  "group": "maxearly"
- },
- {
   "address": "0x8bc0aa3c0fcd99317a471b1bef868657bf40c603",
   "label": "MAX early trader alt",
   "group": "maxearly",
