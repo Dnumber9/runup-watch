@@ -340,7 +340,8 @@ async function broadcast(raw) {
     const why = (agg.errors || [agg]).map((e) => e?.message || '').join(' | ');
     if (/already known|known transaction|already imported/i.test(why)) return;
     const e = new Error(why.slice(0, 220));
-    e.nonceLow = /nonce too low/i.test(why);
+    // the live relays word it their own way: "Nonce 67 is already used (next is 70)", "used an old transaction number"
+    e.nonceLow = /nonce too low|already used|old transaction number/i.test(why);
     e.nonceHigh = /nonce too high|nonce gap/i.test(why);
     throw e;
   }
@@ -382,6 +383,9 @@ async function sendRaw(tx, opts = {}) {
       // every RPC node refused it for a reason other than its nonce: the Inbox copy alone still lands it
       if (!e.nonceLow && !e.nonceHigh && (await viaInbox)) break;
       if (e.nonceLow || e.nonceHigh) await resyncNonce();
+      // a nonce the chain already used (trades that landed late, after the bot had moved on; Nov 8 the bot tried 67
+      // while the chain was at 70): signed again with the chain's next nonce, once, instead of failing the trade
+      if (e.nonceLow && !opts.renonce) return sendRaw(tx, { ...opts, renonce: true });
       throw e;
     }
   }
@@ -520,7 +524,10 @@ const usd = (h, px) => {
 // ── routes ─────────────────────────────────────────────────────────────────────────────────────────
 const v4Buy = (r, t, minOut, to, dl) => enc('c727282f', r.pm, ZERO, t, r.fee, r.ts, r.hook, minOut, to, dl);
 const v4Sell = (r, t, amt, minOut, to, dl) => enc('a7fee01b', r.pm, ZERO, t, r.fee, r.ts, r.hook, amt, minOut, to, dl);
-const deadline = () => Math.floor(Date.now() / 1000) + 600;
+const deadline = (s = 600) => Math.floor(Date.now() / 1000) + s;
+// a sell may wait up to 30 min for Elysium to include it (Nov 8 it took 35 min and two HAPPY sells expired on the
+// way in); buys keep 10 min, so a buy never fills long after it was meant to. minOut still guards the price.
+const SELL_WAIT = 1800;
 // wrapped pools: swap(path, amountIn, minOut, recipient, unwrapOut, deadline), path = [(currency0, currency1, fee,
 // tickSpacing, hooks, zeroForOne)]; amountIn equals the HYPE sent on a buy, unwrapOut pays native HYPE on a sell
 const wSwap = (r, t, buy, amt, minOut, to, dl) => {
@@ -851,8 +858,10 @@ async function ascPreApprove(t, r) {
   const txs = await ascApprovals(t, r.ur, 1n << 128n);
   if (!txs.length) return;
   approving.add(t);
-  try { await serial(async () => { for (const x of txs) await sendRaw(x); }); }
+  let h;
+  try { h = await serial(async () => { let last; for (const x of txs) last = await sendRaw(x); return last; }); }
   catch (e) { approving.delete(t); throw e; }
+  approvalDone(t, h);
 }
 // a new Ascend pool whose coin side is not obvious: the coin is the side that had no code before the launch block
 const ascResolving = new Set();
@@ -1613,8 +1622,17 @@ async function preApprove(t, spender = ROUTER) {
   if (approving.has(t)) return;
   if ((await allowanceOf(t, spender)) >= MAX256 >> 1n) return;
   approving.add(t);
-  try { await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, MAX256), gas: 200000 })); }
+  let h;
+  try { h = await serial(() => sendRaw({ to: t, data: enc('095ea7b3', spender, MAX256), gas: 200000 })); }
   catch (e) { approving.delete(t); throw e; }
+  approvalDone(t, h);
+}
+// A sell leaves out its own approve while the one sent after the buy is on its way. Once that approval has an
+// outcome, or after 5 min without one, the coin leaves the list, so the next sell reads the allowance again and
+// approves itself if the first approval never landed (Nov 8: HAPPY's approval was lost while Elysium stalled, and
+// every later sell went out without one).
+function approvalDone(t, h) {
+  receipt(h, 5 * 60000).catch(() => null).finally(() => approving.delete(t));
 }
 
 // Resolves to true or false once the transaction has a receipt.
@@ -1656,13 +1674,13 @@ async function sell(t, pct, replyTo, opts = {}) {
       const backQ = (await ascSim(r, t, { buy: false, sellAmt: amt })).back;
       expect = uni ? backQ : await weiOfQ(r.q, backQ);
       const ap = approving.has(t) ? [] : await ascApprovals(t, r.ur, amt);
-      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline()), gas: r.kind === 'uni' ? 3000000 : 2000000 }];
+      txs = [...ap, { to: r.ur, data: urSellData(r, t, amt, (backQ * (10000n - slip)) / 10000n, deadline(SELL_WAIT)), gas: r.kind === 'uni' ? 3000000 : 2000000 }];
       if (!uni && r.q !== ZERO) { const [qm, qb] = await Promise.all([tokenMeta(r.q), balOf(r.q, me, true)]); opts = { ...opts, outQ: { q: r.q, before: qb, qm, thin: r.kind === 'sigq' } }; }
     } else if (isPool(r)) {
       // an ERC-404 sell burns an NFT per whole unit: its gas is estimated once the router may pull the coin, and is
       // otherwise a high limit (only the gas used is charged)
       const sGas = r.kind === 'gated' && allowed >= amt ? await race('eth_estimateGas', [{ from: me, to: rtr, data: sellData(r, t, amt, 0, me, deadline()) }]).then((g) => Number(BigInt(g))).catch(() => null) : null;
-      const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline()), gas: r.kind === 'gated' ? gasFor(r, sGas) : 2000000 });
+      const swap = (out) => ({ to: rtr, data: sellData(r, t, amt, (out * (10000n - slip)) / 10000n, me, deadline(SELL_WAIT)), gas: r.kind === 'gated' ? gasFor(r, sGas) : 2000000 });
       if (allowed >= amt) {
         expect = (r === r0 && amt === guess && (await qGuess)) || (await v4QuoteSell(r, t, amt, null));
         txs = [swap(expect)];
@@ -2187,8 +2205,13 @@ async function handleFresh() {
         if (f.kind !== 'signal' || s.left - (s.wait || []).length <= 0) continue;
         (s.got ||= []).push(f.t);
         save();
-        const why = await sigSkip(f).catch(() => null);
-        if (why) { say(`🎯 Signal snipe skipped <code>${f.t}</code>: ${why}. The slot stays for the next launch.`).catch(() => {}); continue; }
+        // a check that fails skips the launch: only a launch known to be the team's is bought
+        const sk = await sigSkip(f).catch((e) => ({ why: `the team check failed (${e.message})`, quiet: true }));
+        if (sk) {
+          if (sk.quiet) console.log(`signal snipe: skipped ${f.t}, ${sk.why}`);
+          else say(`🎯 Signal snipe skipped <code>${f.t}</code>: ${sk.why}. The slot stays for the next launch.`).catch(() => {});
+          continue;
+        }
         (s.wait ||= []).push({ f, at: Date.now() });
         save();
         sigSnipe(f, s).catch((e) => { console.error('signal snipe', e.message); sigDone(s, f.t, false); });
@@ -2225,7 +2248,7 @@ async function snipeBuy(f, s) {
     }
   }
 }
-// /snipe signal: the next Signal launch(es) on Elysium. Every second the round trip (buy, then sell straight back) is
+// /snipe signal: the next Signal team launch(es) on Elysium (see SIG_TEAM). Every second the round trip (buy, then sell straight back) is
 // simulated at the snipe's size and at half and a quarter of it; the buy goes the first second one of them is within
 // the snipe's own limit (or /set tax), at the largest size that is. That waits out the anti-snipe fee, and a size over the launch's wallet cap or
 // its per-block budget (the simulated buy reverts) drops to one that fits. A buy that still reverts is tried again the
@@ -2234,15 +2257,71 @@ async function snipeBuy(f, s) {
 // tester 0x0f87…3e38, 3 holders), then TOS, NMSS and EGGSFUN with 2 holders each. Signal's Elysium deployer funded
 // that same tester on Elysium on Nov 7, minutes after deploying the lane.
 const SIG_TESTERS = new Set(['0x0f8742f1d379cfdc474138f35ebd22998b6b3e38']);
+// Only launches by Signal's own team are bought. Its Elysium factory takes launches from anyone: on Nov 8 a wallet that
+// launches on every new pad (0x3110…f560) made ELSSKY, HAPPY and INTERESTIN there within 2 hours, and the snipe was
+// their only buyer. A launch is the team's when its creator is one of these wallets, or was first funded by one of
+// them (on Elysium, or bridged in from one on HyperEVM). SIGNAL_DEVS in .env adds more (comma separated). Any other
+// launch is skipped without a message and the slot stays for the next one.
+const SIG_TEAM = new Set([
+  '0x5164fea61d99c1eaf8c5591fd18928b8f61f0995', // sigdev
+  '0x58b43b785f55cd6c10eaea76e8db0c8dfc3976a0', // sig dev tf
+  '0x527383ba7f8c112e4f67b341f94b037479856044', // Elysium deployer (the factory)
+  '0xebc9fee76b69c7448f7044f481b5fead51ebea9b', // Elysium deployer alt
+  '0x6f34327c5214fd8652ea288b8e97ffcbcd069cdd', // root
+  '0x20a4970c2d89e65860d972a76622d29b8174618d', // root 2
+  '0xe0ce68a937624c0a97406f77fd669cead2e29f54', '0x29731133217190b1c353689c4575ffe1001bbedb', '0xc5419de529cb8af1e711c6dc10e0f17e0beba520', // root 2 alts
+  '0x7e474e952e69662ac0026b46fbb04ba07fb6dee5', // pad owner
+  '0x177d4dec87b69900c9c742e10886ed96919c99c1', '0xa9c562e341bc54cffe4d24a1fd3bae6ea5603a79', // pad owner funder + alt
+  '0x9c611d6cef58f0353178e981e02461b458acd133', // fee wallet
+  '0xaa1a8cb0aac9aa9fcbd86821f345d62e6342ce59', // deploy key
+  '0xf88929028c0d0932c6c6fafe77267f94c97d3e36', // testnet deployer
+  '0x42e74a92367ca998d860d3fce68cd2b753b7ca30', '0x05aea4a0b186752f912eb63585ce88ed60d86cfa', // team red, test11
+  '0x8f4dbccee74252e57c76d21f462513d92f45f3c9', '0x1cd30161fb515b7a43f79a1a4975797d6a54796e', '0x24ec830368a4b0e0d6e387a364c998013ae60ded', // bot wallets
+  '0xeec03bd4191f8e35786f0e0a64c8a24f31918cac', '0x27fa4fc7d262f34075ea3afe3b9f7c526bd6d3d4', '0x3396c581e53a55117c963ad4b853f1a72dd65efa',
+  '0xdcd3320f0fbd1615c66aa3bc1e9896bdf73a1d7c', '0x8337ea074fa1260343d286f0565dac9578225a81', '0x0cf339f8abf007cb90aa2ef668b72b5cee4a05b0',
+  '0x9134e94cddd81c3f64e55a0c1b09db089cf9365b',
+  ...String(process.env.SIGNAL_DEVS || '').toLowerCase().split(',').map((x) => x.trim()).filter((x) => /^0x[0-9a-f]{40}$/.test(x)),
+]);
+// a node that answers reads at past blocks, for the first-funder lookup
+const ARCHIVE_RPC = process.env.ELY_ARCHIVE_RPC || 'https://rpc.eleos.fun';
+const L1_ALIAS = BigInt('0x1111000000000000000000000000000000001111'), M160 = 1n << 160n;
+const unalias = (a) => '0x' + ((BigInt(a) - L1_ALIAS + M160) % M160).toString(16).padStart(40, '0');
+const funders = new Map();
+// Who first funded a wallet: the senders in the block where it first held HYPE or sent a transaction, plus the
+// HyperEVM wallet behind a bridge message (the sender with Arbitrum's alias offset taken off, and its refund address).
+async function firstFunders(w) {
+  if (funders.has(w)) return funders.get(w);
+  const q = async (m, p) => { for (let i = 0; ; i++) { try { return await call1(ARCHIVE_RPC, m, p, 6000); } catch (e) { if (i >= 3) throw e; await sleep(400 * (i + 1)); } } };
+  const at = async (b) => { const [bal, n] = await Promise.all([q('eth_getBalance', [w, hex(b)]), q('eth_getTransactionCount', [w, hex(b)])]); return BigInt(bal) > 0n || BigInt(n) > 0n; };
+  let lo = 0, hi = Number(BigInt(await q('eth_blockNumber', [])));
+  const out = new Set();
+  if (await at(hi)) {
+    while (lo < hi) { const m = Math.floor((lo + hi) / 2); if (await at(m)) hi = m; else lo = m + 1; }
+    const blk = await q('eth_getBlockByNumber', [hex(lo), true]);
+    for (const t of blk?.transactions || []) {
+      if (lc(t.to || '') !== w && !lc(t.input || '').includes(w.slice(2)) && lc(t.beneficiary || '') !== w && lc(t.retryTo || '') !== w) continue;
+      for (const a of [t.from, t.refundTo, t.beneficiary, t.feeRefundAddr]) if (a) { out.add(lc(a)); out.add(unalias(lc(a))); }
+    }
+  }
+  out.delete(w);
+  const r = [...out];
+  funders.set(w, r);
+  return r;
+}
+// why a launch is not sniped ({ why, quiet }), or null to snipe it
 async function sigSkip(f) {
   const [cr, nm, m] = await Promise.all([
     ethCall(SIGNAL.hook, '0xff94e4f3' + strip(f.id), {}, undefined, true).then((r) => lc('0x' + strip(r).slice(24, 64))).catch(() => null), // creatorOf(id)
     ethCall(f.t, '0x06fdde03', {}, undefined, true).then(decStr).catch(() => ''),
     tokenMeta(f.t),
   ]);
-  if (cr && SIG_TESTERS.has(cr)) return `<b>${esc(m.sym)}</b> was launched by Signal's test wallet ${short(cr)}, most likely a test coin`;
-  if (/canary|\btest/i.test(`${m.sym} ${nm}`)) return `<b>${esc(m.sym)}</b> (${esc(nm)}) reads like a test coin`;
-  return null;
+  if (cr && SIG_TESTERS.has(cr)) return { why: `<b>${esc(m.sym)}</b> was launched by Signal's test wallet ${short(cr)}, most likely a test coin` };
+  if (/canary|\btest/i.test(`${m.sym} ${nm}`)) return { why: `<b>${esc(m.sym)}</b> (${esc(nm)}) reads like a test coin` };
+  if (!cr || cr === ZERO) return { why: `${m.sym}: its creator could not be read`, quiet: true };
+  if (SIG_TEAM.has(cr)) return null;
+  const fs = await firstFunders(cr).catch(() => []);
+  if (fs.some((a) => SIG_TEAM.has(a))) return null;
+  return { why: `${m.sym} was launched by ${cr}, not Signal's team`, quiet: true };
 }
 let snipeOffAt = 0; // /snipe off also stops a Signal snipe that is waiting out a launch's fee
 // a Signal snipe is done with a coin: it leaves the waiting list, and the slot is spent only when it bought
@@ -2341,7 +2420,7 @@ async function sigNew(url, n) {
   }
 }
 function snipeText(s) {
-  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal launches' : 'Signal launch'} on Elysium, once the round trip loses ${s.tax ?? cfg().tax}% or less${s.wait?.length ? ` (waiting on ${s.wait.length} now)` : ''}`;
+  if (s.k === 'sig') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Signal team launches' : 'Signal team launch'} on Elysium (launches by other wallets are skipped), once the round trip loses ${s.tax ?? cfg().tax}% or less${s.wait?.length ? ` (waiting on ${s.wait.length} now)` : ''}`;
   if (s.k === 'asc') return `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' Ascend launches' : 'Ascend launch'}, ${ascDelayText()}`;
   return s.k === 'token' ? `${s.hype} HYPE of <code>${short(s.w)}</code> when its pool opens` :
     s.k === 'dev' ? `${s.hype} HYPE of the next ${s.left > 1 ? s.left + ' coins' : 'coin'} ${short(s.w)} launches` :
@@ -3572,7 +3651,7 @@ async function onMessage(msg) {
   }
   if (cmd === '/snipe') {
     const sub = lc(args[0] || '');
-    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe signal 1 [count] [tax%] · the next Signal launch(es) on Elysium, bought once the round trip is within tax% (default: /set tax)\n/snipe off · cancel all';
+    const usage = 'Usage:\n/snipe 0xTOKEN 1 · buys when its pool opens\n/snipe dev 0xWALLET 1 [count] · the next coin(s) that wallet launches\n/snipe new 1 [count] · the first coin(s) on a pool manager never used before (a new launchpad)\n/snipe ascend 1 [count] · the next Ascend launch(es), bought once the anti-snipe fee is gone\n/snipe signal 1 [count] [tax%] · the next Signal team launch(es) on Elysium (other wallets using its factory are skipped), bought once the round trip is within tax% (default: /set tax)\n/snipe off · cancel all';
     if (sub === 'off') { state.snipes = []; snipeOffAt = Date.now(); save(); return say('All snipes cancelled.'); }
     let s;
     if (sub === 'dev') { const w = addrIn(args[1]), h = Number(args[2]); if (!w || !(h > 0)) return say(usage); s = { k: 'dev', w, hype: h, left: Math.max(1, Math.min(20, Math.floor(Number(args[3]) || 1))) }; }
