@@ -45,6 +45,12 @@ const RUN_MIN_SWAPS = 15;
 const RUN_MIN_BUYERS = 8;
 const RUN_MULT = 3;              // times its own baseline pace
 const RUN_MIN_BUY_SHARE = 0.55;
+// 📈 market-cap ladder: a coin posts each time its MC crosses a new rung. The 🚀 launch alert fires once and the 🔥
+// volume run needs a burst inside a single scan, so a steady climber went quiet after launch: BOZO (Ascend, Nov 8) went
+// from about $10K at its 🚀 to $236K over 5 hours with nothing after it. The $25K rung is for coins that had a 🚀 only.
+const MC_RUNGS = [25e3, 50e3, 100e3, 250e3, 500e3, 1e6, 2.5e6, 5e6, 10e6, 25e6, 50e6, 100e6];
+const LADDER_MIN_SWAPS = 30;     // trades seen on the coin before its MC counts (one buy into a thin pool is not a run)
+const rungOf = (mcUsd) => MC_RUNGS.filter((x) => mcUsd >= x).length - 1; // -1 below the first rung
 // wallet pings carry buys, sells, launches and HYPE moves from this size (small sends are how bundles get funded); plain token transfers are skipped
 const WALLET_MIN_HYPE = Number(process.env.WALLET_MIN_HYPE || 0.2);
 const DUST_USD = Number(process.env.DUST_USD || 5); // token moves worth less than this (reflections, airdrops, tax payouts) are not pinged
@@ -1053,6 +1059,8 @@ Its coins now count as Obol launches.
       const busy = LAUNCHPADS[rec.lp]?.busy;
       if (rec.buyers.length >= (busy ? BUSY_MIN_BUYERS : LAUNCH_MIN_BUYERS) && volUsd >= (busy ? BUSY_MIN_USD : LAUNCH_MIN_USD) && share >= LAUNCH_MIN_BUY_SHARE) {
         rec.launchAlert = now();
+        // the 📈 ladder climbs from here
+        if (mcH && px) { rec.launchMc = mcH * px; rec.rung = Math.max(rec.rung ?? -1, rungOf(rec.launchMc)); rec.rungMc = rec.launchMc; rec.rungAt = now(); }
         state.alerted['c:' + t] = { t: now() };
         const so = await socials(t);
         const creator = rec.creator ? `\nLaunched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : '';
@@ -1064,6 +1072,31 @@ Its coins now count as Obol launches.
           `<code>${t}</code>\n${coinLink(state, t)}`
         );
         msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
+        continue;
+      }
+    }
+
+    // 📈 a new market-cap rung (the highest crossed this scan). A coin starts at the rung of its MC when first priced, so a
+    // coin already big when this check started, or bridged in at its HyperEVM size, only posts on a further climb.
+    const mcUsd = mcH && px && !meta.l1 ? mcH * px : null;
+    if (mcUsd != null) {
+      const rung = rungOf(mcUsd);
+      if (rec.rung == null) { rec.rung = rung; rec.rungMc = mcUsd; rec.rungAt = now(); }
+      else if (rung > rec.rung && (rung >= 1 || rec.launchMc) && rec.swaps >= LADDER_MIN_SWAPS && !firstRun) {
+        const was = { mc: rec.rungMc, at: rec.rungAt };
+        rec.rung = rung; rec.rungMc = mcUsd; rec.rungAt = now();
+        state.alerted['m:' + t] = { t: now() };
+        const so = await socials(t);
+        const volUsd = toUsd(rec.vol);
+        const since = rec.launchMc ? `${(mcUsd / rec.launchMc).toFixed(1)}× since its 🚀 at ${usd(rec.launchMc)}` : was.mc ? `${(mcUsd / was.mc).toFixed(1)}× since ${usd(was.mc)} ${ago(now() - was.at)} ago` : '';
+        msgs.push({
+          text:
+            `📈 <b>${esc(meta.s)}</b> (${esc(meta.n)}) crossed ${usd(MC_RUNGS[rung])} MC on ${lpName}\n` +
+            `MC ${usd(mcUsd)}${age != null ? ` · ${ago(age)} old` : ''}${since ? ` · ${since}` : ''}\n` +
+            `${volUsd != null ? `${usd(volUsd)} volume seen · ` : ''}${rec.swaps} trades${so.holders != null ? ` · ${so.holders} holders` : ''}${so.top10 != null ? ` · top 10 hold ${so.top10.toFixed(0)}%` : ''}\n` +
+            `${so.line}\n<code>${t}</code>\n${coinLink(state, t)}`,
+          buttons: buyButtons('e', t),
+        });
         continue;
       }
     }
