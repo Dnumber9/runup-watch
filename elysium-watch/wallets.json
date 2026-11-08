@@ -2982,6 +2982,18 @@
   "watch": "launch"
  },
  {
+  "address": "0x91b4294bc8413f7b4926805ec11e4dbe895c9277",
+  "label": "KALOS mainnet deployer (22 0xca105 contracts on Elysium since Nov 6 through CreateX, incl. Kalos Fate Bankroll; funded by KALOS alt 0x9524)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
+  "address": "0x95244f00a80afc61a956b6cfb6ed60841bc79a59",
+  "label": "KALOS alt (0.15 HYPE from KALOS main, funded the mainnet deployer)",
+  "group": "testnetteam",
+  "watch": "launch"
+ },
+ {
   "address": "0xf7129da0385df3fa7ade02e417541e140c298d3c",
   "label": "Ely Names deployer (.ely name service, testnet only so far; @ElysiumNames)",
   "group": "testnetteam",
