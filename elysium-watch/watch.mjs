@@ -134,11 +134,67 @@ const KNOWN_FACTORIES = { '0xca111dcdd2ce924c3378d6514fdcbc46217bca16': 'Clanker
 const T_POOL_V3 = '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118';
 const T_PAIR_V2 = '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9';
 const OLD_PADS = new Set(('5afe876a625a6fe230dd361b9a5bef8e9bea6fe3 56f810328a4e42e983f7f487f34776680d6cd7ab b85b1d403ff40f2af77753484b4546abe57788d3 718af7e914c01a6385986d7009e62ba557a8993e 5b8a01a2a99f77ff78a2a68a94e4cf125b3f0150 450fa91b21971c605abe31ee479d46cb1182dd7b e235028fb32cf2ea0577729f7613f504ee7e8888 55c7fcc06339e2d2fc5b444f52c24085c1da2549 8ca88b12bc89b58034c583f1a5df02f7e67d62e1 7700cb672bbd853cf57e82ea14c3ebbaac3ec470 29e30681d02295b59106baae3e42a0e4a8a48888 a4ca8b38f071030dd8ea4e8a3d75a694970ea62e dd9ece123c8c9ee95122b412871c52987e4abcdd 6e3afddc49f5d43858a1fdd48184426ded11029b ab45a955068bd0bc032e1f8f85f9b8136b9ab85d 157b05e438d1aefa6c62e9b42740e3ec0d1904b3 014079a13dc2d84f51807ff73cc86a6c293c5719 f8333ae8817f18ba59cfec27ffde7838e48a695a ea9ccd7d93f75a2a567d418be14d573e12e58888 c9326ed94b44fab87b3eda4e8f66208c90740d53 5742c7c64a31ffff501cfcfd2c4ad152bdc763cd d3b65d20e991a732af81c2f42c86d2c1619e56f8 6ca3eb5f8f1c59d192ca7e798583a884f488f66a a5d26111d563831cbe437c77a1e519697c505a37 f296bb0eaeab6703d876b1bfe9d5693ef302b855 04c6149e93e15358019e19b7e16a92428807da5a 5992a1c109a5f73d44566bc6f679abc4a60e49b7 f3596955a363fd5a3ad8b59999aa7d6df367ec97 c6f9c98e05ede0368dd55602e35c221ceb59e2a0 b0abce39ec602131214954c2203676e27ea33279 dff0fa8b98ef8a4beb3240f5f8af435ad3e94db0 1fae25daaecc5e7946d57f9a34014950a36ca2ac 6f17db548544a19162e82b20c67abee99960a89a a3cb3e57af0aeb4f11049fcc6f336e1f10a67116 017c51147443c5788d6afc34b3f3a813eec828ae 1202a2608f47772b6865e74fa3ce0b5421e89bf3 44dd6598fbef17c4260d3ef66cdba0b403f36b1b e2b349e31c452a68d7a1b03821c38dce0c62791d a5373d105a0ee457cc1d4febe45f7a972f456b2a fb7bc8ed90993d99d0ee77a405f5e7ff41f323f6 2743b771659fd9ce13970d7367e7e84af6a31049 27414ac278111c7f02aec2b82afdd8575e53964f d3fecb7a734bf6e7ea4b41d6d5e57caefde8229c 371811b06bd66c93b46f2f1ffd45b65455a2d2a2 3c5caa33d02c78935fc682a8eb295f0e67b93ced 02eb798f863762c91d38b5d42901f5ec095be3f7 84db5ab5d19bf44ac5f7a2d764a38df678562b5a b0da6e43e5811dd4b16e35abb541190879098eca 3318b09e6e4d222513d8fbcf76205b3c5566d76c b5ab9f0f84d62ac44f56c4f7d6b5081aec9f8fd8 83bb4005d77541837a68d0b1419cedcac6f58050 36f08c044e70d2715cf8de1f15a8853cc2df9192 5106a320982a3c20c241b7050f0d314ae04f21b4 3a529de06ca24b8be26450df38a6490855ac6540 682dc0458815d1f4927d366fa91e645c71024d7b e35b622b0d37d57bf3e4d6930a057e58e7ba30be b7f444558a6ae7ded39e859769bf4497d3feffc5 67fe373f00fe334477f6b923d7a494ebf6a93d83 bc6c6ae19ef7a1ffc71862baaa1e6605cf534561 e3826ce0f0e827d22723b144f1bf1b56a2116563 88e457c64dfa01afe135ea8d8a890ab4ff572f5e ab7cf5084fd979e779890e29af428c5e76cf3042 f43c7a653c06f68e40bcf54fc0a58997466e2463 7a8ef70c8905f0ff9fb93f17f2cc983c6fcd1698 cb0af609ac3de6503789f4826b7e14d9797b9138 7c667328aa8620f8af65748a6b1c521214077e6c cce5d43eade30bec7dc0b314c4bc0f600a670ae4 5e94349a566808bac6150ba3e96452d297545ac6 80d94d0b1c51b3aada498b995e5fe488272fcacf 85c564dfd505a10c7f0ab8de6d476e4283943f94 bf23e9f76c5a1c4dacc3863766681bcc16a3421f c95d9516c88671da94fa977018fc08b8b6e94c5f 39e9300b0057fe09227bc38f6be95518908e558b 0810f6c34794f58e4565675eb197544869bef5ae 0ac9c9446c6b1b79d1eada321a9a0faa282a4326 a405dda37db35ebe4b1cb794495b85fa62b80aa2 71423df77ded296e20267c1f4b480ffd9212cbc4 9216154b5e75fe4f1b40d847607cedc4b56b1a8a e1dec38a4f46230eea5d340ce2dd83be72a36ea9 653c10c2fd77d2b89f67ee29aa712189532263ff c6baf12ccb17f87b8dbbe653ef8eaf5df25a4f5f bdc5a4dcaed4d33735ed440e35a8ef4c97fec07a 76eaf0442045be3f36bf37b3731f5f1f1e947161 ad3e7deee80af3e4fd8c3c58baa7510bce58a969 e783de89a7f0408687f051e3e6d0beb62719ebad b9995773667e5868e7951a46bf840127502484e5 b7485e256796e9079cc1ad32784e1ca2d91102e5 1db2bd4467dca2ab420841348526a5f77b94bc0b 07d544d096e2bf730920d1c9f97faf6f2b144f33 90c9703273e0e6b0be527ad0695cdd98eafe90f7 317885f1133ec0799fd18a23c629e2f787e408e0 e301fc228f83af3cecfdeec54913b11e41ef2430 087203ede0c5af3673dff9de1ef1f2872bc8c4af bbf17b53380e2776d987a1bf3dc8cc600f4a2621 c6dc519451f58dfd27bb2920eefae57597bd91f5 b389e7f7c89dcd17afef88c2a2ec686b20f1f849 0369b8eeb92f1f49a6f446b2b6cb57381484ab7e 4039d2fe39827f1ecc5c78765c36ced638d7348b b0b2a4874893dbc6af39ca7e0b6c2e4c0dc2f59c b3390a61123e05f9bc70ac2e5e4c003fad1aeb9d cf138f449a0f5926db603c89d7be169876cb9ea6 06af211d88e2980c8c86cf8d11277442ce432843 4a026c873e8e4796b3a78a69bd5beeb0f438e622 333d92d95f9abb5e851f84dae136e12beb4e0c86 c392f5a1b8bc1385725baec807a354747ab92927 dcaa92a2d3c538c448eeaa6a354f3e62ecfcbd2e 694bab604491d08dcdb7d9166499f00d7e8bd367 373adbb2b9bae4a519e58075828faec36102190e 706e612487cd67fa727c93a5a4c9657b1346eb67 6c9f6a7ca3ca84e0eb1a3b809ae83c056e990a2f b0e31e1258f13080b3c909798b46f686af76db7e a79b5fe706fda9aa55b642c7c56a00ab912963d8 b045959d289dba0d2e4403ba9e7ecc1cbf8ac0a5 54345d7640c4fdea5b14e8fdb2777d747e41de07 cbe0a1fc5293ceec51ea31681f2e045df6173b1a 853d133bd1a2ecb6b7f80de225bf370cd0ef7851').split(' ').map((a) => '0x' + a));
-const PAD_NAMES = { '0xcbe0a1fc5293ceec51ea31681f2e045df6173b1a': 'Bankr pad' }; // ORBIT and 6 more, each by a different wallet
-// A new launchpad posts when a wallet other than its deployer launches through it: the sign of a pad open to the public.
-// The team's own test coins and one-off launch contracts made for a single coin (AGENTS and Minthe's MTEST3, Nov 8,
-// both launched by the wallet that deployed the contract) stay quiet until an outside wallet uses it.
-const TEST_NAME = /\btest|canary/i;
+const PAD_NAMES = { '0xcbe0a1fc5293ceec51ea31681f2e045df6173b1a': 'Bankr' }; // ORBIT and 6 more, each by a different wallet
+// A new launchpad posts on its first coin, whoever launched it (the pad's own deployer or an outside wallet, the alert
+// says which). Coins named test or canary are held, and named when the next coin posts.
+const TEST_NAME = /test|canary/i;
+// A launchpad's name, when the lists above don't have it: the coin's own metadata usually says where it was made
+// (ORBIT's says launch_provider bankr, SZN's schema is chainzy.launch-token-metadata.v1, Clanker coins carry an
+// interface), else a name the launch contract or hook reports about itself, else the tracked label of its deployer.
+const META_SELS = ['3c130d90', 'eac989f8', 'e8a3d485', '392f37e9', 'd0496d6a', 'f5b2cad7', '7a5b4f59']; // tokenURI uri contractURI metadata context tokenMetadata getMetadata
+const NAME_SELS = ['d721fe02', 'f3a9b2bc', 'e567e869', '4bde38c8', 'a3f4df7e', '06fdde03']; // platformName launchpadName protocolName platform NAME name
+const PAD_KEYS = ['launch_provider', 'launchprovider', 'launchpad', 'launch_pad', 'interface', 'deployed_via', 'deployedvia', 'created_on', 'createdon', 'created_with', 'platform', 'provider', 'app', 'source'];
+const NOT_A_PAD = /^(x|twitter|farcaster|telegram|web|website|unknown|none|n\/a|null|elysium|hyperevm|erc20|token)$/i;
+const strOf = (hex) => {
+  const w = words(hex || '0x');
+  try { if (w.length >= 2 && BigInt('0x' + w[0]) === 32n) { const n = Number(BigInt('0x' + w[1])); if (n > 0 && n < 20000) return Buffer.from(hex.slice(130, 130 + n * 2), 'hex').toString('utf8').replace(/\0/g, '').trim(); } } catch {}
+  return '';
+};
+async function readMeta(u) {
+  try {
+    if (u.startsWith('{')) return JSON.parse(u);
+    const d = /^data:application\/json(;base64)?,([\s\S]*)$/i.exec(u);
+    if (d) return JSON.parse(d[1] ? Buffer.from(d[2], 'base64').toString('utf8') : decodeURIComponent(d[2]));
+    const cid = /^ipfs:\/\/(?:ipfs\/)?(\S+)$/.exec(u)?.[1];
+    for (const url of cid ? ['https://ipfs.io/ipfs/', 'https://gateway.pinata.cloud/ipfs/', 'https://dweb.link/ipfs/'].map((g) => g + cid) : /^https:\/\//.test(u) ? [u] : []) {
+      const r = await fetch(url, { signal: AbortSignal.timeout(6000) }).catch(() => null);
+      if (r?.ok) return await r.json().catch(() => null);
+    }
+  } catch {}
+  return null;
+}
+function padNameIn(m) {
+  if (!m || typeof m !== 'object') return null;
+  const ok = (v) => typeof v === 'string' && v.trim() && v.length <= 40 && !NOT_A_PAD.test(v.trim()) && !/^0x[0-9a-f]{40}$/i.test(v.trim());
+  const norm = (k) => lc(k).replace(/[\s-]/g, '_');
+  const attrs = Array.isArray(m.attributes) ? m.attributes : [];
+  for (const k of PAD_KEYS) {
+    const a = attrs.find((x) => norm(x?.trait_type) === k);
+    if (ok(a?.value)) return [a.value.trim(), `${a.trait_type} in the coin's metadata`];
+    const key = Object.keys(m).find((x) => norm(x) === k);
+    if (key && ok(m[key])) return [m[key].trim(), `${key} in the coin's metadata`];
+  }
+  if (typeof m.schema === 'string' && /^[a-z][\w-]{2,}\./i.test(m.schema)) return [m.schema.split('.')[0], "the coin's metadata schema"];
+  const by = /\b(?:deployed|launched|created|made|minted)\s+(?:using|on|via|with|through)\s+(@?[\w.-]{3,30})/i.exec(String(m.description || ''));
+  if (by && ok(by[1])) return [by[1], "the coin's description"];
+  for (const u of [m.external_url, m.website, m.url]) {
+    try { const h = new URL(u).hostname.replace(/^www\./, ''); if (!/(^|\.)(x|twitter|t|github|imgur|pinata|ipfs|arweave|dexscreener|elyxa)\.(com|me|io|cloud|net|trade)$/.test(h)) return [h, "the coin's website"]; } catch {}
+  }
+  return null;
+}
+const titled = (s) => (/^[a-z0-9]+$/.test(s) ? s[0].toUpperCase() + s.slice(1) : s);
+async function padName(coin, addrs, coinName) {
+  for (const sel of META_SELS) {
+    const u = strOf(await rpc('eth_call', [{ to: coin, data: '0x' + sel }, 'latest'], 2).catch(() => '0x'));
+    const hit = u ? padNameIn(await readMeta(u)) : null;
+    if (hit) return [titled(hit[0]), hit[1]];
+  }
+  for (const a of addrs.filter((x) => x && x !== coin)) for (const sel of NAME_SELS) {
+    const s = strOf(await rpc('eth_call', [{ to: a, data: '0x' + sel }, 'latest'], 2).catch(() => '0x'));
+    if (s && s.length <= 40 && s !== coinName && !NOT_A_PAD.test(s)) return [s, 'the contract names itself'];
+  }
+  return null;
+}
 // the wallet that deployed a contract: the first block holding its code (a binary search over archive state), then the
 // creation tx in that block, or the one user tx it holds (Elysium blocks carry one, and CREATE2 deploys through
 // 0x4e59…956c or CreateX are sent by the deployer). Null when the RPC has no archive state or the block is ambiguous.
@@ -602,6 +658,8 @@ async function main() {
     for (const x of Object.values(state.lpSeen)) if (x.n >= 1 && !x.seeded) x.posted ||= x.at || now();
     state.lpSeedV = 2;
   }
+  // names found by new-launchpad detection carry over to later coins from the same hook or launch contract
+  for (const [k, x] of Object.entries(state.lpSeen || {})) if (x.name && !x.seeded) { if (k.startsWith('h:') && k.slice(2) !== x.first) HOOK_NAMES[k.slice(2)] ||= x.name; if (k.startsWith('v:')) PAD_NAMES[k.slice(2)] ||= x.name; }
   // PoolManagers found by new-launchpad detection join the list too
   for (const [k, x] of Object.entries(state.lpSeen || {})) if (k.startsWith('pm:') && !LAUNCHPADS[k.slice(3)] && !x.seeded) { LAUNCHPADS[k.slice(3)] = { name: x.name || `a new launchpad (${short(k.slice(3))})`, hook: null, fresh: true }; INFRA.add(k.slice(3)); }
   let wallets = [];
@@ -775,7 +833,7 @@ Its coins now count as Obol launches.
   await pmap(launchTxs.slice(0, 40), 12, async ({ coin, tx }) => {
     try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); state.tok[coin].via = lc(x?.to); } catch {}
   });
-  // launchpads new to Elysium: their first coin from an outside wallet posts, nothing after that
+  // launchpads new to Elysium: their first coin that isn't a test posts, nothing after that
   let newLpAlerts = 0, newLpChecks = 0;
   for (const { coin, block } of launchTxs.slice(0, 40)) {
     const rec = state.tok[coin];
@@ -804,11 +862,24 @@ Its coins now count as Obol launches.
       let made = 0;
       if (rec.via && block > 1) try { made = parseInt(await rpc('eth_getTransactionCount', [rec.via, '0x' + (block - 1).toString(16)]), 16) - 1; } catch {}
       if (made >= 3) { state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via, seeded: 1, made }; console.log(`new-launchpad check: an established launcher (${made} contracts made before), skipped`); continue; }
-      const name = KNOWN_FACTORIES[rec.via] || PAD_NAMES[rec.via] || null;
-      // who deployed the launch contract and the hook (or PoolManager): a coin from any other wallet is an outside launch
-      const [{ chains, checked }, deps] = await Promise.all([deployedElsewhere([rec.via, addr]), Promise.all([...new Set([rec.via, addr].filter(Boolean))].map(deployerOf))]);
-      s = state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via || null, name, chains, checked, migrated: !!name || chains.length > 0, dep: [...new Set(deps.filter(Boolean))] };
-      console.log(`new-launchpad check: deployer ${s.dep.length ? 'found' : 'not found'}`);
+      const known = KNOWN_FACTORIES[rec.via] || PAD_NAMES[rec.via] || null;
+      // who deployed the launch contract and the hook (or PoolManager), and what the launchpad calls itself
+      const meta0 = await tokenMeta(state, coin);
+      const [{ chains, checked }, deps, named] = await Promise.all([
+        deployedElsewhere([rec.via, addr]),
+        Promise.all([...new Set([rec.via, addr].filter(Boolean))].map(deployerOf)),
+        known ? null : padName(coin, [rec.via, addr], meta0.n),
+      ]);
+      const dep = [...new Set(deps.filter(Boolean))];
+      const tracked = dep.find((d) => W.has(d));
+      const fromLabel = tracked ? W.get(tracked).replace(/\s*\(.*$/, '').replace(/\s+(mainnet\s+|vanity\s+)?(dev|deployer|team|main|alt|wallet)\b.*$/i, '').trim() : '';
+      const name = known || named?.[0] || fromLabel || null;
+      const nameSrc = known ? '' : named ? named[1] : fromLabel ? 'your label for its deployer' : '';
+      s = state.lpSeen[key] = { at: now(), n: 0, first: coin, via: rec.via || null, name, nameSrc, chains, checked, migrated: !!known || chains.length > 0, dep };
+      console.log(`new-launchpad check: deployer ${dep.length ? 'found' : 'not found'}, name ${name ? 'found' : 'not found'}`);
+      // later coins from it carry the name too (launch lines, /stats)
+      if (name && key.startsWith('h:') && key.slice(2) !== coin) HOOK_NAMES[key.slice(2)] ||= name;
+      if (name && key.startsWith('v:')) PAD_NAMES[key.slice(2)] ||= name;
       if (key.startsWith('pm:') && !LAUNCHPADS[addr]) { LAUNCHPADS[addr] = { name: name || `a new launchpad (${short(addr)})`, hook: null, fresh: true }; INFRA.add(addr); if (state.unknownPm[addr]) state.unknownPm[addr].alerted = now(); }
     }
     if (s.seeded) continue;
@@ -816,9 +887,9 @@ Its coins now count as Obol launches.
     if (s.posted) continue;
     if (firstRun) { s.posted = now(); continue; }
     const meta = await tokenMeta(state, coin);
-    // the deployer's own coin, or a test coin: held, and named when the first outside coin posts
-    if ((rec.creator && s.dep?.includes(rec.creator)) || TEST_NAME.test(`${meta.s} ${meta.n}`)) {
-      s.held ||= { coin, s: meta.s, own: !!rec.creator && !!s.dep?.includes(rec.creator) };
+    // a test or canary coin: held, and named when the next coin posts
+    if (TEST_NAME.test(`${meta.s} ${meta.n}`)) {
+      s.held ||= { coin, s: meta.s };
       bump('new launchpad held');
       continue;
     }
@@ -827,16 +898,20 @@ Its coins now count as Obol launches.
     s.posted = now();
     state.alerted['n:' + coin] = { t: now() };
     const v = key.startsWith('v:'), h = key.startsWith('h:');
-    const where = s.name || (v ? `a new launch contract ${short(key.slice(2))} (Uniswap ${rec.pad === 'v2' ? 'v2 pairs' : 'v3 pools'})` : h ? `a new hook ${short(key.slice(2))}` : `a new PoolManager ${short(key.slice(3))}`);
+    const self = h && key.slice(2) === coin; // the coin is its own hook: a contract set built for this one coin
+    const where = s.name || (self ? 'unnamed, a one-off' : v ? `unnamed launch contract ${short(key.slice(2))}` : h ? `unnamed hook ${short(key.slice(2))}` : `unnamed PoolManager ${short(key.slice(3))}`);
     const team = (s.dep || []).filter((d) => W.has(d));
+    const byDev = !!rec.creator && !!s.dep?.includes(rec.creator);
     const depLine = s.dep?.length ? `Deployed by ${s.dep.map((d) => walletLink(d) + (W.has(d) ? ` (👛 ${esc(W.get(d))})` : '')).join(' and ')}\n` : '';
     const text =
       `🆕 <b>New launchpad: ${esc(where)}</b>\n` +
+      (s.nameSrc ? `Name from ${esc(s.nameSrc)}.\n` : !s.name ? `No name on chain: the coin carries no metadata and the contracts don't name themselves.\n` : '') +
+      (self ? 'The coin is its own hook, launched through a factory made for it.\n' : v ? `Mints each coin and opens its Uniswap ${rec.pad === 'v2' ? 'v2 pair' : 'v3 pool'} in one tx.\n` : '') +
       (s.migrated ? `Established elsewhere: ${s.chains.length ? `the same contracts are live on ${s.chains.join(', ')}` : 'a known launchpad'}. A new player arriving on Elysium.\n` : s.checked === 0 ? 'Could not reach other chains to check where else it lives.\n' : team.length ? 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: built by a tracked team.\n' : 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: a new team.\n') +
       depLine +
-      (s.held ? `Before this: ${esc(s.held.s)}, ${s.held.own ? 'launched by the deployer itself' : 'a test coin'}.\n` : '') +
-      `${s.dep?.length ? 'First outside coin' : 'First coin'}: <b>${esc(meta.s)}</b> (${esc(meta.n)})${rec.creator ? ` · launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : ''}\n` +
-      (v ? `Launch contract <code>${key.slice(2)}</code>${rec.factory ? ` · pool factory <code>${rec.factory}</code>` : ''}\n` : `Factory <code>${s.via || '?'}</code>${h ? ` · hook <code>${key.slice(2)}</code>` : ''}\n`) +
+      (s.held ? `Before this: ${esc(s.held.s)}, a test coin.\n` : '') +
+      `First coin: <b>${esc(meta.s)}</b> (${esc(meta.n)})${rec.creator ? ` · launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}${s.dep?.length ? (byDev ? ', the launchpad\'s own dev' : ', an outside wallet') : ''}` : ''}\n` +
+      (v ? `Launch contract <code>${key.slice(2)}</code>${rec.factory ? ` · pool factory <code>${rec.factory}</code>` : ''}\n` : `Factory <code>${s.via || '?'}</code>${h && !self ? ` · hook <code>${key.slice(2)}</code>` : ''}\n`) +
       `<code>${coin}</code>\n${coinLink(state, coin)}`;
     msgs.push(s.migrated ? { text, buttons: buyButtons('e', coin) } : text);
   }
