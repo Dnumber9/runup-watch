@@ -3138,5 +3138,11 @@
   "address": "0xc547ff560f67157960a1f5e2adcfbfd5695089dc",
   "label": "Ascend weekly rewards contract (pings when funded)",
   "group": "ascendteam"
+ },
+ {
+  "address": "0xdf6aa48d464d9bc2443096f03cba4fa750d3bdc6",
+  "label": "PANTHEON mainnet deployer (runbook: PNTH launches at its nonce 2)",
+  "group": "pantheon",
+  "watch": "all"
  }
 ]
