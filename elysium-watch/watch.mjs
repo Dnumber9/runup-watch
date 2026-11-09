@@ -249,10 +249,12 @@ async function deployedElsewhere(addrs) {
 }
 // a coin's launchpad: the launch contract for a coin minted with its v3 pool or v2 pair, its hook on a shared
 // PoolManager, else its PoolManager
-const lpKeyOf = (rec) => (rec?.pad ? 'v:' + rec.via : rec?.hook && rec.hook !== ZERO && LAUNCHPADS[rec.lp]?.busy ? 'h:' + rec.hook : 'pm:' + rec?.lp);
-const oldLp = (key) => (key.startsWith('v:') ? OLD_PADS.has(key.slice(2)) : key.startsWith('h:') ? OLD_HOOKS.has(key.slice(2)) : !!LAUNCHPADS[key.slice(3)] && !LAUNCHPADS[key.slice(3)].fresh);
+// (Nov 9) a coin on its own bonding curve keys by the curve's launch contract ('c:'), and a coin created in the same
+// tx as its hookless v4 pool keys by the contract that tx called, like a v3 launch contract (elysino.fun)
+const lpKeyOf = (rec) => (rec?.curve ? 'c:' + rec.via : rec?.pad ? 'v:' + rec.via : rec?.hook === ZERO && rec.minted && rec.via ? 'v:' + rec.via : rec?.hook && rec.hook !== ZERO && LAUNCHPADS[rec.lp]?.busy ? 'h:' + rec.hook : 'pm:' + rec?.lp);
+const oldLp = (key) => (key.startsWith('v:') || key.startsWith('c:') ? OLD_PADS.has(key.slice(2)) : key.startsWith('h:') ? OLD_HOOKS.has(key.slice(2)) : !!LAUNCHPADS[key.slice(3)] && !LAUNCHPADS[key.slice(3)].fresh);
 // a launchpad name for a coin: its pool's hook when that hook is a known launchpad, else its PoolManager
-const lpNameOf = (rec, dflt = 'unknown launchpad') => HOOK_NAMES[rec?.hook] || LAUNCHPADS[rec?.lp]?.name || (rec?.pad && PAD_NAMES[rec.via]) || (rec?.lp === 'uniswap' ? (rec.pad ? `Uniswap ${rec.pad}` : 'Uniswap') : dflt);
+const lpNameOf = (rec, dflt = 'unknown launchpad') => HOOK_NAMES[rec?.hook] || LAUNCHPADS[rec?.lp]?.name || ((rec?.pad || rec?.curve || rec?.minted) && PAD_NAMES[rec.via]) || (rec?.lp === 'uniswap' ? (rec.pad ? `Uniswap ${rec.pad}` : 'Uniswap') : dflt);
 // a launch on a busy shared PoolManager needs more traction before 🚀 (about 80 coins an hour launch there)
 const BUSY_MIN_BUYERS = 25;
 const BUSY_MIN_USD = 5000;
@@ -759,6 +761,9 @@ async function main() {
   const tally = {};
   const bump = (k, n = 1) => { tally[k] = (tally[k] || 0) + n; };
 
+  // coins minted in each tx (a launch mints its coin in the same tx it opens the pool or curve)
+  const mintedIn = {};
+  for (const l of logs) if (l.topics[0] === T_TRANSFER && l.topics.length === 3 && lc(topicAddr(l.topics[1])) === ZERO) (mintedIn[l.transactionHash] ||= new Set()).add(lc(l.address));
   // 1. new pools: launches on known launchpads, and unknown PoolManagers
   const launchTxs = [];
   for (const l of logs) {
@@ -771,13 +776,14 @@ async function main() {
       const u = (state.unknownPm[pm] ||= { n: 0, first: now(), alerted: 0 });
       u.n++;
     }
+    const hook = lc('0x' + (words(l.data)[2] || '').slice(24)); // Initialize data: fee, tickSpacing, hooks, sqrtPrice, tick
     if (!state.tok[coin]) {
       const b = parseInt(l.blockNumber, 16);
       const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
-      const hook = lc('0x' + (words(l.data)[2] || '').slice(24)); // Initialize data: fee, tickSpacing, hooks, sqrtPrice, tick
-      state.tok[coin] = { lp: pm, hook, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
+      // minted: the coin was created in this tx, so a pool with no hook was opened by the contract that launched it
+      state.tok[coin] = { lp: pm, hook, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null, minted: !!mintedIn[l.transactionHash]?.has(coin) };
       launchTxs.push({ coin, tx: l.transactionHash, block: parseInt(l.blockNumber, 16) });
-    }
+    } else if (state.tok[coin].curve && !state.tok[coin].hook) state.tok[coin].hook = hook; // a curve coin graduating to its pool
   }
   // 1b. Obol coins: born on a curve with no pool. A new curve contract (an Obol log from an address with Obol's code)
   // joins the list once and posts once.
@@ -806,8 +812,6 @@ Its coins now count as Obol launches.
   }
   // 1c. coins minted and given a Uniswap v3 pool or v2 pair in the same tx (a launch contract with no hook). A pair
   // opened for a coin minted earlier is a plain listing and stays out. These go first: the lookups below take 40.
-  const mintedIn = {};
-  for (const l of logs) if (l.topics[0] === T_TRANSFER && l.topics.length === 3 && lc(topicAddr(l.topics[1])) === ZERO) (mintedIn[l.transactionHash] ||= new Set()).add(lc(l.address));
   const padTxs = [];
   for (const l of logs) {
     const v3 = l.topics[0] === T_POOL_V3;
@@ -824,11 +828,48 @@ Its coins now count as Obol launches.
     state.tok[coin] = { lp: 'uniswap', hook: null, pad: v3 ? 'v3' : 'v2', factory: lc(l.address), born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
     padTxs.push({ coin, tx: l.transactionHash, block: b });
   }
-  launchTxs.unshift(...padTxs);
+  // 1d. coins launched on a bonding curve of their own (WIND on Windup, Nov 9): minted in their creation tx with no
+  // pool opened for them, and named in an indexed topic by the contract that launched them. They trade on that
+  // contract until the curve fills, so the hook and launch-contract checks above never saw the launch (Windup's first
+  // coin only showed up at graduation). The contract that names the coin, already deployed before it, is the launchpad.
+  const curveTxs = [];
+  {
+    const pooled = new Set();
+    for (const l of logs) {
+      if (l.topics[0] === T_INIT_V4 && l.topics.length >= 4) for (const k of [2, 3]) pooled.add(l.transactionHash + lc(topicAddr(l.topics[k])));
+      if ((l.topics[0] === T_POOL_V3 || l.topics[0] === T_PAIR_V2) && l.topics.length >= 3) for (const k of [1, 2]) pooled.add(l.transactionHash + lc(topicAddr(l.topics[k])));
+    }
+    const cand = [];
+    for (const [h, set] of Object.entries(mintedIn)) for (const coin of set) if (!state.tok[coin] && !isHype(coin) && !INFRA.has(coin) && !pooled.has(h + coin) && !state.notCurve?.[coin]) cand.push([h, coin]);
+    if (cand.length) {
+      const byTx = {};
+      for (const l of logs) if (mintedIn[l.transactionHash]) (byTx[l.transactionHash] ||= []).push(l);
+      let checks = 0;
+      for (const [h, coin] of cand) {
+        const pad = '0x' + coin.slice(2).padStart(64, '0');
+        const ls = byTx[h] || [];
+        const named = [...new Set(ls.filter((l) => lc(l.address) !== coin && l.topics.slice(1).includes(pad)).map((l) => lc(l.address)))].filter((a) => !INFRA.has(a));
+        // a coin no contract announces is a plain deploy, not a launch; Obol's v4 curve and the known hooks are no news
+        if (!named.length || named.some((a) => HOOK_NAMES[a] || OBOL[a] || OLD_HOOKS.has(a)) || ++checks > 8) continue;
+        const b = parseInt(ls[0].blockNumber, 16), prev = '0x' + (b - 1).toString(16);
+        let fresh = false, launcher = null;
+        try {
+          fresh = (await rpc('eth_getCode', [coin, prev])) === '0x';
+          if (fresh) for (const a of named) if ((await rpc('eth_getCode', [a, prev])) !== '0x') { launcher = a; break; }
+        } catch { continue; }
+        if (!fresh || !launcher) { (state.notCurve ||= {})[coin] = 1; continue; }
+        const born = Math.round(tFrom + ((b - from) / Math.max(head - from, 1)) * (tTo - tFrom));
+        state.tok[coin] = { lp: launcher, hook: null, curve: true, via: launcher, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null };
+        curveTxs.push({ coin, tx: h, block: b });
+      }
+      if (Object.keys(state.notCurve || {}).length > 5000) state.notCurve = {};
+    }
+  }
+  launchTxs.unshift(...padTxs, ...curveTxs);
   // who launched each new coin (one tx lookup per launch, 12 at a time: a flood can bring dozens a tick)
   const tLaunch = Date.now();
   await pmap(launchTxs.slice(0, 40), 12, async ({ coin, tx }) => {
-    try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); state.tok[coin].via = lc(x?.to); } catch {}
+    try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); if (!state.tok[coin].curve) state.tok[coin].via = lc(x?.to); } catch {}
   });
   // launchpads new to Elysium: their first coin that isn't a test posts, nothing after that
   let newLpAlerts = 0, newLpChecks = 0;
@@ -837,6 +878,9 @@ Its coins now count as Obol launches.
     if (!rec) continue;
     // a coin that opens its own pool from its constructor, or through a shared helper, has no launch contract to follow
     if (rec.pad && (!rec.via || XCHAIN_SKIP.has(rec.via))) continue;
+    // the same for a hookless v4 coin made in its pool's tx, and a coin that launched itself (AKA) is a one-off
+    if (rec.hook === ZERO && rec.minted && (!rec.via || rec.via === coin || XCHAIN_SKIP.has(rec.via))) continue;
+    if (rec.curve && (!rec.via || XCHAIN_SKIP.has(rec.via))) continue;
     const key = lpKeyOf(rec);
     // PerpMe's v3 launches (coins ending in 0999): a known launchpad, whichever launch contract version it uses
     if (rec.pad && coin.endsWith('0999') && !state.lpSeen[key]) { state.lpSeen[key] = { at: now(), n: 0, seeded: 1 }; continue; }
@@ -876,7 +920,7 @@ Its coins now count as Obol launches.
       console.log(`new-launchpad check: deployer ${dep.length ? 'found' : 'not found'}, name ${name ? 'found' : 'not found'}`);
       // later coins from it carry the name too (launch lines, /stats)
       if (name && key.startsWith('h:') && key.slice(2) !== coin) HOOK_NAMES[key.slice(2)] ||= name;
-      if (name && key.startsWith('v:')) PAD_NAMES[key.slice(2)] ||= name;
+      if (name && (key.startsWith('v:') || key.startsWith('c:'))) PAD_NAMES[key.slice(2)] ||= name;
       if (key.startsWith('pm:') && !LAUNCHPADS[addr]) { LAUNCHPADS[addr] = { name: name || `a new launchpad (${short(addr)})`, hook: null, fresh: true }; INFRA.add(addr); if (state.unknownPm[addr]) state.unknownPm[addr].alerted = now(); }
     }
     if (s.seeded) continue;
@@ -894,21 +938,21 @@ Its coins now count as Obol launches.
     newLpAlerts++;
     s.posted = now();
     state.alerted['n:' + coin] = { t: now() };
-    const v = key.startsWith('v:'), h = key.startsWith('h:');
+    const v = key.startsWith('v:'), h = key.startsWith('h:'), cv = key.startsWith('c:');
     const self = h && key.slice(2) === coin; // the coin is its own hook: a contract set built for this one coin
-    const where = s.name || (self ? 'unnamed, a one-off' : v ? `unnamed launch contract ${short(key.slice(2))}` : h ? `unnamed hook ${short(key.slice(2))}` : `unnamed PoolManager ${short(key.slice(3))}`);
+    const where = s.name || (self ? 'unnamed, a one-off' : v || cv ? `unnamed launch contract ${short(key.slice(2))}` : h ? `unnamed hook ${short(key.slice(2))}` : `unnamed PoolManager ${short(key.slice(3))}`);
     const team = (s.dep || []).filter((d) => W.has(d));
     const byDev = !!rec.creator && !!s.dep?.includes(rec.creator);
     const depLine = s.dep?.length ? `Deployed by ${s.dep.map((d) => walletLink(d) + (W.has(d) ? ` (👛 ${esc(W.get(d))})` : '')).join(' and ')}\n` : '';
     const text =
       `🆕 <b>New launchpad: ${esc(where)}</b>\n` +
       (s.nameSrc ? `Name from ${esc(s.nameSrc)}.\n` : !s.name ? `No name on chain: the coin carries no metadata and the contracts don't name themselves.\n` : '') +
-      (self ? 'The coin is its own hook, launched through a factory made for it.\n' : v ? `Mints each coin and opens its Uniswap ${rec.pad === 'v2' ? 'v2 pair' : 'v3 pool'} in one tx.\n` : '') +
+      (self ? 'The coin is its own hook, launched through a factory made for it.\n' : cv ? 'Launches each coin on a bonding curve of its own. The coin moves to a pool when the curve fills.\n' : v ? `Mints each coin and opens its Uniswap ${rec.pad === 'v2' ? 'v2 pair' : rec.pad ? 'v3 pool' : 'v4 pool (no hook)'} in one tx.\n` : '') +
       (s.migrated ? `Established elsewhere: ${s.chains.length ? `the same contracts are live on ${s.chains.join(', ')}` : 'a known launchpad'}. A new player arriving on Elysium.\n` : s.checked === 0 ? 'Could not reach other chains to check where else it lives.\n' : team.length ? 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: built by a tracked team.\n' : 'Not found on Base, BNB, Arbitrum, Ethereum or HyperEVM: a new team.\n') +
       depLine +
       (s.held ? `Before this: ${esc(s.held.s)}, a test coin.\n` : '') +
       `First coin: <b>${esc(meta.s)}</b> (${esc(meta.n)})${rec.creator ? ` · launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}${s.dep?.length ? (byDev ? ', the launchpad\'s own dev' : ', an outside wallet') : ''}` : ''}\n` +
-      (v ? `Launch contract <code>${key.slice(2)}</code>${rec.factory ? ` · pool factory <code>${rec.factory}</code>` : ''}\n` : `Factory <code>${s.via || '?'}</code>${h && !self ? ` · hook <code>${key.slice(2)}</code>` : ''}\n`) +
+      (v || cv ? `Launch contract <code>${key.slice(2)}</code>${rec.factory ? ` · pool factory <code>${rec.factory}</code>` : ''}\n` : `Factory <code>${s.via || '?'}</code>${h && !self ? ` · hook <code>${key.slice(2)}</code>` : ''}\n`) +
       `<code>${coin}</code>\n${coinLink(state, coin)}`;
     msgs.push(s.migrated ? { text, buttons: buyButtons('e', coin) } : text);
   }
