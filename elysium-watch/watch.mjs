@@ -1278,6 +1278,8 @@ Its coins now count as Obol launches.
         const f = lc(tx.from);
         const to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
+        // a wallet sending HYPE to itself (the Obol deployer's 157 HYPE, Nov 9) is noise: no sent or received line
+        if (f === to && (tx.input || '0x') === '0x') continue;
         if (W.has(f) && !tx.to) M(f).push(`deployed a contract${txLink(tx.hash)}`);
         if (W.has(f) && safeMade[tx.hash]) for (const p of safeMade[tx.hash]) M(f).push(`<b>made a Safe multisig</b> ${walletLink(p)}${await safeShape(p)}${txLink(tx.hash)}`);
         if (W.has(f) && to && (tx.input || '').startsWith('0x6a761202')) M(f).push(`<b>executed a Safe tx</b> on ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
