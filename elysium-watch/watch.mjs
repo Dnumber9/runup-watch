@@ -680,6 +680,8 @@ async function main() {
   for (const a of FEE_WALLETS) delete state.auto[a]; // followed by mistake as an alt before the bot-fee pattern was known
   // bridge tracking is off (Nov 9): the auto-found bridgers and the alts found through them are dropped for good
   for (const [a, x] of Object.entries(state.auto)) if (x.from === 'bridge' || /^bridger \d/.test(x.label || '')) delete state.auto[a];
+  // the ORPHEUS early snipers left wallets.json (Nov 9, spam): any alts found through them go too (the dev's stay)
+  for (const [a, x] of Object.entries(state.auto)) if (/^ORPHEUS (early|block-1 sniper|sniper cluster|bundle)/.test(x.label || '')) delete state.auto[a];
   delete state.bridged; delete state.bridgerDump;
   for (const [a, x] of Object.entries(state.auto)) {
     if (!W.has(a)) W.set(a, x.label);
