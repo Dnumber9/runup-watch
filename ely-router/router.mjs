@@ -278,7 +278,7 @@ const fmt = (n) => {
   const a = Math.abs(n);
   return a >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : a >= 1 ? n.toFixed(3) : a === 0 ? '0' : n.toPrecision(3);
 };
-const fmtH = (h) => (h >= 100 ? h.toFixed(0) : h >= 1 ? h.toFixed(2) : h.toPrecision(3)) + ' HYPE';
+const fmtH = (h) => (!Number.isFinite(h) ? '?' : h >= 100 ? h.toFixed(0) : h >= 1 ? h.toFixed(2) : h.toPrecision(3)) + ' HYPE';
 const decStr = (r) => {
   const h = strip(r);
   const utf = (x) => Buffer.from(x, 'hex').toString('utf8').replace(/\0/g, '');
@@ -1352,6 +1352,22 @@ async function priceOf(t, r) {
   const m = await tokenMeta(t);
   const q = await quoteBuy(r, t, PROBE);
   return q > 0n ? num(PROBE) / num(q, m.d) : null;
+}
+const fin = (x) => (Number.isFinite(x) ? x : 0);
+// a node's "execution reverted", on its own or inside a race's AggregateError
+const revertedAny = (e) => [e, ...(e?.errors || [])].some(reverted);
+// what a bag sells for right now: the sell quote for the whole balance, { v: HYPE, stuck }. A coin whose pool was
+// emptied (VELOM's rug, Nov 9) or that only sells through someone else's router (AKA) is worth 0 and stuck. Bags
+// used to be valued at their buy price, and 0.01 HYPE over a zero buy quote made those two Infinity in the nightly
+// report. null when the nodes gave no answer this time (the last value stands).
+async function bagValue(r, t, bal) {
+  if (!r) return null;
+  try {
+    const out = await quoteSellOut(r, t, bal);
+    return out > 0n ? { v: num(out), stuck: false } : { v: 0, stuck: true };
+  } catch (e) {
+    return revertedAny(e) ? { v: 0, stuck: true } : null;
+  }
 }
 // the coin's creator: whoever sent the transaction that opened its first native-HYPE pool (launchpad coins are
 // created and opened in one transaction). null when unknown.
@@ -2923,7 +2939,7 @@ async function balances() {
   for (const [t, bal] of held.slice(0, 10)) {
     const m = await tokenMeta(t);
     let v = '';
-    try { const r = await findRoute(t); const p = await quoteBuy(r, t, 10n ** 16n); const h = num(bal, m.d) * (0.01 / num(p, m.d)); v = ` ≈ ${fmtH(h)}`; } catch {}
+    try { const bv = await bagValue(await findRoute(t), t, bal); if (bv) v = bv.stuck ? ' · no exit (cannot be sold)' : ` ≈ ${fmtH(bv.v)}`; } catch {}
     lines.push(`• ${esc(m.sym)}: ${fmt(num(bal, m.d))}${v} · /c_${t.slice(2, 10)}`);
   }
   lines.push(`Max per buy ${cfg().max} HYPE · slippage ${Number(cfg().slip) / 100}%`);
@@ -2937,7 +2953,7 @@ async function pnl() {
     let now = 0;
     try {
       const bal = await balOf(t);
-      if (bal > 0n) { const m = await tokenMeta(t); const r = await findRoute(t); const q = await quoteBuy(r, t, 10n ** 16n); now = num(bal, m.d) * (0.01 / num(q, m.d)); }
+      if (bal > 0n) { const bv = await bagValue(await findRoute(t), t, bal); now = bv ? bv.v : fin(p.now ?? 0); }
     } catch {}
     const pl = now + p.hypeOut - p.hypeIn;
     tin += p.hypeIn; tout += p.hypeOut; tnow += now;
@@ -2966,20 +2982,19 @@ async function valuePositions() {
     if (!(p.hypeIn > 0)) continue;
     try {
       const bal = await balOf(t);
-      if (bal === 0n) { p.now = 0; p.nowAt = Date.now(); p.open = false; continue; }
-      const m = await tokenMeta(t);
-      const r = await findRoute(t);
-      if (!r) continue;
-      const q = await quoteBuy(r, t, 10n ** 16n);
-      p.now = num(bal, m.d) * (0.01 / num(q, m.d));
+      if (bal === 0n) { p.now = 0; p.nowAt = Date.now(); p.open = false; p.stuck = undefined; continue; }
+      const bv = await bagValue(await findRoute(t), t, bal);
+      if (!bv) { if (!Number.isFinite(p.now)) p.now = 0; continue; }
+      p.now = bv.v;
+      p.stuck = bv.stuck || undefined;
       p.nowAt = Date.now();
-      p.peak = Math.max(p.peak || 0, p.now + (p.hypeOut || 0)); // best total value this trade ever showed
+      p.peak = Math.max(fin(p.peak), p.now + (p.hypeOut || 0)); // best total value this trade ever showed
     } catch {}
   }
   save();
   if (Object.keys(state.mine).length) await mineValue().catch((e) => console.error('mine value', e.message));
 }
-const pct = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(0)}%`;
+const pct = (x) => (Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${(x * 100).toFixed(0)}%` : '?');
 const mcBucket = (usdMc) => (usdMc == null ? null : usdMc < 5e3 ? 'under $5K' : usdMc < 20e3 ? '$5K to $20K' : usdMc < 100e3 ? '$20K to $100K' : 'over $100K');
 const sizeBucket = (h) => (h < 1 ? 'under 1 HYPE' : h <= 2.01 ? '1 to 2 HYPE' : h <= 5 ? '2 to 5 HYPE' : 'over 5 HYPE');
 const holdBucket = (ms) => (ms == null ? null : ms < 15 * 60000 ? 'under 15 min' : ms < 2 * 3600e3 ? '15 min to 2 h' : 'over 2 h');
@@ -2993,8 +3008,8 @@ function stats(sinceMs = 0, who = 'all') {
     for (const c of coins) {
       const p = state.pos[c];
       if (!p || !(p.hypeIn > 0)) continue;
-      const pl = (p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn;
-      rows.push({ c, sym: p.sym, inv: p.hypeIn, out: p.hypeOut || 0, now: p.now ?? 0, pl, r: pl / p.hypeIn, src: p.src || 'card', mc0: p.mc0Usd ?? null, peak: p.peak || 0, open: (p.now ?? 0) > 0.0005, first: p.first, lastSell: p.lastSell });
+      const now = fin(p.now ?? 0), pl = now + (p.hypeOut || 0) - p.hypeIn;
+      rows.push({ c, sym: p.sym, inv: p.hypeIn, out: p.hypeOut || 0, now, pl, r: pl / p.hypeIn, src: p.src || 'card', mc0: p.mc0Usd ?? null, peak: fin(p.peak), open: now > 0.0005, first: p.first, lastSell: p.lastSell });
     }
   }
   // your wallets: one row per wallet and coin, with how far the coin ran after the first buy (pk), how far it had
@@ -3003,7 +3018,7 @@ function stats(sinceMs = 0, who = 'all') {
     if (!state.mine[w] || !wantW(w)) continue;
     for (const [c, p] of Object.entries(ps)) {
       if (!(p.hypeIn > 0) || (p.lastBuy || p.first || 0) < sinceMs) continue;
-      const now = p.open ? p.now ?? 0 : 0;
+      const now = p.open ? fin(p.now ?? 0) : 0;
       const pl = now + p.hypeOut - p.hypeIn;
       const entry = p.tokIn > 0 ? p.hypeIn / p.tokIn : null, exit = p.tokOut > 0 ? p.hypeOut / p.tokOut : null;
       const pk = p.pkPx && entry ? Math.max(1, p.pkPx / entry) : null;
@@ -3158,9 +3173,12 @@ async function dailyReport(force = true) {
   await valuePositions();
   const [px, hb] = await Promise.all([hypeUsd(), hypeBal().catch(() => 0n)]);
   const hype = num(hb);
-  const open = Object.values(state.pos).filter((p) => (p.now ?? 0) > 0.0005).sort((a, b) => b.now - a.now);
+  const open = Object.values(state.pos).filter((p) => fin(p.now ?? 0) > 0.0005).sort((a, b) => b.now - a.now);
+  // bags with no exit (an emptied pool, sells blocked): worth 0, named so they are not mistaken for gone
+  const stuck = Object.values(state.pos).filter((p) => p.stuck && p.open !== false && p.hypeIn > 0);
   const value = hype + open.reduce((a, p) => a + p.now, 0);
   const today = new Date().toISOString().slice(0, 10);
+  state.equity = state.equity.filter((e) => Number.isFinite(e.v)); // the Infinity night of Nov 9 saved as null
   const prev = state.equity[state.equity.length - 1];
   state.equity = state.equity.filter((e) => e.d !== today).concat([{ d: today, v: value }]).slice(-120);
   save();
@@ -3177,7 +3195,8 @@ async function dailyReport(force = true) {
   const ch = prev && prev.d !== today ? value - prev.v : null;
   const mineOpen = Object.entries(state.mpos).filter(([w]) => state.mine[w]).flatMap(([w, ps]) => Object.values(ps).filter((p) => p.open && (p.now ?? 0) > DUST).map((p) => ({ w, p }))).sort((a, b) => b.p.now - a.p.now);
   const text = `📒 <b>Daily report</b> · wallet ${fmtH(value)}${usd(value, px)}${ch != null ? ` (${ch >= 0 ? '+' : ''}${fmtH(ch)} vs ${prev.d})` : ''}\n` +
-    `Free HYPE ${fmtH(hype)} · ${open.length} open bag${open.length === 1 ? '' : 's'}\n\n` +
+    `Free HYPE ${fmtH(hype)} · ${open.length} open bag${open.length === 1 ? '' : 's'}\n` +
+    (stuck.length ? `Stuck, no exit (counted as 0): ${stuck.map((p) => `${esc(p.sym)} (${fmtH(p.hypeIn)} in)`).join(', ')}\n` : '') + '\n' +
     statsText(s, 'Last 24h', px) +
     (open.length ? `\n<b>Open bags</b>\n${open.slice(0, 8).map((p) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
     (mineOpen.length ? `\n<b>Open bags in your wallets</b> · ${fmtH(mineOpen.reduce((a, x) => a + x.p.now, 0))}\n${mineOpen.slice(0, 8).map(({ w, p }) => { const r = ((p.now ?? 0) + (p.hypeOut || 0) - p.hypeIn) / p.hypeIn; return `• ${esc(p.sym)}${Object.keys(state.mine).length > 1 ? ` (${esc(mineName(w))})` : ''} ${fmtH(p.now)} · ${pct(r)}`; }).join('\n')}\n` : '') +
