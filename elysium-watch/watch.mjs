@@ -274,6 +274,19 @@ const KHYPE = '0x248888d396a546a69a188f3deb476964e581e9d0';
 const ASCEND_HOOK = '0xe0def4221b9840a610d4e7d55812a79a6431a8ec';
 const KHYPE_FIRST = 5; // the first kHYPE-paired coins post on their own, wherever they launch
 const KHYPE_BRIDGE_MIN = 5000; // a kHYPE bridge-in this size or more posts (100K landed in one wallet on Nov 9, 17:47)
+// Ascend's kHYPE contracts, deployed Nov 9 by its deployer (0x4a6f…53d2), each kind twice or three times: routers that pay
+// in kHYPE through Metric, buyers that spend kHYPE staking yield on launch coins, and a fee treasury that stakes into
+// kHYPE. A kHYPE-backed launch can be a plain WHYPE coin one of them buys into, so their first trades post on their own
+// (whatever the coin is paired with), and so does the first activity on the kHYPE vaults
+const KHYPE_TRADERS = new Map([
+  ['0x490f636334ae3af1b8e5190d039cee2acd4ed243', 'kHYPE router'],
+  ['0xa72af812d8813d305da024348988b8f157f0acc8', 'kHYPE router'],
+  ['0xe8a8174d8df53f21637837180084f44c085eff31', 'kHYPE router'],
+  ['0xa6e04dba15c64b93b2d4293657a364ff0789b7a6', 'kHYPE yield buyer'],
+  ['0xb7ce02b37a2cc45483a2e059d59224151464d09d', 'kHYPE yield buyer'],
+  ['0xd6ba402ba96d4d98e404751513719279d45ec22c', 'kHYPE treasury'],
+]);
+const KHYPE_VAULTS = new Set(['0xc4062f73312625def7b198e94a1e1a7a8d40b4ef', '0x59e85680626f8d78fdc9f3e91b084ec37ffb988e']);
 // v4 pool → { t: coin, q: quote token, inv: 1 when the quote is currency1 }. Native HYPE and WHYPE pools are
 // HYPE-quoted. A pool between two tokens (Kleos coins paired with BLOB) is quoted in the side that already has a
 // HYPE price, so its trades are valued through that token instead of being read as HYPE.
@@ -916,6 +929,33 @@ Its coins now count as Obol launches.
       (rec.creator ? `Launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}\n` : '') +
       `<code>${coin}</code>\n${coinLink(state, coin)}`);
     bump('khype pair');
+  }
+  // kHYPE-backed trades: the first coins Ascend's kHYPE routers, yield buyers and treasury trade (a v4 Swap's sender is
+  // the contract that called the pool manager), and the first activity on each kHYPE vault
+  state.khype.coins ||= [];
+  state.khype.vault ||= {};
+  for (const l of logs) {
+    if (l.topics[0] === T_SWAP_V4 && l.topics.length >= 3) {
+      const who = lc(topicAddr(l.topics[2]));
+      const kind = KHYPE_TRADERS.get(who);
+      if (!kind || state.khype.coins.length >= KHYPE_FIRST) continue;
+      const id = lc(l.topics[1]);
+      const coin = state.pools[id]?.t || null;
+      const key = coin || id;
+      if (state.khype.coins.includes(key)) continue;
+      state.khype.coins.push(key);
+      if (firstRun) continue;
+      const meta = coin ? await tokenMeta(state, coin) : null;
+      msgs.push(`🟣 <b>kHYPE-backed trade #${state.khype.coins.length}${meta ? `: ${esc(meta.s)}` : ''}</b>${meta ? ` (${esc(meta.n)})` : ''}\n` +
+        `First trade in this coin by Ascend's ${kind} ${walletLink(who)}${txLink(l.transactionHash)}\n` +
+        (coin ? `<code>${coin}</code>\n${coinLink(state, coin)}` : `Pool <code>${id}</code>`));
+      bump('khype backed');
+    } else if (KHYPE_VAULTS.has(lc(l.address)) && !state.khype.vault[lc(l.address)]) {
+      state.khype.vault[lc(l.address)] = now();
+      if (firstRun) continue;
+      msgs.push(`🟣 <b>Ascend's kHYPE vault is active</b>\nFirst activity on ${walletLink(lc(l.address))}${txLink(l.transactionHash)}`);
+      bump('khype vault');
+    }
   }
   // launchpads new to Elysium: their first coin that isn't a test posts, nothing after that
   let newLpAlerts = 0, newLpChecks = 0;
