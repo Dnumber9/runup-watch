@@ -1373,6 +1373,9 @@ Its coins now count as Obol launches.
         const batch = W.has(f) && val > 0 && (tx.input || '0x') !== '0x' ? batchSends(tx.input) : [];
         if (batch.calls) batch.length = 0; // a swap with a bot's fee beside it: a buy, shown from its token logs
         if (W.has(f) && batch.length >= 2) M(f).push(`<b>split ${hype(val)} across ${batch.length} wallets in one tx</b> (bundle funding pattern)${txLink(tx.hash)}`);
+        // HYPE sent to a WHYPE contract (a plain send or deposit()) is a wrap, not a payment to someone (KNTQ whale #1's
+        // 5K, Nov 9, before it put 1K WHYPE and 73K KNTQ into a Velodrome pool)
+        else if (W.has(f) && val >= WALLET_MIN_HYPE && to && WHYPE.has(to) && ((tx.input || '0x') === '0x' || tx.input.startsWith('0xd0e30db0'))) M(f).push(`wrapped ${hype(val)}${px ? ` (${usd(val * px)})` : ''} into WHYPE${txLink(tx.hash)}`);
         else if (W.has(f) && val >= WALLET_MIN_HYPE && to && !boughtTx.has(tx.hash)) M(f).push(`sent ${hype(val)}${px ? ` (${usd(val * px)})` : ''} to ${walletLink(to)}${W.has(to) ? ` (${esc(W.get(to))})` : ''}${txLink(tx.hash)}`);
         if (W.has(f) && to && !W.has(to) && !INFRA.has(to) && val >= FUND_MIN_HYPE && (tx.input || '0x') === '0x') funded.push({ f, to, val, hash: tx.hash });
         for (const x of batch) {
