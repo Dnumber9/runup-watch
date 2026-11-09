@@ -752,6 +752,7 @@ async function main() {
   const px = await hypeUsd(state);
   const toUsd = (h) => (px ? h * px : null);
   let msgs = [];
+  const notes = []; // ⛔ held-back group buys (trapWhy): sent after the muted-coin filter, since they name the coin they mute
   // alert tally for the log: counts by kind and by where the wallet came from (no addresses or names, the log is public)
   const repoSet = new Set(okW.map((w) => lc(w.address)));
   const srcOf = (w) => (state.manual[w] ? 'manual' : repoSet.has(w) ? 'repo' : !state.auto[w] ? 'other' : state.auto[w].from === 'bridge' ? 'bridger' : state.auto[w].from === 'cielo' ? 'cielo' : 'alt');
@@ -1132,6 +1133,8 @@ Its coins now count as Obol launches.
   let fast = null;
   try { fast = JSON.parse(fs.readFileSync(FAST, 'utf8')); if (now() - (fast.at || 0) > 300) fast = null; } catch {}
   const fastSent = fast?.sent || {};
+  // sell traps the fast lane held back stay muted here too (unless /unmutecoin brought one back)
+  for (const [c, x] of Object.entries(fast?.trap || {})) if (x?.why && !state.unmutedCoins?.[c]) (state.mutedCoins ||= {})[c] ||= x.t;
 
   // 4. tracked wallets
   if (W.size) {
@@ -1370,7 +1373,7 @@ Its coins now count as Obol launches.
       if (eg) { (exitRows[eg] ||= []).push({ w, list }); continue; }
       const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
       // ⚡ buttons for the coin it just bought or launched (one tap through the trade bot when it is set up)
-      msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
+      msgs.push(lastBuy[w] && !noQuickBuy(state.tok[lastBuy[w]], state.trap?.[lastBuy[w]]) ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
     }
     // exit watch: one alert per group, headed by what it sold or moved out and what the whole group still holds
     for (const [g, items] of Object.entries(exitRows)) {
@@ -1441,6 +1444,13 @@ Its coins now count as Obol launches.
     const cv = onCurve ? state.hyper?.curves?.[t.slice(2)] : null;
     const meta = onCurve ? { s: cv?.s || '???' } : await tokenMeta(state, t);
     const rec = onCurve ? null : state.tok[t];
+    // a sell trap or a coin on its own pool: muted with one ⛔ line instead of the group buy (trapWhy)
+    const trap = onCurve || state.unmutedCoins?.[t] || state.unmutedCoins?.[coinKey(meta.s)] ? null : await trapWhy(state, t, rec, Object.entries(state.pools), head);
+    if (trap) {
+      (state.mutedCoins ||= {})[t] ||= now();
+      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap));
+      continue;
+    }
     const mcH = onCurve ? cv?.mc : rec?.price && meta.supply ? rec.price * meta.supply : null;
     msgs.push(
       `🎯 <b>${g === '*' ? `${n} tracked ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}` : `${esc(g)} group, ${n} ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
@@ -1588,6 +1598,7 @@ Its coins now count as Obol launches.
   const before = msgs.length;
   msgs = dropMutedCoins(msgs, cm);
   if (before > msgs.length) bump('muted coin', before - msgs.length);
+  msgs.push(...notes);
   for (const m of msgs) await tg(m);
   const tallied = Object.entries(tally).filter(([k]) => /^(wallet|new)\//.test(k)).reduce((s, [, v]) => s + v, 0);
   if (msgs.length > tallied) bump('other', msgs.length - tallied);
@@ -1784,6 +1795,48 @@ function dropMutedCoins(msgs, cm) {
   }
   return out;
 }
+
+// ── sell traps, checked before a 🎯 group buy goes out (Nov 9, after AKA) ──────────────────────
+// AKA 0x533558ffe2f5db68375400505f1173953622b121 was a custom token on its own hookless v4 pool. All 79 wallets that
+// ever sold it had bought through the router its team deployed half an hour before it. The 50 that bought through
+// any other router (Elyxa, the aggregators, Nadir's) never got out, and the pool was drained. Two tells:
+// - a v4 pool with no hook, so no launchpad holds the liquidity and whoever added it can pull it
+// - sells that all go through one router while buyers come through others, or many buys and not one sell
+// A coin showing either gets no group buy and is muted (its 👛 lines go quiet too, /unmutecoin brings it back),
+// with one ⛔ line saying why. A 👛 buy of such a coin carries no quick-buy button.
+const TRAP_SELLS = 15;       // sells, every one through the same router...
+const TRAP_OTHER_BUYS = 20;  // ...while this many buys came through other routers
+const TRAP_NO_SELL = 30;     // or this many buys and not one sell, 10+ min after launch
+const TRAP_BACK = 60000;     // blocks of swaps read per pool (about 1.5 h)
+async function trapWhy(box, t, rec, pools, head) {
+  box.trap ||= {};
+  const c = box.trap[t];
+  if (c && (c.why || now() - c.t < 600)) return c.why ? { why: c.why, trap: c.trap, seen: true } : null;
+  const why = [];
+  let trap = false;
+  try {
+    let buys = 0, sells = 0;
+    const sellBy = {}, buyBy = {};
+    for (const [id, p] of pools.filter(([, p]) => p?.t === t).slice(0, 4)) {
+      if (!/^0x[0-9a-f]{40}$/.test(p.lp || '')) continue;
+      for (const l of await getLogs({ address: p.lp, topics: [T_SWAP_V4, id] }, Math.max(p.b || 0, head - TRAP_BACK), head, 2000)) {
+        // the quote side paid in (below zero) is a buy, paid out a sell; topic 2 is the router that swapped
+        const w = words(l.data), r = lc(topicAddr(l.topics[2])), qd = int256(p.inv ? w[1] : w[0]);
+        if (qd < 0n) { buys++; buyBy[r] = (buyBy[r] || 0) + 1; } else if (qd > 0n) { sells++; sellBy[r] = (sellBy[r] || 0) + 1; }
+      }
+    }
+    const sr = Object.keys(sellBy);
+    const other = sr.length === 1 ? buys - (buyBy[sr[0]] || 0) : 0;
+    if (sells >= TRAP_SELLS && sr.length === 1 && other >= TRAP_OTHER_BUYS) { trap = true; why.push(`all ${sells} sells went through one router (<code>${sr[0]}</code>) while ${other} buys came through others`); }
+    if (!sells && buys >= TRAP_NO_SELL && now() - (rec?.born || now()) >= 600) { trap = true; why.push(`${buys} buys and not one sell`); }
+  } catch (e) { console.log('trap check failed:', e.message); }
+  if (rec?.hook === ZERO) why.push('it sits on its own v4 pool with no launchpad hook, so whoever added the liquidity can pull it');
+  box.trap[t] = { t: now(), why: why.join(', and ') || null, trap };
+  for (const [k, x] of Object.entries(box.trap)) if (!x.why && now() - x.t > 3600) delete box.trap[k];
+  return why.length ? { why: box.trap[t].why, trap } : null;
+}
+const trapLine = (meta, t, who, x) => `⛔ <b>${esc(meta.s)}</b> group buy held back (${who}). ${x.why[0].toUpperCase() + x.why.slice(1)}. ${x.trap ? 'Looks like a sell trap' : 'Not a launchpad coin'}, muted. /unmutecoin ${t} brings it back\n<code>${t}</code>`;
+const noQuickBuy = (rec, trap) => rec?.hook === ZERO || !!trap?.why;
 
 // ── Telegram commands on the separate command bot (WATCH_BOT_TOKEN), checked once per scan ─────────
 // /add <address> [label] [group]   /remove <address>   /list   /export   /help
@@ -2254,10 +2307,12 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     const seen = new Set();
     for (let i = list.length - 1; i >= 0; i--) list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
     const text = `👛 <b>${esc(W.get(w))}</b> · ${walletLink(w)}\n` + list.slice(0, 12).map((x) => '• ' + x).join('\n') + (list.length > 12 ? `\n…and ${list.length - 12} more` : '');
-    msgs.push(lastBuy[w] ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
+    msgs.push(lastBuy[w] && !noQuickBuy(LIVE_TOKS[lastBuy[w]] || st.tok[lastBuy[w]], fst.trap?.[lastBuy[w]]) ? { text, buttons: buyButtons('e', lastBuy[w]) } : text);
     lagFrom.push(firstBlock[w]);
   }
   // group buys, the same rules as the main scan (one owner = one buyer, cooldown, re-ping when more pile in)
+  const notes = []; // ⛔ held-back group buys (trapWhy), sent after the muted-coin filter
+  const topB = logs.reduce((m, l) => Math.max(m, parseInt(l.blockNumber, 16)), 0);
   for (const [k, list] of Object.entries(fst.gbuys)) {
     const recent = list.filter((x) => now() - x.t <= GROUP_WINDOW_MIN * 60 && !view.muted[x.w]);
     if (!recent.length) { delete fst.gbuys[k]; continue; }
@@ -2278,6 +2333,12 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     const tot = Object.values(byW).reduce((a, b) => a + b, 0);
     const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
     const meta = await tokenMeta(metaBox, t);
+    // a sell trap or a coin on its own pool: muted with one ⛔ line instead of the group buy (trapWhy)
+    const trap = st.unmutedCoins?.[t] || st.unmutedCoins?.[coinKey(meta.s)] ? null : await trapWhy(fst, t, LIVE_TOKS[t] || st.tok[t], [...Object.entries(st.pools), ...Object.entries(fst.pools)], topB);
+    if (trap) {
+      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap));
+      continue;
+    }
     const price = priceOf(t);
     const mcH = price && meta.supply ? price * meta.supply : null;
     msgs.push({
@@ -2295,10 +2356,12 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     });
     lagFrom.push(null);
   }
-  if (!msgs.length) return;
+  if (!msgs.length && !notes.length) return;
   const nBefore = msgs.length;
-  msgs = dropMutedCoins(msgs, coinMutes({ mutedCoins: { ...(st.mutedCoins || {}) }, unmutedCoins: { ...(st.unmutedCoins || {}) } }));
+  const trapMutes = Object.fromEntries(Object.entries(fst.trap || {}).filter(([, x]) => x?.why).map(([c, x]) => [c, x.t]));
+  msgs = dropMutedCoins(msgs, coinMutes({ mutedCoins: { ...(st.mutedCoins || {}), ...trapMutes }, unmutedCoins: { ...(st.unmutedCoins || {}) } }));
   if (msgs.length !== nBefore) lagFrom.length = 0; // a muted alert dropped out: skip this batch's timing sample
+  msgs.push(...notes);
   stats.tBuild.push(Date.now() - tb);
   // send first, time it, then work out the chain-to-Telegram delay (block of the first trade in each 👛 alert → sent)
   const sentAt = [];
