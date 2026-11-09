@@ -871,7 +871,9 @@ async function checkAscendRpc(g, msgs) {
 
 async function checkDocs(g, msgs) {
   const st = (g.web.docs ||= {});
-  const pages = ['/docs/connecting-to-elysium', '/docs/contract-addresses', '/ecosystem', '/ecosystem/ascend', '/ecosystem/signal', '/explorer'];
+  // /explorer left out (Nov 9): since mainnet it is the live block explorer, so its "new addresses" were just the
+  // latest transactions (bot wallets, the Universal Router), not docs
+  const pages = ['/docs/connecting-to-elysium', '/docs/contract-addresses', '/ecosystem', '/ecosystem/ascend', '/ecosystem/signal'];
   const res = await pmap(pages, 3, (p) => web('https://elysium.kinetiq.xyz' + p));
   if (res.every((r) => !r || blocked(r))) throw new Error(`blocked from GitHub's servers (HTTP ${res.find(Boolean)?.status || '?'})`);
   const cur = {};
