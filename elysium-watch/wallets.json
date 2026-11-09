@@ -1500,47 +1500,47 @@
  },
  {
   "address": "0xb1004644cf3991266fec642688a860cdcdff2a5e",
-  "label": "Ascend teammate? alt (made the new launchpad multisig)",
+  "label": "Ascend teammate alt (made the launchpad multisig)",
   "group": "ascendteam"
  },
  {
   "address": "0xb6832e477e9b34a826a9726d61690c8bac8868b5",
-  "label": "Ascend? multisig 3 of 5 (owns the new launchpad)",
+  "label": "Ascend multisig 3 of 5 (owns the launchpad)",
   "group": "ascendteam"
  },
  {
   "address": "0x4a6fd6b7036f255d4575c874710b36bd6aa853d2",
-  "label": "Ascend? deployer (new launchpad and hook, Nov 4)",
+  "label": "Ascend deployer (launchpad and hook, Nov 4)",
   "group": "ascendteam"
  },
  {
   "address": "0x83465a12f87a6b5e9593b2fbafc79b4711fd1d60",
-  "label": "Ascend? funder (paid the new deployer 15.6 HYPE)",
+  "label": "Ascend funder (paid the deployer 15.6 HYPE)",
   "group": "ascendteam"
  },
  {
   "address": "0x6ba8736ac937e13d5ea03f880609d5617dcce205",
-  "label": "Ascend? multisig signer 1",
+  "label": "Ascend multisig signer 1",
   "group": "ascendteam"
  },
  {
   "address": "0x3e24e25d7719f0cb606570dac3d6370b90961c07",
-  "label": "Ascend? multisig signer 2",
+  "label": "Ascend multisig signer 2",
   "group": "ascendteam"
  },
  {
   "address": "0xb6f4f759793181541667162fe01821ab513bf20a",
-  "label": "Ascend? multisig signer 3",
+  "label": "Ascend multisig signer 3",
   "group": "ascendteam"
  },
  {
   "address": "0xf6a669c6dd3f22182dc4437ae5c2bad1b5b351fd",
-  "label": "Ascend? multisig signer 4",
+  "label": "Ascend multisig signer 4",
   "group": "ascendteam"
  },
  {
   "address": "0xdd97993ff13e6e55b69a03e498674997b05d37ac",
-  "label": "Ascend? multisig signer 5",
+  "label": "Ascend multisig signer 5",
   "group": "ascendteam"
  },
  {
@@ -3182,5 +3182,85 @@
    "0x7701a31c0b3815fe6d09a8a313967c5977a5fa7a"
   ],
   "cluster": false
+ },
+ {
+  "address": "0x561fdf54681dca446596d748554ab447a49987ed",
+  "label": "Ascend ops wallet (made the guardian Safe and 3 other Safes)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xa50c6bf1df003411eea1107649435b988d16a79a",
+  "label": "Ascend price feed deployer (ops wallet alt)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xc1c6749d1280255f28d5aed8a8ec451f95868a80",
+  "label": "Ascend rewards guardian Safe 2 of 3",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xd1561d09fa7517b7e8ae38d841fad87892bfbbef",
+  "label": "Ascend guardian Safe signer (ops wallet alt)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x9649f8d8bc1d35f43348452e09b4c9d48e789b9c",
+  "label": "Ascend guardian Safe signer",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x969558112fd33e90e2e8c9bd5abed7fbaac6d9d8",
+  "label": "Ascend Safe 2 of 3 (signers 1, 3, 4; Nov 7)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x2e60ef947aaa889a0ac690b0cc2bc18a0abcb633",
+  "label": "Ascend Safe 2 of 3 (signers 1, 3, 4; Nov 9 07:20)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xefaa18d618ba8d581abecc6db8474a53065e193e",
+  "label": "Ascend Safe 2 of 3 (signers 1, 3, 4; Nov 9 10:23)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xf4f594cfce1bfd99bfcde648a0c8235cb3654dfb",
+  "label": "Ascend ops wallet alt f4f5",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xb143136a85d199c250d6aea240470d609c4cfaff",
+  "label": "Ascend ops wallet alt b143",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x2359add19d366a8f95cef75574ca9c76b517c34a",
+  "label": "Ascend ops wallet alt 2359",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x303f8fc7bbc53d0d4a98d7ec03f714e65d9360f5",
+  "label": "Ascend ops wallet alt 303f",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xaab7ea17038d9aeae9da13afce4feaf771b5a039",
+  "label": "Ascend ops wallet alt aab7",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x01e7a1b1e4d8c47be421c36d0b8165d2df49e9ea",
+  "label": "Ascend ops wallet alt 01e7",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0x81a1566dddf4ce0705ae6d09571561e3f3825fde",
+  "label": "Ascend wallet the multisig set on the launcher (Nov 8)",
+  "group": "ascendteam"
+ },
+ {
+  "address": "0xc547ff560f67157960a1f5e2adcfbfd5695089dc",
+  "label": "Ascend weekly rewards contract (pings when funded)",
+  "group": "ascendteam"
  }
 ]
