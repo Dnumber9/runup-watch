@@ -5,7 +5,7 @@
 //      every new coin, which launchpad, who launched it.
 //   2. v4 and v3 Swap events, valued in HYPE, rolled up per coin: volume, buy share, unique buyers.
 //   3. Tracked wallets (wallets.json): swaps, token transfers, HYPE moves, contract deploys, launches.
-// Alerts go to Telegram: launches that get real traction, volume runs, tracked-wallet moves,
+// Alerts go to Telegram: launches that get real traction, tracked-wallet moves (volume-run alerts were removed Nov 9),
 // a brand-new launchpad appearing, the official mainnet RPC opening, and a digest every few hours.
 // gate.mjs runs on the same blocks every tick to catch Ascend and Signal the moment they go live.
 // `node watch.mjs --fast` is the fast lane beside it: tracked-wallet buys, sells and group buys within seconds
@@ -1064,24 +1064,7 @@ Its coins now count as Obol launches.
       }
     }
 
-    // volume run against the coin's own baseline
-    if (state.runs < WARMUP_RUNS || firstRun) continue;
-    const paceUsd = toUsd(pace);
-    if (paceUsd == null || paceUsd < RUN_MIN_USD_H || r.swaps < RUN_MIN_SWAPS || r.buyers.size < RUN_MIN_BUYERS) continue;
-    const share = r.vol ? r.buyVol / r.vol : 0;
-    if (share < RUN_MIN_BUY_SHARE) continue;
-    if (prev != null && pace < RUN_MULT * Math.max(prev, 1)) continue;
-    if (!due(state, 'c:' + t)) continue;
-    state.alerted['c:' + t] = { t: now() };
-    const so = await socials(t);
-    msgs.push(
-      `🔥 <b>${esc(meta.s)}</b> (${esc(meta.n)}) volume run on ${lpName}\n` +
-      `${usd(paceUsd)}/h pace · ${r.swaps} swaps · ${r.buyers.size} buyers · ${Math.round(share * 100)}% buys (last ${Math.round(hours * 60)} min)\n` +
-      `${prev == null ? 'No baseline yet.' : `${(pace / Math.max(prev, 1e-9)).toFixed(1)}× its usual pace.`}\n` +
-      `${mcLine}${so.holders != null ? ` · ${so.holders} holders` : ''}${age != null ? ` · ${ago(age)} old` : ''}\n` +
-      `${so.line}\n<code>${t}</code>\n${coinLink(state, t)}`
-    );
-    msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
+    // (the 🔥 volume-run alerts were removed Nov 9; the pace baseline above is still kept per coin)
   }
 
   // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
