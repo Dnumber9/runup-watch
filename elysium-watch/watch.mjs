@@ -1043,29 +1043,9 @@ Its coins now count as Obol launches.
     const mcLine = mcH ? `MC ${px ? usd(mcH * px) : hype(mcH)}` : 'MC n/a';
     const lpName = lpNameOf(rec);
 
-    // launch with traction: first hours only, once per coin
-    if (age != null && age < LAUNCH_WINDOW_H * 3600 && !rec.launchAlert && !firstRun) {
-      const volUsd = toUsd(rec.vol) ?? 0;
-      const share = rec.vol ? rec.buyVol / rec.vol : 0;
-      const busy = LAUNCHPADS[rec.lp]?.busy;
-      if (rec.buyers.length >= (busy ? BUSY_MIN_BUYERS : LAUNCH_MIN_BUYERS) && volUsd >= (busy ? BUSY_MIN_USD : LAUNCH_MIN_USD) && share >= LAUNCH_MIN_BUY_SHARE) {
-        rec.launchAlert = now();
-        state.alerted['c:' + t] = { t: now() };
-        const so = await socials(t);
-        const creator = rec.creator ? `\nLaunched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}` : '';
-        msgs.push(
-          `🚀 <b>${esc(meta.s)}</b> (${esc(meta.n)}) is taking off on ${lpName}\n` +
-          `${ago(age)} old · ${rec.buyers.length} buyers · ${usd(volUsd)} volume · ${Math.round(share * 100)}% buys\n` +
-          `${mcLine}${so.holders != null ? ` · ${so.holders} holders` : ''}${so.top10 != null ? ` · top 10 hold ${so.top10.toFixed(0)}%` : ''}\n` +
-          `${so.line}${creator}\n` +
-          `<code>${t}</code>\n${coinLink(state, t)}`
-        );
-        msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons('e', t) };
-        continue;
-      }
-    }
-
-    // (the 🔥 volume-run alerts were removed Nov 9; the pace baseline above is still kept per coin)
+    // (the 🚀 "taking off" trending alerts and the 🔥 volume-run alerts were removed Nov 9: no trending coins.
+    // The pace baseline and buyer lists above are still kept per coin for the other alerts.)
+    void meta; void mcLine; void lpName;
   }
 
   // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
@@ -1134,7 +1114,9 @@ Its coins now count as Obol launches.
   try { fast = JSON.parse(fs.readFileSync(FAST, 'utf8')); if (now() - (fast.at || 0) > 300) fast = null; } catch {}
   const fastSent = fast?.sent || {};
   // sell traps the fast lane held back stay muted here too (unless /unmutecoin brought one back)
-  for (const [c, x] of Object.entries(fast?.trap || {})) if (x?.why && !state.unmutedCoins?.[c]) (state.mutedCoins ||= {})[c] ||= x.t;
+  for (const [c, x] of Object.entries(fast?.trap || {})) if (x?.trap && !state.unmutedCoins?.[c]) (state.mutedCoins ||= {})[c] ||= x.t;
+  // own-pool coins without sell-trap evidence were muted by the first version of this check (ELYSINO): unmute them
+  for (const [c, x] of Object.entries({ ...(state.trap || {}), ...(fast?.trap || {}) })) if (x?.why && !x.trap && state.mutedCoins?.[c] && Math.abs(state.mutedCoins[c] - x.t) <= 5) delete state.mutedCoins[c];
 
   // 4. tracked wallets
   if (W.size) {
@@ -1444,27 +1426,30 @@ Its coins now count as Obol launches.
     const cv = onCurve ? state.hyper?.curves?.[t.slice(2)] : null;
     const meta = onCurve ? { s: cv?.s || '???' } : await tokenMeta(state, t);
     const rec = onCurve ? null : state.tok[t];
-    // a sell trap or a coin on its own pool: muted with one ⛔ line instead of the group buy (trapWhy)
+    const famText = Object.entries(fam).map(([r, f]) => {
+      const name = esc(W.get(r) || state.auto[r]?.label || short(r));
+      const amt = f.h > 0 ? ` ${hype(f.h)}` : '';
+      if (f.ws.length === 1) return `• ${walletLink(f.ws[0], esc(W.get(f.ws[0]) || short(f.ws[0])))}${amt}`;
+      const alts = f.ws.filter((w) => w !== r).length;
+      return f.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
+    }).join('\n');
+    // a sell trap: held back and muted, one ⛔ line naming who bought. A coin that only sits on its own pool still
+    // goes out, with a ⚠️ line and no quick-buy button (trapWhy)
     const trap = onCurve || state.unmutedCoins?.[t] || state.unmutedCoins?.[coinKey(meta.s)] ? null : await trapWhy(state, t, rec, Object.entries(state.pools), head);
-    if (trap) {
+    if (trap?.trap) {
       (state.mutedCoins ||= {})[t] ||= now();
-      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap));
+      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap, famText));
       continue;
     }
     const mcH = onCurve ? cv?.mc : rec?.price && meta.supply ? rec.price * meta.supply : null;
     msgs.push(
       `🎯 <b>${g === '*' ? `${n} tracked ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}` : `${esc(g)} group, ${n} ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}`}</b> bought <b>${esc(meta.s)}</b>${onCurve ? ' on its Stockium curve (HyperEVM)' : ''} within ${span} min\n` +
       `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
-      Object.entries(fam).map(([r, f]) => {
-        const name = esc(W.get(r) || state.auto[r]?.label || short(r));
-        const amt = f.h > 0 ? ` ${hype(f.h)}` : '';
-        if (f.ws.length === 1) return `• ${walletLink(f.ws[0], esc(W.get(f.ws[0]) || short(f.ws[0])))}${amt}`;
-        const alts = f.ws.filter((w) => w !== r).length;
-        return f.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
-      }).join('\n') +
-      (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${coinLink(state, t)}`)
+      famText +
+      (onCurve ? `\n<code>${cv?.token || t.slice(2)}</code>\n<a href="https://stockium.fun/token/${t.slice(2)}">open on Stockium</a>` : `\n<code>${t}</code>\n${coinLink(state, t)}`) +
+      (trap ? `\n${trapWarn(trap)}` : '')
     );
-    msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
+    if (!trap) msgs[msgs.length - 1] = { text: msgs[msgs.length - 1], buttons: buyButtons(t.startsWith('h:') ? 'h' : 'e', t.replace(/^h:/, '')) };
   }
 
   // 4d. Ascend and Signal going live: new contracts fingerprinted, team wallets, their pools, off-chain tells (gate.mjs)
@@ -1724,22 +1709,7 @@ async function stockium(state, W, G, msgs, px) {
     for (let i = list.length - 1; i >= 0; i--) list[i] = list[i].replace(/\u0000H:[^\u0000]+\u0000/g, (k) => (seen.has(k) ? '' : (seen.add(k), held[k] || '')));
     msgs.push(`👛 <b>${esc(W.get(w))}</b> · ${hyperLink(w)} (HyperEVM)\n` + list.slice(0, 8).map((x) => '• ' + x).join('\n'));
   }
-  for (const c of touched) {
-    const rec = H.curves[c];
-    if (!rec.valid || rec.tractionAlert || rec.graduated || firstScan) continue;
-    if (rec.born && now() - rec.born > CURVE_WINDOW_H * 3600) continue;
-    if (rec.buyers.length < CURVE_MIN_BUYERS || rec.vol < CURVE_MIN_HYPE) continue;
-    rec.tractionAlert = now();
-    await curveInfo(H, c);
-    const age = rec.born ? ` · ${ago(now() - rec.born)} old` : '';
-    msgs.push({
-      text: `🚀 <b>${esc(rec.s || '???')}</b> (${esc(rec.n || '')}) is moving on its Stockium curve (HyperEVM)\n` +
-        `${rec.buyers.length} buyers · ${usdOrHype(rec.vol)} traded${age}${rec.mc ? ` · MC ${usdOrHype(rec.mc)}` : ''}\n` +
-        `${rec.creator ? `Creator ${hyperLink(rec.creator)}${W.has(rec.creator) ? ` · 👛 <b>${esc(W.get(rec.creator))}</b>` : ''}\n` : ''}` +
-        `<code>${rec.token || c}</code>\n${stockiumLink(c)}`,
-      buttons: buyButtons('h', c),
-    });
-  }
+  // (the 🚀 "moving on its Stockium curve" trending alerts were removed Nov 9: no trending coins)
   // keep state small: forget quiet curves after 3 days
   for (const [c, rec] of Object.entries(H.curves)) if ((rec.born || H.started) < now() - 3 * 86400 && !touched.has(c)) delete H.curves[c];
 }
@@ -1835,7 +1805,10 @@ async function trapWhy(box, t, rec, pools, head) {
   for (const [k, x] of Object.entries(box.trap)) if (!x.why && now() - x.t > 3600) delete box.trap[k];
   return why.length ? { why: box.trap[t].why, trap } : null;
 }
-const trapLine = (meta, t, who, x) => `⛔ <b>${esc(meta.s)}</b> group buy held back (${who}). ${x.why[0].toUpperCase() + x.why.slice(1)}. ${x.trap ? 'Looks like a sell trap' : 'Not a launchpad coin'}, muted. /unmutecoin ${t} brings it back\n<code>${t}</code>`;
+const capFirst = (s) => s[0].toUpperCase() + s.slice(1);
+// a held-back group buy still says who bought, so the wallets can be judged by what they bought
+const trapLine = (meta, t, who, x, lines) => `⛔ <b>${esc(meta.s)}</b> group buy held back (${who}). ${capFirst(x.why)}. Looks like a sell trap, muted. /unmutecoin ${t} brings it back\n${lines}\n<code>${t}</code>`;
+const trapWarn = (x) => `⚠️ ${capFirst(x.why)}. No quick-buy on this one.`;
 const noQuickBuy = (rec, trap) => rec?.hook === ZERO || !!trap?.why;
 
 // ── Telegram commands on the separate command bot (WATCH_BOT_TOKEN), checked once per scan ─────────
@@ -2333,10 +2306,18 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     const tot = Object.values(byW).reduce((a, b) => a + b, 0);
     const span = Math.max(1, Math.round((Math.max(...recent.map((x) => x.t)) - Math.min(...recent.map((x) => x.t))) / 60));
     const meta = await tokenMeta(metaBox, t);
-    // a sell trap or a coin on its own pool: muted with one ⛔ line instead of the group buy (trapWhy)
+    const famText = Object.entries(fam).map(([r, x]) => {
+      const name = esc(W.get(r) || view.auto[r]?.label || short(r));
+      const amt = x.h > 0 ? ` ${hype(x.h)}` : '';
+      if (x.ws.length === 1) return `• ${walletLink(x.ws[0], esc(W.get(x.ws[0]) || short(x.ws[0])))}${amt}`;
+      const alts = x.ws.filter((w) => w !== r).length;
+      return x.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
+    }).join('\n');
+    // a sell trap: held back and muted, one ⛔ line naming who bought. A coin that only sits on its own pool still
+    // goes out, with a ⚠️ line and no quick-buy button (trapWhy)
     const trap = st.unmutedCoins?.[t] || st.unmutedCoins?.[coinKey(meta.s)] ? null : await trapWhy(fst, t, LIVE_TOKS[t] || st.tok[t], [...Object.entries(st.pools), ...Object.entries(fst.pools)], topB);
-    if (trap) {
-      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap));
+    if (trap?.trap) {
+      if (!trap.seen) notes.push(trapLine(meta, t, g === '*' ? `${n} tracked wallets` : `${esc(g)} group, ${n} wallets`, trap, famText));
       continue;
     }
     const price = priceOf(t);
@@ -2344,21 +2325,16 @@ async function fastTick({ logs, fst, st, view, poolOf, priceOf, metaBox, pxBox, 
     msgs.push({
       text: `🎯 <b>${g === '*' ? `${n} tracked ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}` : `${esc(g)} group, ${n} ${nW > n ? `buyers (${nW} wallets)` : 'wallets'}`}</b> bought <b>${esc(meta.s)}</b> within ${span} min\n` +
         `${tot > 0 ? `${hype(tot)}${px ? ` (${usd(tot * px)})` : ''} in` : ''}${mcH ? ` · MC ${px ? usd(mcH * px) : hype(mcH)}` : ''}\n` +
-        Object.entries(fam).map(([r, x]) => {
-          const name = esc(W.get(r) || view.auto[r]?.label || short(r));
-          const amt = x.h > 0 ? ` ${hype(x.h)}` : '';
-          if (x.ws.length === 1) return `• ${walletLink(x.ws[0], esc(W.get(x.ws[0]) || short(x.ws[0])))}${amt}`;
-          const alts = x.ws.filter((w) => w !== r).length;
-          return x.ws.includes(r) ? `• ${walletLink(r, name)} + ${alts} of its alts${amt}` : `• ${alts} alts of ${walletLink(r, name)}${amt}`;
-        }).join('\n') +
-        `\n<code>${t}</code>\n${coinLink(st, t)}`,
-      buttons: buyButtons('e', t),
+        famText +
+        `\n<code>${t}</code>\n${coinLink(st, t)}` +
+        (trap ? `\n${trapWarn(trap)}` : ''),
+      ...(trap ? {} : { buttons: buyButtons('e', t) }),
     });
     lagFrom.push(null);
   }
   if (!msgs.length && !notes.length) return;
   const nBefore = msgs.length;
-  const trapMutes = Object.fromEntries(Object.entries(fst.trap || {}).filter(([, x]) => x?.why).map(([c, x]) => [c, x.t]));
+  const trapMutes = Object.fromEntries(Object.entries(fst.trap || {}).filter(([, x]) => x?.trap).map(([c, x]) => [c, x.t]));
   msgs = dropMutedCoins(msgs, coinMutes({ mutedCoins: { ...(st.mutedCoins || {}), ...trapMutes }, unmutedCoins: { ...(st.unmutedCoins || {}) } }));
   if (msgs.length !== nBefore) lagFrom.length = 0; // a muted alert dropped out: skip this batch's timing sample
   msgs.push(...notes);
