@@ -267,6 +267,13 @@ const WHYPE = new Set([
   '0x9f041fad8323d7c5bf8f928aade05b610df34b64', // bonding curve 0xfee8
 ]);
 const isHype = (a) => a === ZERO || WHYPE.has(a);
+// Kinetiq staked HYPE, bridged in from HyperEVM. Ascend's hook can switch it on as a quote (quoteConfig, off on Nov 9),
+// and the router and rate checker Ascend's deployer pushed on Nov 9 swap HYPE into it on Metric. It has no HYPE pool,
+// so no price: a pool between kHYPE and a coin is quoted in kHYPE, and the coin is the other side
+const KHYPE = '0x248888d396a546a69a188f3deb476964e581e9d0';
+const ASCEND_HOOK = '0xe0def4221b9840a610d4e7d55812a79a6431a8ec';
+const KHYPE_FIRST = 5; // the first kHYPE-paired coins post on their own, wherever they launch
+const KHYPE_BRIDGE_MIN = 5000; // a kHYPE bridge-in this size or more posts (100K landed in one wallet on Nov 9, 17:47)
 // v4 pool → { t: coin, q: quote token, inv: 1 when the quote is currency1 }. Native HYPE and WHYPE pools are
 // HYPE-quoted. A pool between two tokens (Kleos coins paired with BLOB) is quoted in the side that already has a
 // HYPE price, so its trades are valued through that token instead of being read as HYPE.
@@ -274,6 +281,7 @@ function poolEntry(state, pm, c0, c1, b) {
   let q = c0, t = c1;
   if (isHype(c0)) { q = c0; t = c1; }
   else if (isHype(c1)) { q = c1; t = c0; }
+  else if (c0 === KHYPE || c1 === KHYPE) { q = KHYPE; t = c0 === KHYPE ? c1 : c0; }
   else if (!state.tok[c0]?.price && state.tok[c1]?.price) { q = c1; t = c0; }
   return { t, q, inv: q === c1 ? 1 : 0, lp: pm, b };
 }
@@ -443,7 +451,8 @@ const asLinks = (buttons) => buttons.map((b) => {
   return { text: b.text, url: `${BUY_PAGE}?t=0x${m[2]}${m[3] ? `&a=${Number(m[3]) / 10}` : ''}` };
 });
 // Elyxa's terminal charts coins from every launchpad; quick buy stays as the one-tap route
-const coinLink = (state, t) => `${assetLink(t, `open on ${pageOf(t)[0]}`)} · <a href="${BUY_PAGE}?t=${t}">quick buy</a>`;
+// a kHYPE-paired coin gets no quick buy: Nadir pays in HYPE and has no route into kHYPE
+const coinLink = (state, t) => `${assetLink(t, `open on ${pageOf(t)[0]}`)}${state?.tok?.[t]?.kq ? '' : ` · <a href="${BUY_PAGE}?t=${t}">quick buy</a>`}`;
 
 // alerts go through the trade bot when it is set up, else the command bot (both set in main); the old bot is the fallback
 let ALERT = null, TRADE = null;
@@ -761,11 +770,36 @@ async function main() {
   const tally = {};
   const bump = (k, n = 1) => { tally[k] = (tally[k] || 0) + n; };
 
+  // kHYPE readiness (Nov 9). Ascend switching kHYPE on or off as a quote: one read a tick of its hook's
+  // quoteConfig(kHYPE), which answers (enabled, start tick, min liquidity). The first read only records it
+  state.khype ||= { n: 0 };
+  try {
+    const w = words(await rpc('eth_call', [{ to: ASCEND_HOOK, data: '0x9cd57cad' + KHYPE.slice(2).padStart(64, '0') }, 'latest']));
+    const on = !!w[0] && BigInt('0x' + w[0]) === 1n;
+    if (state.khype.on !== undefined && on !== state.khype.on && !firstRun) {
+      msgs.push(on
+        ? `🟣 <b>Ascend switched on kHYPE pairs</b>\nCoins paired with kHYPE can launch on Ascend from now. The first ${KHYPE_FIRST} post here as they open.\n<code>${ASCEND_HOOK}</code>`
+        : `🟣 <b>Ascend switched kHYPE pairs off again</b>\n<code>${ASCEND_HOOK}</code>`);
+      bump('khype switch');
+    }
+    state.khype.on = on;
+  } catch (e) { console.log('kHYPE quote check failed:', e.message); }
+  // kHYPE arriving on Elysium: bridge mints of KHYPE_BRIDGE_MIN or more
+  for (const l of logs) {
+    if (lc(l.address) !== KHYPE || l.topics[0] !== T_TRANSFER || l.topics.length !== 3 || lc(topicAddr(l.topics[1])) !== ZERO || firstRun) continue;
+    const amt = Number(BigInt(l.data)) / 1e18;
+    if (!(amt >= KHYPE_BRIDGE_MIN)) continue;
+    const to = lc(topicAddr(l.topics[2]));
+    msgs.push(`🟣 <b>${fmtAmt(amt)} kHYPE bridged to Elysium</b>\nTo ${walletLink(to)}${W.has(to) ? ` (👛 ${esc(W.get(to))})` : ''}, in from HyperEVM${txLink(l.transactionHash)}`);
+    bump('khype bridge');
+  }
+
   // coins minted in each tx (a launch mints its coin in the same tx it opens the pool or curve)
   const mintedIn = {};
   for (const l of logs) if (l.topics[0] === T_TRANSFER && l.topics.length === 3 && lc(topicAddr(l.topics[1])) === ZERO) (mintedIn[l.transactionHash] ||= new Set()).add(lc(l.address));
   // 1. new pools: launches on known launchpads, and unknown PoolManagers
   const launchTxs = [];
+  const khypeNew = []; // new coins paired with kHYPE, posted below once their launcher is known
   for (const l of logs) {
     if (l.topics[0] !== T_INIT_V4) continue;
     const pm = lc(l.address);
@@ -783,6 +817,7 @@ async function main() {
       // minted: the coin was created in this tx, so a pool with no hook was opened by the contract that launched it
       state.tok[coin] = { lp: pm, hook, born, vol: 0, buyVol: 0, swaps: 0, buyers: [], creator: null, minted: !!mintedIn[l.transactionHash]?.has(coin) };
       launchTxs.push({ coin, tx: l.transactionHash, block: parseInt(l.blockNumber, 16) });
+      if (entry.q === KHYPE) { state.tok[coin].kq = 1; khypeNew.push(coin); }
     } else if (state.tok[coin].curve && !state.tok[coin].hook) state.tok[coin].hook = hook; // a curve coin graduating to its pool
   }
   // 1b. Obol coins: born on a curve with no pool. A new curve contract (an Obol log from an address with Obol's code)
@@ -871,6 +906,17 @@ Its coins now count as Obol launches.
   await pmap(launchTxs.slice(0, 40), 12, async ({ coin, tx }) => {
     try { const x = await rpc('eth_getTransactionByHash', [tx]); state.tok[coin].creator = lc(x?.from); if (!state.tok[coin].curve) state.tok[coin].via = lc(x?.to); } catch {}
   });
+  // the first kHYPE-paired coins post on their own, with the launchpad they opened on
+  for (const coin of khypeNew) {
+    state.khype.n++;
+    if (firstRun || state.khype.n > KHYPE_FIRST) continue;
+    const rec = state.tok[coin], meta = await tokenMeta(state, coin);
+    msgs.push(`🟣 <b>kHYPE pair #${state.khype.n}: ${esc(meta.s)}</b> (${esc(meta.n)}) on ${esc(lpNameOf(rec))}\n` +
+      `Paired with kHYPE instead of HYPE, so there's no quick buy (Nadir pays in HYPE and has no route into kHYPE).\n` +
+      (rec.creator ? `Launched by ${walletLink(rec.creator)}${W.has(rec.creator) ? ` (👛 ${esc(W.get(rec.creator))})` : ''}\n` : '') +
+      `<code>${coin}</code>\n${coinLink(state, coin)}`);
+    bump('khype pair');
+  }
   // launchpads new to Elysium: their first coin that isn't a test posts, nothing after that
   let newLpAlerts = 0, newLpChecks = 0;
   for (const { coin, block } of launchTxs.slice(0, 40)) {
@@ -1855,7 +1901,7 @@ const capFirst = (s) => s[0].toUpperCase() + s.slice(1);
 // a held-back group buy still says who bought, so the wallets can be judged by what they bought
 const trapLine = (meta, t, who, x, lines) => `⛔ <b>${esc(meta.s)}</b> group buy held back (${who}). ${capFirst(x.why)}. Looks like a sell trap, muted. /unmutecoin ${t} brings it back\n${lines}\n<code>${t}</code>`;
 const trapWarn = (x) => `⚠️ ${capFirst(x.why)}. No quick-buy on this one.`;
-const noQuickBuy = (rec, trap) => rec?.hook === ZERO || !!trap?.why;
+const noQuickBuy = (rec, trap) => rec?.hook === ZERO || !!rec?.kq || !!trap?.why;
 
 // ── Telegram commands on the separate command bot (WATCH_BOT_TOKEN), checked once per scan ─────────
 // /add <address> [label] [group]   /remove <address>   /list   /export   /help
