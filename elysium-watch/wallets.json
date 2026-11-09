@@ -1759,46 +1759,6 @@
   "group": "blobwhale"
  },
  {
-  "address": "0xdea857e0896837a624b810e255f9b3848adc8efe",
-  "label": "Fresh bridger 34 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0x5d312cc0d77ab36464c9d4598fec96872c125830",
-  "label": "Fresh bridger 60 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0x71f9ccd68bf1f5f9b571f509e0765a04ca4ffad2",
-  "label": "Fresh bridger 25 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0xb7ff55bf999c21a441e7833b1346dab299762f1f",
-  "label": "Fresh bridger 32 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0xb3406f9bda559f9ca82b2c895ff098f3490ac053",
-  "label": "Fresh bridger 25 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0xc02fd43a412f404eeda8d1f040533aaf61c31b9e",
-  "label": "Fresh bridger 33 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0xdad0958284b3d20104d14304a5e0ba21b6b3f284",
-  "label": "Fresh bridger 29 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
-  "address": "0xaca819e57522fff74386f1a8f3b64b0000000000",
-  "label": "Fresh bridger 61 HYPE (never traded yet)",
-  "group": "freshbridge"
- },
- {
   "address": "0xded3aa90c7698e57c6fc502e50dd5cba1d40d2c6",
   "label": "culture alt 4 (active, funded from his BSC wallet)",
   "group": "culture"

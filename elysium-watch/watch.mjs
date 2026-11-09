@@ -72,8 +72,7 @@ const CODE_WATCH = {
 // auto-tracking: a tracked wallet funding a fresh wallet
 const FUND_MIN_HYPE = 0.2;
 const FRESH_MAX_NONCE = 5;       // recipient has sent at most this many txs = fresh wallet
-const BRIDGE_MIN_HYPE = Number(process.env.BRIDGE_MIN_HYPE || 25); // fresh wallet bridging in at least this much from HyperEVM: ping + track
-const AUTO_MAX = 500;            // auto-found wallets kept (dead ones and bridge duds are pruned, see housekeeping)
+const AUTO_MAX = 500;            // auto-found wallets kept (dead ones are pruned, see housekeeping)
 const AUTO_DEAD_DAYS = 3;        // an auto-found wallet that sent no tx for this long is dropped (Cielo wallets stay)
 
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -668,7 +667,7 @@ async function main() {
   const W = new Map(okW.map((w) => [lc(w.address), w.label || short(w.address)]));
   const G = new Map(okW.filter((w) => w.group).map((w) => [lc(w.address), String(w.group)]));
   // dev wallets watched for launches only (wallets.json "watch": "launch", "coins": the runners they made): a new coin,
-  // a contract deploy, a bundle split, HYPE bridged in or 25+ HYPE moved, and sells of their own coins. Their routine
+  // a contract deploy, a bundle split, 25+ HYPE moved, and sells of their own coins. Their routine
   // trading stays quiet; their group still counts toward group buys.
   const DEVW = new Map(okW.filter((w) => w.watch === 'launch').map((w) => [lc(w.address), new Set((w.coins || []).map(lc))]));
   // "watch": "all" (team and insider wallets): every normal ping stays, plus the 🛬 first move on Elysium that
@@ -679,6 +678,9 @@ async function main() {
   state.auto ||= {};
   state.gbuys ||= {};
   for (const a of FEE_WALLETS) delete state.auto[a]; // followed by mistake as an alt before the bot-fee pattern was known
+  // bridge tracking is off (Nov 9): the auto-found bridgers and the alts found through them are dropped for good
+  for (const [a, x] of Object.entries(state.auto)) if (x.from === 'bridge' || /^bridger \d/.test(x.label || '')) delete state.auto[a];
+  delete state.bridged; delete state.bridgerDump;
   for (const [a, x] of Object.entries(state.auto)) {
     if (!W.has(a)) W.set(a, x.label);
     if (x.group && !G.has(a)) G.set(a, x.group);
@@ -693,14 +695,6 @@ async function main() {
     }
   } catch {}
   try { await commands(state, W); } catch (e) { console.log('commands failed:', e.message); }
-  // the auto-found bridgers, every 20 minutes at the end of the done line (the run log shows only each tick's last
-  // line), for reviews of who turned out a plain trader
-  let bridgerDump = '';
-  if (now() - (state.bridgerDump || 0) > 1200) {
-    state.bridgerDump = now();
-    const bl = Object.entries(state.auto || {}).filter(([, x]) => x.from === 'bridge').map(([a, x]) => [a, Math.round(x.hype || 0), x.t || 0, x.nc ?? null]);
-    bridgerDump = ' · bridgers ' + JSON.stringify(bl);
-  }
   const alertChat = state.cmdChat || (/^\d+$/.test(String(TG_CHAT || '')) ? TG_CHAT : null);
   if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
   if (TRADE_TOKEN && alertChat) TRADE = { token: TRADE_TOKEN, chat: alertChat, trade: true };
@@ -1114,7 +1108,7 @@ Its coins now count as Obol launches.
         const f = lc(tx.from), to = lc(tx.to);
         const val = Number(BigInt(tx.value || '0x0')) / 1e18;
         const bridged = ['0x64', '0x65', '0x68', '0x69'].includes(String(tx.type).toLowerCase());
-        if (bridged) note(to, `🌉 bridged in ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}`);
+        if (bridged) note(to, `arrived with ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}`);
         else if (val > 0) note(to, `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
         note(f, `made its first move here${txLink(tx.hash)}`);
       }
@@ -1135,38 +1129,7 @@ Its coins now count as Obol launches.
     }
   }
 
-  // 3d. a fresh wallet bridging in a lot of HYPE from HyperEVM: usually a launch or a snipe is coming.
-  // One ping per wallet, then it is tracked like the others (its launch or buys show up in section 4).
-  state.bridged ||= {};
-  for (const [a, t] of Object.entries(state.bridged)) if (now() - t > 14 * 86400) delete state.bridged[a];
-  const bigIns = [];
-  for (const blk of blocks) {
-    for (const tx of blk.transactions || []) {
-      if (String(tx.type).toLowerCase() !== '0x64') continue; // Arbitrum deposit tx = HYPE arriving over the bridge
-      const to = lc(tx.to);
-      const val = Number(BigInt(tx.value || '0x0')) / 1e18;
-      if (to && val >= BRIDGE_MIN_HYPE && !W.has(to) && !INFRA.has(to) && !state.bridged[to] && !state.muted[to]) bigIns.push({ to, val, hash: tx.hash });
-    }
-  }
-  for (const x of bigIns.slice(0, 8)) {
-    if (Object.keys(state.auto).length >= AUTO_MAX) break;
-    try {
-      const [code, nonce] = await Promise.all([rpc('eth_getCode', [x.to, 'latest']), rpc('eth_getTransactionCount', [x.to, 'latest'])]);
-      state.bridged[x.to] = now();
-      if (code && code !== '0x') continue;
-      const n = parseInt(nonce, 16);
-      if (n > FRESH_MAX_NONCE) continue;
-      const label = `bridger ${Math.round(x.val)} ${x.to.slice(2, 6)}`;
-      state.auto[x.to] = { label, group: null, from: 'bridge', t: now(), hype: x.val };
-      W.set(x.to, label);
-      bump('new/bridger');
-      msgs.push(
-        `🌉 <b>Fresh wallet bridged in ${hype(x.val)}</b>${px ? ` (${usd(x.val * px)})` : ''} from HyperEVM\n` +
-        `${walletLink(x.to)} · ${n} txs so far${txLink(x.hash)}\n` +
-        `Now tracking it as <b>${esc(label)}</b>, so a launch or buy from it pings you.`
-      );
-    } catch {}
-  }
+  // 3d. (the fresh-bridger watch was removed Nov 9: bridging in alone is no signal)
 
   // 3e. launch-watched devs that have never been on Elysium (the old HyperCore and HyperEVM meme devs): each is
   // checked once, so its first move here leads its alert (🛬). 0 = never here yet, 1 = already active when first checked
@@ -1329,7 +1292,8 @@ Its coins now count as Obol launches.
             funded.push({ f: src, to, val, hash: tx.hash, via: 'bridge' });
           }
         }
-        if (W.has(to) && (val >= WALLET_MIN_HYPE || (bridged && val > 0))) M(to).push(bridged ? `🌉 <b>bridged in ${hype(val)}</b>${px ? ` (${usd(val * px)})` : ''} from HyperEVM${txLink(tx.hash)}` : `received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
+        // HYPE a tracked wallet bridges in for itself stays quiet (bridge tracking is off); plain transfers still ping
+        if (W.has(to) && !bridged && val >= WALLET_MIN_HYPE) M(to).push(`received ${hype(val)}${px ? ` (${usd(val * px)})` : ''} from ${walletLink(f)}${txLink(tx.hash)}`);
       }
     }
     // fresh wallets funded by tracked ones: start tracking them (same group as the funder)
@@ -1614,9 +1578,8 @@ Its coins now count as Obol launches.
   // the auto-found list stays useful and under AUTO_MAX:
   // - muted wallets and wallets now named in wallets.json leave it (silenced, or tracked from the repo anyway;
   //   a muted wallet's alts still go quiet, that only needs it in state.muted)
-  // - bridge duds: bridged in over a day ago and still at most 1 tx sent
   // - dead wallets: no tx sent for AUTO_DEAD_DAYS (nonce watched, a few wallets per tick); Cielo wallets stay
-  const pruned = { muted: 0, listed: 0, dud: 0, dead: 0 };
+  const pruned = { muted: 0, listed: 0, dead: 0 };
   for (const a of Object.keys(state.auto)) {
     if (state.muted[a] && !state.manual[a]) { delete state.auto[a]; pruned.muted++; }
     else if (listed.has(a)) { delete state.auto[a]; pruned.listed++; }
@@ -1628,8 +1591,7 @@ Its coins now count as Obol launches.
       x.ck = now();
       if (x.nc !== n) { x.nc = n; x.nct = now(); }
       const age = now() - (x.t || 0);
-      if (x.from === 'bridge' && age > 86400 && n <= 1) { delete state.auto[a]; pruned.dud++; }
-      else if (age > AUTO_DEAD_DAYS * 86400 && now() - x.nct > AUTO_DEAD_DAYS * 86400) { delete state.auto[a]; pruned.dead++; }
+      if (age > AUTO_DEAD_DAYS * 86400 && now() - x.nct > AUTO_DEAD_DAYS * 86400) { delete state.auto[a]; pruned.dead++; }
     } catch {}
   }));
   if (Object.values(pruned).some(Boolean)) console.log(`auto list: dropped ${Object.entries(pruned).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ')}, ${Object.keys(state.auto).length} left`);
@@ -1649,7 +1611,7 @@ Its coins now count as Obol launches.
   const kinds = Object.entries(tally).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ');
   const heads = {};
   for (const m of msgs) { const h = [...String(typeof m === 'string' ? m : m.text || '').trim()][0] || '?'; heads[h] = (heads[h] || 0) + 1; }
-  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'} · ${head - from + 1} blocks, ${chainHead - head} behind · s logs ${((tLogs - tStart) / 1000).toFixed(1)}, launches ${((tRoll - tLaunch) / 1000).toFixed(1)}, coins+wallets ${(((tGate || tGateEnd || Date.now()) - tRoll) / 1000).toFixed(1)}, gate ${(tGate ? (tGateEnd - tGate) / 1000 : 0).toFixed(1)}, total ${((Date.now() - tStart) / 1000).toFixed(1)}${bridgerDump}`);
+  console.log(`done: ${Object.keys(roll).length} coins traded, ${launchTxs.length} launches, ${msgs.length} alerts · gate ${Object.keys(state.gate?.refs || {}).length} refs, ${state.gate?.q?.length || 0} queued · kinds ${kinds || 'none'} · auto ${Object.entries(autoBy).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · manual ${Object.keys(state.manual).length} · by icon ${Object.entries(heads).map(([k, v]) => `${k}${v}`).join(' ') || 'none'} · ${head - from + 1} blocks, ${chainHead - head} behind · s logs ${((tLogs - tStart) / 1000).toFixed(1)}, launches ${((tRoll - tLaunch) / 1000).toFixed(1)}, coins+wallets ${(((tGate || tGateEnd || Date.now()) - tRoll) / 1000).toFixed(1)}, gate ${(tGate ? (tGateEnd - tGate) / 1000 : 0).toFixed(1)}, total ${((Date.now() - tStart) / 1000).toFixed(1)}`);
 }
 
 // ── Stockium (launchpad on HyperEVM; graduated tokens move to StockiumSwap on Elysium) ─────────────
@@ -1941,11 +1903,6 @@ function runCommand(state, W, text) {
       .concat([...cm.addrs].map((k) => `• ${state.meta?.[k]?.s ? `<b>${esc(state.meta[k].s)}</b> ` : ''}<code>${k}</code>${cm.repo.has(k) ? ' · repo list' : ''}`));
     return all.length ? `🔇 Muted coins (${all.length})\n${all.join('\n')}\n\n/unmutecoin to bring one back.` : 'No muted coins. /mutecoin SYMBOL or /mutecoin 0x… to add one.';
   }
-  if (cmd === '/bridgers') {
-    const bl = Object.entries(state.auto || {}).filter(([, x]) => x.from === 'bridge').sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
-    if (!bl.length) return 'No auto-found bridgers right now.';
-    return `🌉 Auto-found bridgers (${bl.length}), newest first\n` + bl.map(([a, x]) => `• ${esc(x.label)} · ${Math.round(x.hype || 0)} HYPE · ${x.nc ?? '?'} txs <code>${a}</code>`).join('\n') + '\n\n/remove 0x… 0x… drops any of them (several in one message is fine).';
-  }
   if (cmd === '/list') {
     const by = {};
     for (const [a, x] of Object.entries(state.manual)) (by[x.group || 'no group'] ||= []).push(`• ${esc(x.label)} <code>${a}</code>`);
@@ -1957,7 +1914,7 @@ function runCommand(state, W, text) {
     const rows = Object.entries(state.manual).map(([a, x]) => JSON.stringify({ address: a, label: x.label, ...(x.group ? { group: x.group } : {}) }));
     return rows.length ? `<code>${esc(rows.join(',\n'))}</code>` : 'Nothing added from Telegram yet.';
   }
-  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/bridgers  (auto-found wallets that bridged in a lot)\n/export  (backup in wallets.json format)\n/mutecoin SYMBOL or 0x…  (no more alerts for that coin)\n/unmutecoin SYMBOL or 0x…\n/mutedcoins';
+  return 'Commands\n/add 0x… label group  (group optional; #name makes a new one)\n/remove 0x…\n/list\n/export  (backup in wallets.json format)\n/mutecoin SYMBOL or 0x…  (no more alerts for that coin)\n/unmutecoin SYMBOL or 0x…\n/mutedcoins';
 }
 
 // Cielo list from the CIELO_WALLETS secret: base64(gzip([count u16][20-byte addresses][labels joined by \n]))
