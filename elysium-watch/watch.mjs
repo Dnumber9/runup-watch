@@ -431,6 +431,13 @@ async function getLogs(filter, from, to, span = LOG_RANGE) {
       out.push(...await getLogs(filter, s, mid, mid - s + 1), ...await getLogs(filter, mid + 1, e, e - mid));
     }
   }
+  // rpc.eleos.fun sends a log with no topics (a LOG0 event) as "topics": null. Every l.topics[0] below threw on
+  // it, so the main scan retried the same window until the RPC rotated. Nov 10 overnight that was about 1,050
+  // failed ticks, stalls of 10 to 14 minutes and four skips of ~8,000 blocks the main scan never read.
+  for (const l of out) {
+    if (!Array.isArray(l.topics)) l.topics = [];
+    if (l.data == null) l.data = '0x';
+  }
   return out;
 }
 
