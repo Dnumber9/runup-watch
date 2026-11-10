@@ -732,6 +732,9 @@ async function main() {
   if (CMD_TOKEN && alertChat) ALERT = { token: CMD_TOKEN, chat: alertChat };
   if (TRADE_TOKEN && alertChat) TRADE = { token: TRADE_TOKEN, chat: alertChat, trade: true };
   for (const [a, x] of Object.entries(state.manual)) {
+    // a block of /add lines pasted as one message (Nov 10, before /add read one line at a time) saved the next
+    // lines as this wallet's label: keep the part before them
+    if (/\s\/add\s/.test(x.label || '')) x.label = x.label.split(/\s\/add\s/)[0].replace(/\s#\S*$/, '').trim() || short(a);
     W.set(a, x.label);
     if (x.group) G.set(a, x.group); else G.delete(a);
   }
@@ -1994,7 +1997,15 @@ async function commands(state, W) {
         }
       }
     };
-    try { await reply(runCommand(state, W, m.text.trim())); } catch (e) { console.log('command reply failed:', e.message); }
+    // one command per line: a pasted block of /add lines went in as a single /add, the first wallet with every
+    // later line as its label (Nov 10). A line that is not a command joins the one above, so a /remove list
+    // over several lines still works.
+    const cmds = [];
+    for (const line of m.text.trim().split('\n')) {
+      if (/^\s*\//.test(line) || !cmds.length) cmds.push(line.trim());
+      else cmds[cmds.length - 1] += '\n' + line;
+    }
+    try { await reply(cmds.map((c) => runCommand(state, W, c)).join('\n\n')); } catch (e) { console.log('command reply failed:', e.message); }
   }
 }
 function runCommand(state, W, text) {

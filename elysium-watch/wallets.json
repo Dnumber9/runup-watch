@@ -3144,5 +3144,72 @@
   "label": "PANTHEON mainnet deployer (runbook: PNTH launches at its nonce 2)",
   "group": "pantheon",
   "watch": "all"
+ },
+ {
+  "address": "0x2796005dc02e04d84cb6a91420259e921a0d5ae1",
+  "label": "MONTRA dev (holds 400M MONTRA, 923K KNTQ creator fees unclaimed)",
+  "group": "montra",
+  "watch": "all"
+ },
+ {
+  "address": "0x7fdb986dc61c5698f965b77c4dea5d61b994fd7c",
+  "label": "MONTRA dev funder (bridged in the 53.5K KNTQ the dev launched with)",
+  "group": "montra",
+  "watch": "all"
+ },
+ {
+  "address": "0x008ade62938fbea67ddf4592b7b86d071a6f54d4",
+  "label": "MONTRA 16s sniper, split 57.5M over 15 wallets (+$197K)",
+  "group": "montra"
+ },
+ {
+  "address": "0xc028a98477319006bd0eab0d436893310eab65cb",
+  "label": "MONTRA 107s buyer, holds 12.3M (+$69K)",
+  "group": "montra"
+ },
+ {
+  "address": "0x3c15fc1a7cb921459508f139ae0ae963b883c6c4",
+  "label": "MONTRA 52s flipper (+$58K)",
+  "group": "montra"
+ },
+ {
+  "address": "0x3657d54106eb931dd9c68dd4af6e016991370b21",
+  "label": "MONTRA 85s buyer, funded alt 0x8505 in the launch minute",
+  "group": "montra"
+ },
+ {
+  "address": "0x8505ea2dc7d743e57a14eca715fd20fd91e82936",
+  "label": "MONTRA 36s buyer, alt of 0x3657",
+  "group": "montra"
+ },
+ {
+  "address": "0xbe75c68d0a7fd5ef957df454b2bc5394ecda972b",
+  "label": "MONTRA 13s sniper (+$47K)",
+  "group": "montra"
+ },
+ {
+  "address": "0xd468ff042e231751f0173d084d0f73433d493b4e",
+  "label": "MONTRA 55s fresh wallet (+$44K)",
+  "group": "montra"
+ },
+ {
+  "address": "0x93764f433f1eff622f9b7649272e14c5780a929d",
+  "label": "MONTRA 25s trader (+$42K)",
+  "group": "montra"
+ },
+ {
+  "address": "0x29ee76a38122dcd00c201bc753a572086227acbc",
+  "label": "MONTRA 52s holder, 7.5M (+$41K)",
+  "group": "montra"
+ },
+ {
+  "address": "0x8ea3b8e19221a145e180b704dbd827bf0deca4b0",
+  "label": "MONTRA 4m whale (bridged 955 HYPE), holds 8.9M",
+  "group": "montra"
+ },
+ {
+  "address": "0xfdaf199ae935753c70824f6c73d4877ddceea57b",
+  "label": "ryhosi twin (copies ryhosi trade for trade)",
+  "group": "montra"
  }
 ]
