@@ -17,7 +17,7 @@ import { gate, gateDigest, gatePms } from './gate.mjs';
 import { zeroWatch } from './zero.mjs';
 
 // ── config ───────────────────────────────────────────────────────────────────
-const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
+const RPCS = (process.env.ELY_RPCS || 'https://rpc.eleos.fun,https://rpc.elysium.kinetiq.xyz,https://rpc-elysium-mainnet.t.conduit.xyz,https://rpc-live.boxa.club,https://rpc-live.elysp.com,https://rpc-live.elyspump.com,https://boxa.club/api/rpc')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const OFFICIAL_RPC = 'https://rpc-elysium-mainnet.t.conduit.xyz';
 const CHAIN_ID = 99901;
@@ -30,7 +30,7 @@ const FIRST_LOOKBACK = 3000;     // first run: about the last 8 minutes
 const MAX_BLOCKS = 24000;        // catch up at most about an hour in one go
 const SCAN_MAX = 1200;           // blocks handled per tick (about 3 min of chain); the next tick continues
 const SKIP_LAG = 7800;           // further behind than this (about 20 min): jump to near the head, alerts are only useful live
-const BLOCK_FETCH = 10;          // blocks read in parallel each tick (one at a time could not keep up with the chain)
+const BLOCK_FETCH = 24;          // blocks read in parallel each tick, spread over every RPC (each has its own rate limit)
 const WARMUP_RUNS = 3;           // scans that only learn baselines
 const COOLDOWN_H = 2;            // hours before the same coin can ping again
 const DIGEST_EVERY_H = 4;
@@ -387,6 +387,38 @@ async function rpc(method, params, tries = 6) {
     }
   }
   throw new Error(`${method} failed on every RPC: ${lastErr?.message}`);
+}
+
+// blocks with their txs, spread round-robin over every working RPC. Reading them from one RPC at a time took about
+// 22 s of a 33 s tick on Nov 12 (0.08 s a block), so the main scan's alerts landed a minute late. Each RPC has its own
+// rate limit, so sharing the reads is about 3x faster. A block an RPC does not have yet (a node a little behind the
+// head) or a rate-limited call moves on to the next RPC.
+let blockRr = 0;
+async function getBlocks(nums) {
+  const out = new Array(nums.length).fill(null);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BLOCK_FETCH, nums.length) }, async () => {
+    while (next < nums.length) {
+      const k = next++;
+      const start = blockRr++; // each block starts on the next RPC and walks the list, so every RPC gets two tries
+      for (let i = 0; i < RPCS.length * 2 && !out[k]; i++) {
+        const url = RPCS[(start + i) % RPCS.length];
+        try {
+          const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['0x' + nums[k].toString(16), true] }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (r.status === 429 || r.status >= 500) throw new Error(`HTTP ${r.status}`);
+          const j = await r.json();
+          if (!j.result) throw new Error(j.error?.message || 'no block yet');
+          out[k] = j.result;
+        } catch { if (i >= RPCS.length - 1) await sleep(300); } // every RPC tried once: wait a little before the second round
+      }
+    }
+  }));
+  return out;
 }
 
 // run fn over items, n at a time (per-coin reads in a launch flood: Nov 7, ~1,000 Montra launches an hour, and one
@@ -1189,18 +1221,10 @@ Its coins now count as Obol launches.
   }
 
   // 3b. every new block with its transactions, read once (tracked-wallet moves and Cielo arrivals both use them)
-  // read in parallel and kept in block order
+  // read in parallel over every RPC and kept in block order
   const want = [];
   for (let b = Math.max(from, head - SCAN_MAX + 1); b <= head; b++) want.push(b);
-  const got = new Array(want.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(BLOCK_FETCH, want.length) }, async () => {
-    while (next < want.length) {
-      const k = next++;
-      try { got[k] = await rpc('eth_getBlockByNumber', ['0x' + want[k].toString(16), true]); } catch {}
-    }
-  }));
-  const blocks = got.filter(Boolean);
+  const blocks = (await getBlocks(want)).filter(Boolean);
   if (blocks.length < want.length) console.log(`blocks read ${blocks.length}/${want.length}`);
 
   // 3c. wallets from the Cielo list showing up on Elysium for the first time: one ping, then full tracking
