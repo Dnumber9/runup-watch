@@ -177,18 +177,21 @@ async function hosts(io, z, msgs, base) {
   return `hosts ${list.length} (rpc ${by(isRpc)}, open ${by(isOpen)}, gated/other ${by((s) => isUp(s) && !isRpc(s) && !isOpen(s))}, down ${by((s) => s === 'down')}, no dns ${by((s) => s === 'nodns')})`;
 }
 
-// names from the certificate logs: crt.sh first (no ration, often slow), then Cert Spotter
+// names from the certificate logs: Cert Spotter (complete; only what is new since the last read is asked for),
+// and crt.sh when that fails (on Nov 13 crt.sh was four weeks behind, so it is only the fallback)
 async function certs(io, z) {
-  let names = null;
+  const names = [];
   try {
-    const j = await getJson(io, `https://crt.sh/?q=%25.${ROOT}&output=json`, 20000);
-    names = j.flatMap((x) => String(x.name_value).split('\n'));
-  } catch {}
-  if (!names) {
-    try {
-      const j = await getJson(io, `https://api.certspotter.com/v1/issuances?domain=${ROOT}&include_subdomains=true&expand=dns_names`, 20000);
-      names = j.flatMap((x) => x.dns_names || []);
-    } catch (e) { console.log('certificate logs not readable:', e.message); return; }
+    for (let p = 0; p < 4; p++) {
+      const j = await getJson(io, `https://api.certspotter.com/v1/issuances?domain=${ROOT}&include_subdomains=true&expand=dns_names${z.ctAfter ? '&after=' + z.ctAfter : ''}`, 20000);
+      if (!Array.isArray(j) || !j.length) break;
+      names.push(...j.flatMap((x) => x.dns_names || []));
+      if (!j[j.length - 1].id) break;
+      z.ctAfter = j[j.length - 1].id;
+    }
+  } catch (e) {
+    try { names.push(...(await getJson(io, `https://crt.sh/?q=%25.${ROOT}&output=json`, 20000)).flatMap((x) => String(x.name_value).split('\n'))); }
+    catch { console.log('certificate logs not readable:', e.message); }
   }
   const clean = uniq(names.map((n) => lc(n).replace(/^\*\./, '')).filter((n) => n.endsWith(ROOT) && /^[a-z0-9.-]+$/.test(n)));
   z.ct = uniq([...(z.ct || []), ...clean]).slice(-400);
@@ -400,7 +403,7 @@ export async function run(state, io, msgs) {
       `Hosts watched: ${Object.keys(z.hosts).length}. RPC answering: ${rpcs.length ? esc(rpcs.join(', ')) : 'none yet'}.\n` +
       `Mainnet explorer: ${say(st('explorer'))}. Testnet RPC: ${say(st('testnet'))}. Testnet faucet: ${say(st('faucet.testnet'))}.\n` +
       `Mainnet hosts that exist: ${mainUp.length ? esc(mainUp.join(', ')) : 'none'}.\n` +
-      `LayerZero Scan: testnet ${z.msgN?.testnet || 0} messages over ${apps('testnet')} apps on Zero's side, mainnet ${z.msgN?.mainnet || 0}.\n` +
+      `LayerZero Scan: ${apps('testnet')} apps on Zero's side of the testnet${z.msgN?.testnet ? ` (${z.msgN.testnet} messages so far)` : ''}, ${apps('mainnet')} on mainnet.\n` +
       `Registry tokens on Zero mainnet: ${tokens.length ? esc(uniq(tokens).join(', ')) : 'none'}.\n` +
       `You get a ping when an RPC answers, when the explorer or the testnet opens, when a new app is wired to Zero and when LayerZero lists a token there.`);
   }
